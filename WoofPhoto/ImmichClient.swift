@@ -140,7 +140,7 @@ extension Error {
         case .cannotConnectToHost:
             return "Nothing answers at this address. Check the port (Immich uses 2283) and that the server is running."
         case .timedOut, .notConnectedToInternet, .networkConnectionLost:
-            return "The server can't be reached from this network. Away from home, use its public HTTPS address."
+            return "The server didn't answer in time. If you reach it through a VPN such as Tailscale, check that the VPN is on."
         case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed:
             return "The server's HTTPS certificate is not trusted. Try its http:// address on the local network."
         default:

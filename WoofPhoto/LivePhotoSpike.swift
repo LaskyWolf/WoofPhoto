@@ -52,7 +52,9 @@ struct LivePhotoSpike: View {
             }
             status = "No Live Photo in any of the \(buckets.count) months. Upload one from an iPhone with the official Immich app, then try again."
         } catch {
-            status = error.explanation
+            // status still names the step that was running
+            let code = (error as? URLError).map { " (URLError \($0.code.rawValue))" } ?? ""
+            status = "Failed at: \(status)\n\(error.explanation)\(code)"
         }
     }
 }

@@ -133,12 +133,19 @@ struct ImmichClient {
         try await get("/timeline/bucket", query: query.params.merging(["timeBucket": key, "order": order]) { $1 })
     }
 
+    /// iOS opens only 4 connections per server by default; a screen of grid cells over plain HTTP waits in line behind them.
+    private static let images: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpMaximumConnectionsPerHost = 12
+        return URLSession(configuration: configuration)
+    }()
+
     /// "thumbnail" is about 250 px, "preview" about 1440 px, "fullsize" the whole image as JPEG.
     /// A cached copy wins: an asset's images change only when it is edited, and editing gives a new asset.
     func image(_ id: String, size: String = "thumbnail") async throws -> Data {
         var request = request("/assets/\(id)/thumbnail", query: ["size": size])
         request.cachePolicy = .returnCacheDataElseLoad
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.images.data(for: request)
         try Self.check(response, data)
         return data
     }

@@ -155,8 +155,9 @@ struct AssetGrid: View {
                                         OpenPhoto.shared.open(asset, in: timeline)
                                     }
                                 }
+                                .accessibilityAddTraits(selection?.contains(asset?.id ?? "") == true ? [.isButton, .isSelected] : .isButton)
                                 .task {
-                                    if month.assets == nil, let client { await timeline.loadMonth(month.key, with: client) }
+                                    if let client { await timeline.loadMonth(around: month.key, with: client) }
                                 }
                         }
                     }
@@ -366,8 +367,20 @@ struct Thumbnail: View {
                 }
             }
             .accessibilityElement()
-            .accessibilityLabel(asset?.isImage == false ? "Video" : "Photo")
+            .accessibilityLabel(spokenLabel)
             .task(id: asset?.id) { await load() }
+    }
+
+    /// "Video, 1:05, Favorite, March 3, 2024" for VoiceOver.
+    private var spokenLabel: String {
+        guard let asset else { return "Photo, loading" }
+        var parts = [asset.isImage ? "Photo" : "Video"]
+        if let duration { parts.append(duration) }
+        if asset.isFavorite { parts.append("Favorite") }
+        if asset.localID != nil { parts.append("Not backed up") }
+        if asset.stackCount > 1 { parts.append("Stack of \(asset.stackCount)") }
+        if let date = asset.date { parts.append(date.formatted(Date.FormatStyle(date: .long, time: .omitted, timeZone: .gmt))) }
+        return parts.joined(separator: ", ")
     }
 
     private var placeholder: UIImage? {

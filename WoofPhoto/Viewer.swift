@@ -17,6 +17,7 @@ struct Viewer: View {
     /// The stack member shown in place of a stack's top asset, after picking it in the strip.
     @State private var shownInStack: [String: String] = [:]
     @State private var chromeHidden = false
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @State private var showsInfo = false
     @State private var confirmsDelete = false
     @State private var sharing: SharedFile?
@@ -38,7 +39,7 @@ struct Viewer: View {
                 LazyHStack(spacing: 0) {
                     ForEach(timeline.assets) { asset in
                         ViewerPage(asset: shown(asset), isCurrent: asset.id == current) {
-                            withAnimation { chromeHidden.toggle() }
+                            if !voiceOver { withAnimation { chromeHidden.toggle() } }
                         }
                         .containerRelativeFrame([.horizontal, .vertical])
                     }
@@ -580,6 +581,9 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
         contentInsetAdjustmentBehavior = .never
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = true
+        imageView.isAccessibilityElement = true
+        imageView.accessibilityLabel = "Photo"
+        imageView.accessibilityTraits = .image
         imageView.addInteraction(analysis)
         addSubview(imageView)
 

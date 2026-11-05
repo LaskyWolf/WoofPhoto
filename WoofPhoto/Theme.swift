@@ -106,6 +106,7 @@ struct HeaderButton: View {
         }
         .buttonStyle(IconPressStyle())
         .accessibilityLabel(label)
+        .accessibilityShowsLargeContentViewer { Label(label, systemImage: systemImage) }
     }
 }
 
@@ -264,9 +265,13 @@ struct DetailHeader<Cover: View, Secondary: View, Buttons: View>: View {
     @ViewBuilder var cover: Cover
     @ViewBuilder var secondary: Secondary
     @ViewBuilder var buttons: Buttons
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
+        // at accessibility text sizes the title gets the full width under the cover
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
+        layout {
             cover
                 .frame(width: Self.coverSize, height: Self.coverSize)
                 .clipShape(circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: Tokens.cardRadius)))
@@ -275,7 +280,7 @@ struct DetailHeader<Cover: View, Secondary: View, Buttons: View>: View {
                 if !meta.isEmpty {
                     Text(meta).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(title).font(.title3.bold()).lineLimit(2)
+                Text(title).font(.title3.bold()).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
                 secondary
                 Spacer(minLength: 8)
                 HStack(spacing: 10) {
@@ -284,7 +289,7 @@ struct DetailHeader<Cover: View, Secondary: View, Buttons: View>: View {
                 }
                 .buttonStyle(ZoomPressStyle(scale: 0.92))
             }
-            .frame(maxWidth: .infinity, minHeight: Self.coverSize, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: typeSize.isAccessibilitySize ? nil : Self.coverSize, alignment: .leading)
         }
         .padding(.horizontal, Tokens.screenPadding)
         .padding(.vertical, 16)
@@ -319,6 +324,7 @@ struct RoundIcon: View {
             .frame(width: filled ? 50 : 38, height: filled ? 50 : 38)
             .background(filled ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary.opacity(0.1)), in: .circle)
             .contentShape(.circle)
+            .accessibilityShowsLargeContentViewer()
     }
 }
 

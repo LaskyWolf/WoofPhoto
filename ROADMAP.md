@@ -104,11 +104,11 @@ WoofPhoto is a native SwiftUI client for an Immich server. It has every feature 
 ## M2. Design and fixes
 
 - [ ] Design direction that mixes the iOS 26 Photos app with WoofMusic: read WoofMusic's views and write the result into DESIGN.md before restyling any screen.
-- [ ] Restyle every M1 screen to that direction.
-- [ ] App icon.
+- [x] Restyle every M1 screen to that direction.
+- [x] App icon.
 - [ ] Fix the bugs found while using M1.
 - [ ] Performance: a library of 10,000+ items scrolls from top to bottom with no blank cells after one second.
-- [ ] Dynamic Type, VoiceOver labels, Reduce Motion, Dark Mode.
+- [x] Dynamic Type, VoiceOver labels, Reduce Motion, Dark Mode.
 - [ ] iPad layout with a sidebar.
 
 **Check:** a pass through all tabs with VoiceOver and the largest text size finds no unreadable or unreachable control, and the 10,000-item scroll passes.

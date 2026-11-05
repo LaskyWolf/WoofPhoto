@@ -308,6 +308,7 @@ struct MemoryMovie: View {
     @State private var zoomed = false
     @State private var picksSong = false
     @State private var song: MPMediaItemCollection?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -361,7 +362,7 @@ struct MemoryMovie: View {
                     image = loaded
                     index = next
                 }
-                withAnimation(.linear(duration: 4)) { zoomed = true }
+                if !reduceMotion { withAnimation(.linear(duration: 4)) { zoomed = true } }
                 try? await Task.sleep(for: .seconds(4))
             }
         }

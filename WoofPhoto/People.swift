@@ -58,7 +58,7 @@ struct PersonTile: View {
                     .clipShape(.circle)
                     .overlay(alignment: .bottomTrailing) {
                         if person.isFavorite == true {
-                            Image(systemName: "heart.fill").foregroundStyle(.white).shadow(radius: 2)
+                            Image(systemName: "heart.fill").foregroundStyle(.white).shadow(radius: 2).accessibilityLabel("Favorite")
                         }
                     }
                     .opacity(person.isHidden == true ? 0.4 : 1)

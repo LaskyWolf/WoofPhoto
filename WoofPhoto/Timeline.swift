@@ -70,6 +70,15 @@ final class Timeline {
         }
     }
 
+    /// A month and the two beside it, so scrolling into the next month already shows its thumbhashes.
+    func loadMonth(around key: String, with client: ImmichClient) async {
+        await loadMonth(key, with: client)
+        guard let months, let index = months.firstIndex(where: { $0.key == key }) else { return }
+        for neighbour in [index + 1, index - 1] where months.indices.contains(neighbour) {
+            await loadMonth(months[neighbour].key, with: client)
+        }
+    }
+
     /// Loads the months before and after the one holding `id`, so the viewer can page across months.
     func loadNeighbours(of id: String, with client: ImmichClient) async {
         guard let months, let index = months.firstIndex(where: { $0.assets?.contains { $0.id == id } == true }) else { return }

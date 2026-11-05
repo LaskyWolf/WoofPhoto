@@ -26,6 +26,12 @@ final class Timeline {
         months = [Month(key: "all", count: assets.count, assets: assets)]
     }
 
+    /// Months that are already complete, like the photos on this iPhone.
+    init(months: [Month]) {
+        query = nil
+        self.months = months
+    }
+
     var assets: [AssetRef] { months?.flatMap { $0.assets ?? [] } ?? [] }
 
     /// Photos only on this iPhone, shown in the Library next to the server's.

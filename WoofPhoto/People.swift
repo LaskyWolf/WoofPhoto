@@ -111,6 +111,8 @@ struct PersonView: View {
     @State private var birthday = Date.now
     @State private var merging = false
     @State private var message: String?
+    @State private var playsSlideshow = false
+    @State private var slideshow: [AssetRef] = []
 
     init(id: String, name: String) {
         self.id = id
@@ -119,26 +121,9 @@ struct PersonView: View {
     }
 
     var body: some View {
-        AssetGrid(timeline: timeline)
-            .navigationTitle(name.isEmpty ? "Add Name" : name)
-            .navigationSubtitle(timeline.months == nil ? "" : "\(timeline.count.formatted()) Items")
-            .toolbar {
-                Menu("More", systemImage: "ellipsis") {
-                    Button("Rename", systemImage: "pencil") {
-                        newName = name
-                        renaming = true
-                    }
-                    Button("Set Birthday", systemImage: "birthday.cake") { editsBirthday = true }
-                    Button("Favorite", systemImage: "heart") { Task { await update(["isFavorite": true], done: "Added to favorites.") } }
-                    Button("Merge with…", systemImage: "arrow.triangle.merge") { merging = true }
-                    Button("Hide", systemImage: "eye.slash") {
-                        Task {
-                            await update(["isHidden": true], done: nil)
-                            dismiss()
-                        }
-                    }
-                }
-            }
+        AssetGrid(timeline: timeline, hero: AnyView(hero))
+            .detailBarTitle(name.isEmpty ? "Add Name" : name)
+            .fullScreenCover(isPresented: $playsSlideshow) { Slideshow(assets: slideshow, start: 0) }
             .alert("Name", isPresented: $renaming) {
                 TextField("Name", text: $newName)
                 Button("Cancel", role: .cancel) {}
@@ -170,6 +155,47 @@ struct PersonView: View {
                 MergePicker(source: id) { dismiss() }
             }
             .alert(message ?? "", isPresented: Binding { message != nil } set: { if !$0 { message = nil } }) {}
+    }
+
+    /// WoofMusic's artist header: the face in a circle, the name, the count, then More, Shuffle and Play.
+    private var hero: some View {
+        DetailHeader(meta: "Person", title: name.isEmpty ? "Add Name" : name, circle: true) {
+            PersonPhoto(id: id)
+        } secondary: {
+            if timeline.months != nil {
+                Text("\(timeline.count.formatted()) Items").font(.subheadline).foregroundStyle(.secondary)
+            }
+        } buttons: {
+            Menu {
+                Button("Rename", systemImage: "pencil") {
+                    newName = name
+                    renaming = true
+                }
+                Button("Set Birthday", systemImage: "birthday.cake") { editsBirthday = true }
+                Button("Favorite", systemImage: "heart") { Task { await update(["isFavorite": true], done: "Added to favorites.") } }
+                Button("Merge with…", systemImage: "arrow.triangle.merge") { merging = true }
+                Button("Hide", systemImage: "eye.slash") {
+                    Task {
+                        await update(["isHidden": true], done: nil)
+                        dismiss()
+                    }
+                }
+            } label: {
+                RoundIcon(systemImage: "ellipsis")
+            }
+            .accessibilityLabel("More")
+            if !timeline.assets.isEmpty {
+                Button { play(timeline.assets.shuffled()) } label: { RoundIcon(systemImage: "shuffle") }
+                    .accessibilityLabel("Shuffle Slideshow")
+                Button { play(timeline.assets) } label: { RoundIcon(systemImage: "play.fill", filled: true) }
+                    .accessibilityLabel("Play Slideshow")
+            }
+        }
+    }
+
+    private func play(_ assets: [AssetRef]) {
+        slideshow = assets
+        playsSlideshow = true
     }
 
     private func update(_ fields: [String: Any], done: String?) async {

@@ -69,7 +69,8 @@ struct AssetGrid: View {
             .task(id: ObjectIdentifier(timeline)) { await reload() }
     }
 
-    private var canSelect: Bool { level == .all && timeline.months?.isEmpty == false }
+    /// Selecting acts on the server, so it needs one.
+    private var canSelect: Bool { session.client != nil && level == .all && timeline.months?.isEmpty == false }
 
     private func toggleSelect() {
         withAnimation(.snappy) { selection = selection == nil ? [] : nil }
@@ -99,7 +100,8 @@ struct AssetGrid: View {
     }
 
     @ViewBuilder private var content: some View {
-        if let months = timeline.months, let client = session.client {
+        if let months = timeline.months {
+            let client = session.client
             if months.isEmpty {
                 ContentUnavailableView("No Photos", systemImage: "photo.on.rectangle")
             } else {
@@ -122,7 +124,7 @@ struct AssetGrid: View {
         }
     }
 
-    private func grid(_ months: [Timeline.Month], client: ImmichClient) -> some View {
+    private func grid(_ months: [Timeline.Month], client: ImmichClient?) -> some View {
         let spacing = 1.5
         return ScrollViewReader { proxy in
             ScrollView {
@@ -154,7 +156,7 @@ struct AssetGrid: View {
                                     }
                                 }
                                 .task {
-                                    if month.assets == nil { await timeline.loadMonth(month.key, with: client) }
+                                    if month.assets == nil, let client { await timeline.loadMonth(month.key, with: client) }
                                 }
                         }
                     }
@@ -217,7 +219,7 @@ struct AssetGrid: View {
         var months: [Timeline.Month]
     }
 
-    private func cards(_ groups: [CardGroup], client: ImmichClient) -> some View {
+    private func cards(_ groups: [CardGroup], client: ImmichClient?) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
@@ -240,7 +242,7 @@ struct AssetGrid: View {
                         }
                         .buttonStyle(.plain)
                         .id(month.key)
-                        .task { await timeline.loadMonth(month.key, with: client) }
+                        .task { if let client { await timeline.loadMonth(month.key, with: client) } }
                     }
                 }
                 .padding(.horizontal)

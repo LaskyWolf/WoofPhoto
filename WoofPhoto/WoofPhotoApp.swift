@@ -36,13 +36,7 @@ struct WoofPhotoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                if session.client != nil {
-                    MainTabs()
-                } else {
-                    SignInView()
-                }
-            }
+            MainTabs()
             .environment(session)
             .tint(AccentPreset.named(accent).color)
             .onOpenURL { url in
@@ -74,8 +68,11 @@ struct MainTabs: View {
     var body: some View {
         TabView {
             Tab("Library", systemImage: "photo.on.rectangle") { LibraryView() }
-            Tab("Collections", systemImage: "rectangle.stack") { CollectionsView() }
-            Tab(role: .search) { SearchView() }
+            // without a server the app is a viewer for this iPhone's photos
+            if session.client != nil {
+                Tab("Collections", systemImage: "rectangle.stack") { CollectionsView() }
+                Tab(role: .search) { SearchView() }
+            }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .bottomAccessory(open.asset != nil) {
@@ -83,6 +80,7 @@ struct MainTabs: View {
                 .matchedTransitionSource(id: OpenPhoto.miniID, in: zoom) { $0.clipShape(RoundedRectangle(cornerRadius: 24)) }
         }
         .environment(\.photoZoom, zoom)
+        .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
         .fullScreenCover(isPresented: $open.isExpanded, onDismiss: open.dismissed) {
             if let timeline = open.timeline, let asset = open.asset {
                 Viewer(timeline: timeline, start: asset)
@@ -95,6 +93,7 @@ struct MainTabs: View {
 
 struct SignInView: View {
     @Environment(Session.self) private var session
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.webAuthenticationSession) private var webAuthentication
     @State private var server = UserDefaults.standard.string(forKey: "server") ?? ""
     @State private var email = ""
@@ -183,6 +182,7 @@ struct SignInView: View {
         defer { busy = false }
         do {
             try await session.signIn(server: server, email: email, password: password)
+            dismiss()
         } catch {
             self.error = error.explanation
         }
@@ -195,6 +195,7 @@ struct SignInView: View {
             try await session.signInWithSSO(server: server) { page in
                 try await webAuthentication.authenticate(using: page, callbackURLScheme: "app.immich")
             }
+            dismiss()
         } catch ASWebAuthenticationSessionError.canceledLogin {
         } catch {
             self.error = error.explanation

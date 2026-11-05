@@ -69,11 +69,7 @@ final class Backup {
         pending = assets.sorted { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
         var months: [String: [AssetRef]] = [:]
         for asset in pending {
-            let date = asset.creationDate ?? .now
-            let key = date.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month()) + "-01"
-            months[key, default: []].append(AssetRef(
-                id: "local:" + asset.localIdentifier, isImage: asset.mediaType == .image, isFavorite: asset.isFavorite,
-                duration: asset.mediaType == .video ? Int(asset.duration * 1000) : nil, date: date, localID: asset.localIdentifier))
+            months[monthKey(asset), default: []].append(AssetRef(device: asset))
         }
         pendingByMonth = months
     }
@@ -304,5 +300,33 @@ struct BackupView: View {
             }
             albums = list
         }
+    }
+}
+
+/// The timeline month a device asset belongs to, like "2024-05-01".
+private func monthKey(_ asset: PHAsset) -> String {
+    (asset.creationDate ?? .now).formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month()) + "-01"
+}
+
+extension AssetRef {
+    /// A photo or video on this iPhone.
+    init(device asset: PHAsset) {
+        self.init(id: "local:" + asset.localIdentifier, isImage: asset.mediaType == .image, isFavorite: asset.isFavorite,
+                  duration: asset.mediaType == .video ? Int(asset.duration * 1000) : nil,
+                  date: asset.creationDate ?? .now, localID: asset.localIdentifier)
+    }
+}
+
+extension Timeline {
+    /// Every photo and video on this iPhone, for when no server is signed in.
+    /// ponytail: built once on the main thread; move off it if huge libraries stall the launch.
+    static func device() -> Timeline {
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        var months: [String: [AssetRef]] = [:]
+        PHAsset.fetchAssets(with: options).enumerateObjects { asset, _, _ in
+            months[monthKey(asset), default: []].append(AssetRef(device: asset))
+        }
+        return Timeline(months: months.keys.sorted().map { Month(key: $0, count: months[$0]?.count ?? 0, assets: months[$0]) })
     }
 }

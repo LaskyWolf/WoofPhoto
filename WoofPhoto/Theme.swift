@@ -40,6 +40,7 @@ struct TabHeader<Buttons: View>: View {
     let title: String
     var subtitle: String?
     @ViewBuilder var buttons: Buttons
+    @Environment(Session.self) private var session
     @State private var showsAccount = false
 
     var body: some View {
@@ -64,9 +65,13 @@ struct TabHeader<Buttons: View>: View {
         .padding(.horizontal, Tokens.screenPadding)
         .padding(.vertical, 8)
         .sheet(isPresented: $showsAccount) {
-            NavigationStack {
-                SettingsView().toolbar {
-                    Button("Done", role: .close) { showsAccount = false }
+            if session.client == nil {
+                SignInView()
+            } else {
+                NavigationStack {
+                    SettingsView().toolbar {
+                        Button("Done", role: .close) { showsAccount = false }
+                    }
                 }
             }
         }
@@ -121,10 +126,10 @@ struct AccountButton: View {
                 .tapArea(outset: 4)
         }
         .buttonStyle(IconPressStyle())
-        .accessibilityLabel("Account and Settings")
-        .task {
-            guard initial.isEmpty, let me = try? await session.client?.me() else { return }
-            initial = me.name.first.map { String($0).uppercased() } ?? ""
+        .accessibilityLabel(session.client == nil ? "Sign In" : "Account and Settings")
+        .task(id: session.client?.server) {
+            let me = try? await session.client?.me()
+            initial = me?.name.first.map { String($0).uppercased() } ?? ""
         }
     }
 }
@@ -244,5 +249,98 @@ extension View {
     /// Grows the area that takes the tap by `outset`, without moving anything around the view.
     func tapArea(outset: CGFloat) -> some View {
         padding(outset).contentShape(.rect).padding(-outset)
+    }
+}
+
+/// WoofMusic's album and artist header: a 160-point cover on the left; the kind line, title and a
+/// secondary line beside it with round buttons under them; the cover blurred behind, fading into the page.
+struct DetailHeader<Cover: View, Secondary: View, Buttons: View>: View {
+    static var coverSize: CGFloat { 160 }
+
+    let meta: String
+    let title: String
+    /// Round, for a person's face, like an artist in WoofMusic.
+    var circle = false
+    @ViewBuilder var cover: Cover
+    @ViewBuilder var secondary: Secondary
+    @ViewBuilder var buttons: Buttons
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            cover
+                .frame(width: Self.coverSize, height: Self.coverSize)
+                .clipShape(circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: Tokens.cardRadius)))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+            VStack(alignment: .leading, spacing: 3) {
+                if !meta.isEmpty {
+                    Text(meta).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Text(title).font(.title3.bold()).lineLimit(2)
+                secondary
+                Spacer(minLength: 8)
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    buttons
+                }
+                .buttonStyle(ZoomPressStyle(scale: 0.92))
+            }
+            .frame(maxWidth: .infinity, minHeight: Self.coverSize, alignment: .leading)
+        }
+        .padding(.horizontal, Tokens.screenPadding)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity)
+        .background(alignment: .top) {
+            // 300 points taller than the header, reaching up under the bars and the pull-down overscroll
+            Color.clear
+                .frame(height: 700)
+                .overlay { cover }
+                .clipped()
+                .blur(radius: 40, opaque: true)
+                .opacity(0.7)
+                .mask(LinearGradient(stops: [.init(color: .black, location: 0.55), .init(color: .clear, location: 1)],
+                                     startPoint: .top, endPoint: .bottom))
+                .padding(.top, -300)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// A round header button face; `filled` paints it in the accent with a white glyph, like WoofMusic's Play.
+struct RoundIcon: View {
+    let systemImage: String
+    var filled = false
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: filled ? 19 : 15, weight: .bold))
+            .foregroundStyle(filled ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .frame(width: filled ? 50 : 38, height: filled ? 50 : 38)
+            .background(filled ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary.opacity(0.1)), in: .circle)
+            .contentShape(.circle)
+    }
+}
+
+extension View {
+    /// The bar repeats the title only once the `DetailHeader` has scrolled away.
+    func detailBarTitle(_ title: String) -> some View {
+        modifier(DetailBarTitle(title: title))
+    }
+}
+
+private struct DetailBarTitle: ViewModifier {
+    let title: String
+    @State private var isHeaderAway = false
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top > DetailHeader<EmptyView, EmptyView, EmptyView>.coverSize
+            } action: { _, away in
+                isHeaderAway = away
+            }
+            .navigationTitle(isHeaderAway ? title : "")
+            .toolbarTitleDisplayMode(.inline)
     }
 }

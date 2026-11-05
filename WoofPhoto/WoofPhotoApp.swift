@@ -13,7 +13,9 @@ struct WoofPhotoApp: App {
         WindowGroup {
             Group {
                 if session.client != nil {
-                    LibraryView()
+                    TabView {
+                        Tab("Library", systemImage: "photo.on.rectangle") { LibraryView() }
+                    }
                 } else {
                     SignInView()
                 }

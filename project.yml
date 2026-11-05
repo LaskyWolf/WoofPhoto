@@ -11,8 +11,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1"
-    CURRENT_PROJECT_VERSION: "10"
+    MARKETING_VERSION: "0.2"
+    CURRENT_PROJECT_VERSION: "11"
     TARGETED_DEVICE_FAMILY: "1"
 targets:
   WoofPhoto:
@@ -47,6 +47,9 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: WoofPhoto connects to your Immich server on the local network.
+        NSPhotoLibraryUsageDescription: WoofPhoto backs up the photos and videos you choose to your Immich server.
+        NSPhotoLibraryAddUsageDescription: WoofPhoto saves photos and videos from your Immich server to this iPhone.
+        NSFaceIDUsageDescription: WoofPhoto uses Face ID to open the Hidden album.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

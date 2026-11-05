@@ -11,11 +11,11 @@ WoofPhoto is a native SwiftUI client for an Immich server that looks and behaves
 
 ## M0. Setup and spikes
 
-- [ ] Create the repository with `project.yml` (XcodeGen) and the CI workflow copied from WoofTube.
-- [ ] Write a small client for the endpoints in use (`ImmichClient.swift`). A generated client would need a build plugin, and every plugin problem costs a CI run from Linux.
+- [x] Create the repository with `project.yml` (XcodeGen) and the CI workflow copied from WoofTube.
+- [x] Write a small client for the endpoints in use (`ImmichClient.swift`). A generated client would need a build plugin, and every plugin problem costs a CI run from Linux.
 - [ ] Spike: a widget extension reads a value the app wrote to the App Group, after FlareStore signing.
 - [ ] Spike: build a `PHLivePhoto` from a Live Photo downloaded from Immich.
-- [ ] Spike: run Depth Anything V2 Small and LaMa with ONNX Runtime (the prototype's model files, no conversion) on the oldest target iPhone; record time and peak memory with the distribution and the development certificate.
+- [x] Spike: run Depth Anything V2 Small and LaMa with ONNX Runtime (the prototype's model files, no conversion) on the oldest target iPhone; record time and peak memory with the distribution and the development certificate.
 - [ ] Write each spike result into FEASIBILITY.md.
 
 **Check:** the CI IPA installs, logs in to your server and prints the number of timeline buckets.

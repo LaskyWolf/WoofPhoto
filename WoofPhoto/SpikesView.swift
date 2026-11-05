@@ -31,13 +31,13 @@ struct SpikesView: View {
 
             Section {
                 LabeledContent("Group", value: AppGroup.id)
-                LabeledContent("Opens", value: AppGroup.defaults == nil ? "No" : "Yes")
+                LabeledContent("Access", value: AppGroup.container == nil ? "No" : "Yes")
                 LabeledContent("Value", value: groupValue)
                 Button("Write Value for the Widget") { writeGroupValue() }
             } header: {
                 Text("App Group")
             } footer: {
-                Text("Add the WoofPhoto widget to the Home Screen. It passes when it shows the same value and group.")
+                Text("Add the WoofPhoto Check widget to the Home Screen. It passes when it shows the same value and group.")
             }
 
             Section("Live Photo") {

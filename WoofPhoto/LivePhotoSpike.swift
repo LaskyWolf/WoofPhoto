@@ -22,8 +22,10 @@ struct LivePhotoSpike: View {
     private func load() async {
         guard let client = session.client else { return }
         do {
-            // newest months first; a library without Live Photos in the last 3 years has nothing to test
-            for bucket in try await client.buckets().prefix(36) {
+            // newest months first
+            let buckets = try await client.buckets()
+            for (number, bucket) in buckets.enumerated() {
+                status = "Checking month \(number + 1) of \(buckets.count)…"
                 let assets = try await client.bucket(bucket.timeBucket)
                 guard let index = assets.livePhotoVideoId?.firstIndex(where: { $0 != nil }),
                       let videoID = assets.livePhotoVideoId?[index] ?? nil else { continue }
@@ -42,7 +44,7 @@ struct LivePhotoSpike: View {
                 }
                 return
             }
-            status = "No Live Photo found in the last 36 months."
+            status = "No Live Photo in any of the \(buckets.count) months. Upload one from an iPhone with the official Immich app, then try again."
         } catch {
             status = error.explanation
         }

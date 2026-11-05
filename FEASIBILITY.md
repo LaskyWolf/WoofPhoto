@@ -103,12 +103,21 @@ Background task identifiers already work with FlareStore in your KDE Connect for
 | An Immich server on the home network over plain HTTP is blocked by App Transport Security. | Login fails with a network error. | Set `NSAllowsArbitraryLoads` (and not `NSAllowsLocalNetworking`, which only covers `.local` names and switches the first key off). Add the Local Network usage text. |
 | The look copies Apple Photos. | Using system components is fine. Apple's Photos icon or name is not. | Name: WoofPhoto, with its own icon. |
 
-## Spikes to run first
+## Spike results
 
-- [ ] Sign a hello-world IPA built by CI with FlareStore, including a widget extension that reads a value written by the app through the App Group.
-- [ ] Log in and count the timeline months with `ImmichClient.swift`.
-- [ ] Build a `PHLivePhoto` from a Live Photo downloaded from Immich.
-- [ ] Run Depth Anything V2 Small and LaMa with ONNX Runtime on the oldest target iPhone, and record time and peak memory.
+Measured on your iPhone with the M0 build.
+
+- [x] **Login and timeline:** 50 months, 1,400 items from Immich 3.3.5 over Tailscale (plain HTTP).
+- [ ] **App Group between app and widget:** failed on the first try. FlareStore renamed the app's group to `group.b24f70af26b12cfb.5`. The widget got no group, so it read nothing.
+- [ ] **Live Photo:** no Live Photo found yet; the library may have none.
+- [x] **AI models (ONNX Runtime, CPU):**
+
+| Model | Load | Run | Peak memory |
+|---|---|---|---|
+| Depth Anything V2 Small (q8) | 0.1 s | 0.5 s | 291 MB |
+| LaMa | 2.0 s | 3.5 s | 490 MB |
+
+Both run faster than the 22-core desktop with 1 thread and below its memory use. One scene costs about 4 seconds of model time, so M6 needs no increased memory entitlement and no Core ML conversion.
 
 ## Sources
 

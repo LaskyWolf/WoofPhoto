@@ -4,13 +4,19 @@ import Foundation
 enum AppGroup {
     static let requested = "group.com.laskywolf.woofphoto"
 
-    /// The signing tool may rename the group, so the profile's first group wins over the requested one.
-    static var id: String { SigningProfile.current?.appGroups.first ?? requested }
+    /// The signing tool may rename the group, so a profile's group wins over the requested one.
+    /// A widget whose own profile has no group tries the app's, which it can use only if its signature allows it.
+    static var id: String {
+        SigningProfile.current?.appGroups.first ?? SigningProfile.containingApp?.appGroups.first ?? requested
+    }
 
-    static var defaults: UserDefaults? { UserDefaults(suiteName: id) }
+    /// Nil when the signature doesn't grant the group: iOS then gives no shared folder.
+    static var container: URL? { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: id) }
+
+    static var defaults: UserDefaults? { container == nil ? nil : UserDefaults(suiteName: id) }
 }
 
-/// What the signing tool's provisioning profile allows, read from the running bundle (app or widget).
+/// What the signing tool's provisioning profile allows, read from a bundle (app or widget).
 struct SigningProfile {
     var name: String
     var team: String
@@ -18,8 +24,15 @@ struct SigningProfile {
     var appGroups: [String]
     var keychainGroups: [String]
 
-    static let current: SigningProfile? = {
-        guard let data = try? Data(contentsOf: Bundle.main.bundleURL.appending(path: "embedded.mobileprovision")),
+    static let current = read(Bundle.main.bundleURL)
+
+    /// The app around a widget: WoofPhoto.app/PlugIns/WoofPhotoWidget.appex. Nil in the app itself.
+    static let containingApp: SigningProfile? = Bundle.main.bundleURL.pathExtension == "appex"
+        ? read(Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent())
+        : nil
+
+    private static func read(_ bundle: URL) -> SigningProfile? {
+        guard let data = try? Data(contentsOf: bundle.appending(path: "embedded.mobileprovision")),
               let start = data.range(of: Data("<?xml".utf8)),
               let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
               let profile = (try? PropertyListSerialization.propertyList(from: data.subdata(in: start.lowerBound..<end.upperBound), format: nil)) as? [String: Any] else {
@@ -33,5 +46,5 @@ struct SigningProfile {
             appGroups: entitlements["com.apple.security.application-groups"] as? [String] ?? [],
             keychainGroups: entitlements["keychain-access-groups"] as? [String] ?? []
         )
-    }()
+    }
 }

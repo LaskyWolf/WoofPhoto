@@ -1,15 +1,18 @@
 import SwiftUI
 import WidgetKit
 
-/// M0 spike: shows the value the app wrote to the App Group. A different group or "Can't open" means
+/// M0 spike: shows the value the app wrote to the App Group. A different group or "No access" means
 /// the signing tool gave the widget and the app different groups.
 struct GroupEntry: TimelineEntry {
     var date = Date.now
     var value: String
     var group = AppGroup.id
+    /// Where the widget's group came from, to tell a missing profile from a profile without groups.
+    var source = SigningProfile.current.map { $0.appGroups.isEmpty ? "Own profile, no group" : "Own profile" }
+        ?? (SigningProfile.containingApp == nil ? "No profile" : "App's profile")
 
     static func current() -> GroupEntry {
-        guard let defaults = AppGroup.defaults else { return GroupEntry(value: "Can't open") }
+        guard let defaults = AppGroup.defaults else { return GroupEntry(value: "No access") }
         return GroupEntry(value: defaults.string(forKey: "spike.value") ?? "Nothing written")
     }
 }
@@ -30,6 +33,7 @@ struct WoofPhotoWidget: Widget {
                 Text("App Group").font(.caption).foregroundStyle(.secondary)
                 Text(entry.value).font(.headline).minimumScaleFactor(0.6)
                 Spacer()
+                Text(entry.source).font(.caption2)
                 Text(entry.group).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
             }
             .containerBackground(.fill.tertiary, for: .widget)

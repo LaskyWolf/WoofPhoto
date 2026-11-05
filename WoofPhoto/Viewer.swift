@@ -11,7 +11,6 @@ struct Viewer: View {
     let timeline: Timeline
 
     @Environment(Session.self) private var session
-    @Environment(\.dismiss) private var dismiss
     @State private var current: String?
     @State private var detail: Asset?
     @State private var stack: Stack?
@@ -59,7 +58,14 @@ struct Viewer: View {
             .toolbar { toolbar }
             .safeAreaInset(edge: .bottom) { stackStrip }
             .overlay { if busy { ProgressView().controlSize(.large) } }
-            .task(id: current) { await currentChanged() }
+            .task(id: current) {
+                if let asset = timeline.assets.first(where: { $0.id == current }) { OpenPhoto.shared.asset = asset }
+                await currentChanged()
+            }
+            .task {
+                try? await Task.sleep(for: .milliseconds(600))
+                OpenPhoto.shared.zoomedIn()
+            }
             .sheet(isPresented: $showsInfo) {
                 if let id = shownID { InfoSheet(id: id) }
             }
@@ -94,7 +100,7 @@ struct Viewer: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button("Close", systemImage: "chevron.backward") { dismiss() }
+            Button("Close", systemImage: "xmark") { OpenPhoto.shared.close() }
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu("More", systemImage: "ellipsis") {
@@ -273,7 +279,7 @@ struct Viewer: View {
     /// An edit may replace the asset with a new one, so the grid reloads its month and the viewer closes.
     private func editSaved() {
         if let current { timeline.invalidate(containing: current) }
-        dismiss()
+        OpenPhoto.shared.close()
     }
 
     private func removeCurrent() {
@@ -282,7 +288,7 @@ struct Viewer: View {
         let index = assets.firstIndex { $0.id == current } ?? 0
         let next = assets.indices.contains(index + 1) ? assets[index + 1] : assets.indices.contains(index - 1) ? assets[index - 1] : nil
         timeline.remove([current])
-        if let next { self.current = next.id } else { dismiss() }
+        if let next { self.current = next.id } else { OpenPhoto.shared.close() }
     }
 
     private func share() async {

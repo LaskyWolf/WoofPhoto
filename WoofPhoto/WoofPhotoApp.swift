@@ -6,8 +6,7 @@ import SwiftUI
 struct WoofPhotoApp: App {
     @State private var session = Session()
     @Environment(\.scenePhase) private var scenePhase
-    /// A photo opened from the widget.
-    @State private var opened: AssetRef?
+    @AppStorage("accent") private var accent = AccentPreset.all[0].name
 
     init() {
         // Downloaded thumbnails stay on disk up to this size; iOS removes the oldest beyond it.
@@ -39,22 +38,19 @@ struct WoofPhotoApp: App {
         WindowGroup {
             Group {
                 if session.client != nil {
-                    TabView {
-                        Tab("Library", systemImage: "photo.on.rectangle") { LibraryView() }
-                        Tab("Collections", systemImage: "rectangle.stack") { CollectionsView() }
-                        Tab(role: .search) { SearchView() }
-                    }
+                    MainTabs()
                 } else {
                     SignInView()
                 }
             }
             .environment(session)
+            .tint(AccentPreset.named(accent).color)
             .onOpenURL { url in
                 // woofphoto://asset/<id>
-                if url.host() == "asset", let id = url.pathComponents.last { opened = AssetRef(id: id) }
-            }
-            .fullScreenCover(item: $opened) { asset in
-                Viewer(timeline: Timeline(assets: [asset]), start: asset).environment(session)
+                if url.host() == "asset", let id = url.pathComponents.last {
+                    let asset = AssetRef(id: id)
+                    OpenPhoto.shared.open(asset, in: Timeline(assets: [asset]))
+                }
             }
             .onChange(of: scenePhase) { _, phase in
                 let backup = Backup.shared
@@ -65,6 +61,34 @@ struct WoofPhotoApp: App {
             #if DEBUG
             .task { ImmichClient.selfCheck() }
             #endif
+        }
+    }
+}
+
+/// The tabs, with the open photo in the mini viewer above them.
+struct MainTabs: View {
+    @Environment(Session.self) private var session
+    @Bindable private var open = OpenPhoto.shared
+    @Namespace private var zoom
+
+    var body: some View {
+        TabView {
+            Tab("Library", systemImage: "photo.on.rectangle") { LibraryView() }
+            Tab("Collections", systemImage: "rectangle.stack") { CollectionsView() }
+            Tab(role: .search) { SearchView() }
+        }
+        .tabBarMinimizeBehavior(.onScrollDown)
+        .bottomAccessory(open.asset != nil) {
+            MiniViewer()
+                .matchedTransitionSource(id: OpenPhoto.miniID, in: zoom) { $0.clipShape(.capsule) }
+        }
+        .environment(\.photoZoom, zoom)
+        .fullScreenCover(isPresented: $open.isExpanded, onDismiss: open.dismissed) {
+            if let timeline = open.timeline, let asset = open.asset {
+                Viewer(timeline: timeline, start: asset)
+                    .navigationTransition(.zoom(sourceID: open.zoomSource, in: zoom))
+                    .environment(session)
+            }
         }
     }
 }

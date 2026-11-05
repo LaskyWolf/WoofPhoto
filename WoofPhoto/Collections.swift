@@ -117,24 +117,32 @@ struct CollectionsView: View {
     @State private var markers: [MapMarker] = []
     @State private var editing = false
     @State private var error: String?
+    @State private var chip = "All"
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 28) {
-                    if let error {
-                        Text(error).font(.footnote).foregroundStyle(.secondary)
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    TabHeader(title: "Collections") {
+                        HeaderButton(label: "Edit Sections", systemImage: "slider.horizontal.3") { editing = true }
                     }
-                    ForEach(sections) { section in
+                    FilterChips(items: ["All"] + sections.map(\.rawValue), selection: $chip) { $0 }
+                        .padding(.bottom, 4)
+                    if let error {
+                        Label(error, systemImage: "wifi.exclamationmark")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, Tokens.screenPadding)
+                            .padding(.top, 12)
+                    }
+                    ForEach(sections.filter { chip == "All" || $0.rawValue == chip }) { section in
                         sectionView(section)
                     }
                 }
-                .padding(.vertical)
+                .padding(.bottom, Tokens.sectionGap)
             }
-            .navigationTitle("Collections")
-            .toolbar {
-                Button("Edit") { editing = true }
-            }
+            .toolbar(.hidden, for: .navigationBar)
+            .onChange(of: sections) { if !sections.map(\.rawValue).contains(chip) { chip = "All" } }
             .sheet(isPresented: $editing) {
                 SectionEditor(order: $order, hidden: $hiddenSections)
             }
@@ -151,36 +159,40 @@ struct CollectionsView: View {
     }
 
     @ViewBuilder private func sectionView(_ section: Section) -> some View {
-        let isCollapsed = collapsed.split(separator: ",").contains(Substring(section.rawValue))
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                if let all = seeAll(section) {
-                    NavigationLink(value: all) {
-                        Label(section.rawValue, systemImage: "chevron.right")
-                            .labelStyle(TrailingIcon())
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Text(section.rawValue)
-                }
+        let isCollapsed = chip == "All" && collapsed.split(separator: ",").contains(Substring(section.rawValue))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(section.rawValue).font(.title3.bold()).accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button(isCollapsed ? "Expand" : "Collapse", systemImage: isCollapsed ? "chevron.down" : "chevron.up") {
-                    withAnimation(.snappy) { collapsed = toggled(section.rawValue, in: collapsed) }
+                seeAll(section).font(.subheadline.weight(.semibold))
+                if chip == "All" {
+                    Button(isCollapsed ? "Expand" : "Collapse", systemImage: "chevron.down") {
+                        withAnimation(.snappy) { collapsed = toggled(section.rawValue, in: collapsed) }
+                    }
+                    .labelStyle(.iconOnly)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 180))
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
                 }
-                .labelStyle(.iconOnly)
-                .foregroundStyle(.secondary)
             }
-            .font(.title3.bold())
-            .padding(.horizontal)
+            .padding(.leading, Tokens.screenPadding)
+            .padding(.trailing, chip == "All" ? 4 : Tokens.screenPadding)
+            .padding(.top, Tokens.sectionGap - 12)
             if !isCollapsed { content(section) }
         }
     }
 
-    /// The full list a section header opens, if it has one.
-    private func seeAll(_ section: Section) -> Shelf? {
+    /// The See All link a section header shows, if it has a full list.
+    @ViewBuilder private func seeAll(_ section: Section) -> some View {
         switch section {
-        case .places: .map
-        default: nil
+        case .albums: NavigationLink("See All") { AlbumsView(shared: false) }
+        case .shared: NavigationLink("See All") { AlbumsView(shared: true) }
+        case .people: NavigationLink("See All") { PeopleView() }
+        case .trips: NavigationLink("See All") { TripsView() }
+        case .places: NavigationLink("See All", value: Shelf.map)
+        default: EmptyView()
         }
     }
 
@@ -189,40 +201,41 @@ struct CollectionsView: View {
         case .pinned:
             row(pins.items) { ShelfTile(shelf: $0) }
         case .albums:
-            NavigationLink("See All Albums") { AlbumsView(shared: false) }.padding(.horizontal)
-            row(albums.filter { $0.shared != true }) { AlbumTile(album: $0) }
+            AlbumStack(albums: albums.filter { $0.shared != true })
         case .shared:
-            NavigationLink("See All Shared Albums") { AlbumsView(shared: true) }.padding(.horizontal)
             row(albums.filter { $0.shared == true }) { AlbumTile(album: $0) }
             if !partners.isEmpty {
                 row(partners) { partner in
                     NavigationLink(value: Shelf.partner(id: partner.id, name: partner.name)) {
-                        Label("\(partner.name)'s Library", systemImage: "person.2").padding().background(.quaternary, in: .rect(cornerRadius: 12))
+                        Label("\(partner.name)'s Library", systemImage: "person.2").padding().background(Tokens.cardColor, in: .rect(cornerRadius: Tokens.tileRadius))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ZoomPressStyle())
                 }
             }
         case .people:
-            NavigationLink("See All People and Pets") { PeopleView() }.padding(.horizontal)
             row(people.filter { $0.isHidden != true && !$0.name.isEmpty }) { PersonTile(person: $0) }
         case .memories:
             if memories.isEmpty {
-                Text("No memories for today.").foregroundStyle(.secondary).padding(.horizontal)
+                Text("Memories from this day in past years appear here.").foregroundStyle(.secondary).padding(.horizontal, Tokens.screenPadding)
             } else {
-                row(memories) { MemoryTile(memory: $0) }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                    ForEach(memories.prefix(9)) { MemoryTile(memory: $0) }
+                }
+                .padding(.horizontal, Tokens.screenPadding)
             }
         case .trips:
-            NavigationLink("See All Trips") { TripsView() }.padding(.horizontal)
+            TripsRow()
         case .places:
             NavigationLink(value: Shelf.map) {
                 Map(interactionModes: []) {
                     ForEach(markers.prefix(200)) { Marker("", coordinate: CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)) }
                 }
                 .frame(height: 200)
-                .clipShape(.rect(cornerRadius: 16))
+                .clipShape(.rect(cornerRadius: Tokens.cardRadius))
                 .allowsHitTesting(false)
             }
-            .padding(.horizontal)
+            .buttonStyle(ZoomPressStyle(scale: 0.97))
+            .padding(.horizontal, Tokens.screenPadding)
         case .mediaTypes:
             ShelfList(shelves: [.favorites, .recentlySaved] + Shelf.mediaTypes)
         case .utilities:
@@ -235,7 +248,7 @@ struct CollectionsView: View {
             LazyHStack(alignment: .top, spacing: 12) {
                 ForEach(items) { tile($0) }
             }
-            .padding(.horizontal)
+            .padding(.horizontal, Tokens.screenPadding)
         }
         .scrollIndicators(.hidden)
     }
@@ -321,8 +334,8 @@ struct ShelfTile: View {
     var body: some View {
         NavigationLink(value: shelf.shelf) {
             VStack(alignment: .leading, spacing: 4) {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(.quaternary)
+                RoundedRectangle(cornerRadius: Tokens.tileRadius)
+                    .fill(Tokens.cardColor)
                     .frame(width: 110, height: 110)
                     .overlay {
                         switch shelf.shelf {
@@ -333,7 +346,7 @@ struct ShelfTile: View {
                 Text(shelf.shelf.title).font(.subheadline).lineLimit(1).frame(width: 110, alignment: .leading)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ZoomPressStyle())
         .pinnable(shelf.shelf, pins: pins)
     }
 }
@@ -362,8 +375,8 @@ struct ShelfList: View {
                 if shelf != shelves.last { Divider().padding(.leading, 52) }
             }
         }
-        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 16))
-        .padding(.horizontal)
+        .background(Tokens.cardColor, in: .rect(cornerRadius: Tokens.cardRadius))
+        .padding(.horizontal, Tokens.screenPadding)
     }
 }
 
@@ -374,18 +387,100 @@ struct MemoryTile: View {
         NavigationLink {
             MemoryScreen(memory: memory)
         } label: {
-            Thumbnail(asset: memory.assets.first?.ref, size: "preview", square: false)
-                .frame(width: 260, height: 180)
-                .clipShape(.rect(cornerRadius: 16))
+            Color.clear
+                .aspectRatio(1, contentMode: .fit)
+                .overlay { Thumbnail(asset: memory.assets.first?.ref, size: "preview") }
                 .overlay(alignment: .bottomLeading) {
                     Text(memory.title)
-                        .font(.headline)
+                        .font(.caption.bold())
                         .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.6), radius: 6)
-                        .padding()
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
                 }
+                .clipShape(.rect(cornerRadius: Tokens.tileRadius))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ZoomPressStyle())
+        .accessibilityLabel(memory.title)
+    }
+}
+
+/// Albums as WoofMusic's Keep Listening card: covers fanned in a stack that spreads out on tap.
+struct AlbumStack: View {
+    let albums: [Album]
+    @SceneStorage("albums.spread") private var spread = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private static let cover: CGFloat = 76
+
+    var body: some View {
+        let shown = Array(albums.prefix(spread ? 40 : 8).enumerated())
+        let shape = RoundedRectangle(cornerRadius: Tokens.cardRadius, style: .continuous)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(albums.isEmpty ? "No albums yet" : "\(albums.count) albums").font(.subheadline).foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.bold())
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(spread ? 180 : 0))
+            }
+            .padding(.horizontal, 12)
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: spread ? 10 : 24 - Self.cover) {
+                    ForEach(shown, id: \.element.id) { index, album in
+                        NavigationLink(value: Shelf.album(id: album.id, name: album.albumName)) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Thumbnail(asset: album.albumThumbnailAssetId.map { AssetRef(id: $0) })
+                                    .frame(width: Self.cover, height: Self.cover)
+                                    .clipShape(.rect(cornerRadius: 10))
+                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Tokens.cardColor, lineWidth: spread ? 0 : 2) }
+                                if spread {
+                                    Text(album.albumName).font(.caption).lineLimit(1).frame(width: Self.cover, alignment: .leading)
+                                }
+                            }
+                        }
+                        .buttonStyle(ZoomPressStyle())
+                        .rotationEffect(.degrees(spread || reduceMotion ? 0 : Double(index % 3 - 1) * 5))
+                        .zIndex(Double(shown.count - index))
+                        .allowsHitTesting(spread)
+                        .accessibilityHidden(!spread)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .scrollIndicators(.hidden)
+            .scrollDisabled(!spread)
+        }
+        .padding(.vertical, 12)
+        .background(Tokens.cardColor, in: shape)
+        .clipShape(shape)
+        // Stacked, the whole card is one button that spreads it.
+        .overlay {
+            Button { toggle() } label: { Color.clear.contentShape(shape) }
+                .buttonStyle(.plain)
+                .allowsHitTesting(!spread && !albums.isEmpty)
+                .accessibilityHidden(spread)
+                .accessibilityLabel("Albums, \(albums.count)")
+                .accessibilityHint("Spreads the albums out")
+        }
+        .overlay(alignment: .topTrailing) {
+            if spread {
+                Button("Stack", systemImage: "chevron.left") { toggle() }
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
+                    .foregroundStyle(.clear)
+            }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: spread)
+        .padding(.horizontal, Tokens.screenPadding)
+    }
+
+    private func toggle() {
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.45, bounce: 0.25)) { spread.toggle() }
     }
 }
 

@@ -126,32 +126,17 @@ struct TripsView: View {
         var id: String { assets.first?.id ?? title }
     }
 
+    /// Finding trips reads every month, so the result is kept for the session.
+    static var found: [Trip]?
+
     @Environment(Session.self) private var session
-    @State private var trips: [Trip]?
+    @State private var trips = TripsView.found
     @State private var error: String?
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
-                ForEach(trips ?? []) { trip in
-                    NavigationLink {
-                        FixedGridScreen(title: trip.title, assets: trip.assets)
-                    } label: {
-                        Thumbnail(asset: trip.assets.first, size: "preview", square: false)
-                            .aspectRatio(16 / 10, contentMode: .fit)
-                            .clipShape(.rect(cornerRadius: 16))
-                            .overlay(alignment: .bottomLeading) {
-                                VStack(alignment: .leading) {
-                                    Text(trip.title).font(.title3.bold())
-                                    Text("\(trip.start.formatted(.dateTime.month(.wide).year())) · \(trip.assets.count) items").font(.subheadline)
-                                }
-                                .foregroundStyle(.white)
-                                .shadow(color: .black.opacity(0.6), radius: 6)
-                                .padding()
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
+                ForEach(trips ?? []) { TripCard(trip: $0) }
             }
             .padding()
         }
@@ -165,6 +150,7 @@ struct TripsView: View {
             guard trips == nil, let client = session.client else { return }
             do {
                 trips = try await Self.find(client)
+                Self.found = trips
             } catch {
                 self.error = error.explanation
             }
@@ -219,6 +205,66 @@ struct TripsView: View {
         }
         close()
         return trips.reversed()
+    }
+}
+
+/// A trip's first photo, wide, with its place and date on it.
+struct TripCard: View {
+    let trip: TripsView.Trip
+    var width: CGFloat?
+
+    var body: some View {
+        NavigationLink {
+            FixedGridScreen(title: trip.title, assets: trip.assets)
+        } label: {
+            Color.clear
+                .aspectRatio(16 / 10, contentMode: .fit)
+                .frame(width: width)
+                .overlay { Thumbnail(asset: trip.assets.first, size: "preview") }
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("\(trip.start.formatted(.dateTime.month(.wide).year())) · \(trip.assets.count) items").font(.caption)
+                        Text(trip.title).font(.title3.bold()).lineLimit(1)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                }
+                .clipShape(.rect(cornerRadius: Tokens.cardRadius))
+        }
+        .buttonStyle(ZoomPressStyle(scale: 0.97))
+    }
+}
+
+/// The Trips section of Collections: wide cards in a row.
+struct TripsRow: View {
+    @Environment(Session.self) private var session
+    @State private var trips = TripsView.found
+
+    var body: some View {
+        Group {
+            if let trips, trips.isEmpty {
+                Text("Trips appear when photos have a location far from home.")
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Tokens.screenPadding)
+            } else if let trips {
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(trips.prefix(10)) { TripCard(trip: $0, width: 260) }
+                    }
+                    .padding(.horizontal, Tokens.screenPadding)
+                }
+                .scrollIndicators(.hidden)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 120)
+            }
+        }
+        .task {
+            guard trips == nil, let client = session.client else { return }
+            trips = (try? await TripsView.find(client)) ?? []
+            TripsView.found = trips
+        }
     }
 }
 

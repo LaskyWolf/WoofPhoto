@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var version: String?
     @State private var cacheSize = URLCache.shared.currentDiskUsage
     @AppStorage("library.columns") private var columns = 5
+    @AppStorage("accent") private var accent = AccentPreset.all[0].name
 
     var body: some View {
         Form {
@@ -16,6 +17,30 @@ struct SettingsView: View {
                 LabeledContent("Email", value: me?.email ?? "…")
                 LabeledContent("Server", value: session.client?.server.absoluteString ?? "?")
                 if let version { LabeledContent("Server Version", value: version) }
+            }
+            Section("Accent Color") {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 14) {
+                    ForEach(AccentPreset.all) { preset in
+                        Button {
+                            accent = preset.name
+                        } label: {
+                            Circle()
+                                .fill(preset.color)
+                                .frame(width: 36, height: 36)
+                                .overlay {
+                                    if preset.name == accent {
+                                        Image(systemName: "checkmark").font(.footnote.bold()).foregroundStyle(.white)
+                                    }
+                                }
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(ZoomPressStyle())
+                        .accessibilityLabel(preset.name)
+                        .accessibilityAddTraits(preset.name == accent ? .isSelected : [])
+                    }
+                }
+                .padding(.vertical, 6)
+                .sensoryFeedback(.selection, trigger: accent)
             }
             Section {
                 NavigationLink("Backup") { BackupView() }

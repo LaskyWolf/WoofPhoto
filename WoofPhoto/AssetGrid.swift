@@ -13,18 +13,19 @@ struct AssetGrid: View {
     let timeline: Timeline
     /// Only the Library shows Years and Months.
     var showsLevels = false
+    /// A tab's own title: the grid draws WoofMusic's header instead of the navigation bar.
+    var title: String?
 
     @Environment(Session.self) private var session
     @AppStorage("library.columns") private var columns = 5
     @State private var level = Level.all
     @State private var target: String?
     @State private var error: String?
-    @State private var viewing: AssetRef?
     /// nil outside Select mode.
     @State private var selection: Set<String>?
     @State private var drag: (start: Int, base: Set<String>, adds: Bool)?
     @State private var gridWidth: CGFloat = 0
-    @Namespace private var zoom
+    @Environment(\.photoZoom) private var zoom
 
     var body: some View {
         content
@@ -40,7 +41,7 @@ struct AssetGrid: View {
                     }
                     if selection != nil {
                         SelectionBar(timeline: timeline, selection: $selection)
-                    } else if showsLevels, timeline.months?.isEmpty == false {
+                    } else if title == nil, showsLevels, timeline.months?.isEmpty == false {
                         Picker("Show", selection: $level) {
                             ForEach(Level.allCases, id: \.self) { Text($0.rawValue) }
                         }
@@ -50,22 +51,49 @@ struct AssetGrid: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let title { header(title) }
+            }
+            .toolbar(title == nil ? .automatic : .hidden, for: .navigationBar)
             .toolbar {
-                if level == .all, timeline.months?.isEmpty == false {
+                if title == nil, canSelect {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(selection == nil ? "Select" : "Cancel") {
-                            withAnimation(.snappy) { selection = selection == nil ? [] : nil }
-                        }
+                        Button(selection == nil ? "Select" : "Cancel") { toggleSelect() }
                     }
                 }
             }
             .toolbar(selection == nil ? .automatic : .hidden, for: .tabBar)
             .environment(timeline)
             .task(id: ObjectIdentifier(timeline)) { await reload() }
-            .fullScreenCover(item: $viewing) { asset in
-                Viewer(timeline: timeline, start: asset)
-                    .navigationTransition(.zoom(sourceID: asset.id, in: zoom))
+    }
+
+    private var canSelect: Bool { level == .all && timeline.months?.isEmpty == false }
+
+    private func toggleSelect() {
+        withAnimation(.snappy) { selection = selection == nil ? [] : nil }
+    }
+
+    /// WoofMusic's title row and chips, over a fade so the photos scrolling under it stay out of the way.
+    private func header(_ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TabHeader(title: title, subtitle: timeline.months == nil ? nil : "\(timeline.count.formatted()) Items") {
+                if canSelect {
+                    HeaderButton(label: selection == nil ? "Select" : "Done Selecting",
+                                 systemImage: "checkmark.circle", isOn: selection != nil) { toggleSelect() }
+                }
             }
+            if showsLevels, selection == nil, timeline.months?.isEmpty == false {
+                FilterChips(items: Level.allCases, selection: $level) { $0.rawValue }
+            }
+        }
+        .padding(.bottom, 10)
+        .background {
+            LinearGradient(stops: [.init(color: Color(.systemBackground), location: 0),
+                                   .init(color: Color(.systemBackground).opacity(0.8), location: 0.6),
+                                   .init(color: Color(.systemBackground).opacity(0), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -112,14 +140,14 @@ struct AssetGrid: View {
                                             .background(selected ? Color.white.opacity(0.25) : .clear)
                                     }
                                 }
-                                .matchedTransitionSource(id: asset?.id ?? "\(month.key)#\(index)", in: zoom)
+                                .zoomSource(asset?.id ?? "\(month.key)#\(index)", in: zoom)
                                 .id("\(month.key)#\(index)")
                                 .onTapGesture {
                                     guard let asset else { return }
                                     if selection != nil {
                                         selection = toggled(asset.id, in: selection ?? [])
                                     } else {
-                                        viewing = asset
+                                        OpenPhoto.shared.open(asset, in: timeline)
                                     }
                                 }
                                 .task {

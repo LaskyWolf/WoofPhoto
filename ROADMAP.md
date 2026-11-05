@@ -26,77 +26,78 @@ WoofPhoto is a native SwiftUI client for an Immich server. It has every feature 
 
 - [x] Server address with an error that names the cause (wrong URL, HTTP blocked, server down, VPN off).
 - [x] Login with email and password; token in the Keychain.
-- [ ] Sign out, switch server, and sign-in with OAuth if the server offers it.
+- [x] Sign out, switch server, and sign-in with OAuth if the server offers it.
 
 ### Library
 
-- [ ] Grid from timeline buckets, thumbhash placeholders, thumbnails loaded on scroll. Fix: cells stay grey on the iPhone.
+- [x] Grid from timeline buckets, thumbhash placeholders, thumbnails loaded on scroll.
 - [x] Pinch to change density.
 - [x] Thumbnail disk cache with a size limit.
-- [ ] Years / Months / All switch.
-- [ ] Scrubber that jumps by month.
-- [ ] Photos on the device and on the server in one grid, with a badge for items not backed up yet.
+- [x] Years / Months / All switch.
+- [x] Scrubber that jumps by month.
+- [x] Photos on the device and on the server in one grid, with a badge for items not backed up yet.
 
 ### Viewer
 
-- [ ] Zoom transition from grid to viewer and back to the same cell.
-- [ ] Paging, double-tap and pinch zoom, swipe down to close.
-- [ ] Video playback with the system controls.
-- [ ] Live Photos: touch and hold to play.
-- [ ] Info panel: date, camera, lens, exposure, map, editable caption, people in the photo.
-- [ ] Favorite, delete to trash, hide, share sheet, save to the device, copy.
-- [ ] Live Text and Visual Look Up with VisionKit.
-- [ ] Bursts and RAW + JPEG pairs shown as one stack.
+- [x] Zoom transition from grid to viewer and back to the same cell.
+- [x] Paging, double-tap and pinch zoom, swipe down to close.
+- [x] Video playback with the system controls.
+- [x] Live Photos: touch and hold to play.
+- [x] Info panel: date, camera, lens, exposure, map, editable caption, people in the photo.
+- [x] Favorite, delete to trash, hide, share sheet, save to the device, copy.
+- [x] Live Text and Visual Look Up with VisionKit.
+- [x] Bursts and RAW + JPEG pairs shown as one stack.
 
 ### Editing
 
-- [ ] Adjust (exposure, contrast, saturation, warmth and the other Photos sliders), filters, crop, rotate, straighten.
-- [ ] Save the edit to the server and revert to the original.
-- [ ] Trim videos; choose a Live Photo's key frame and turn its motion off.
+- [x] Adjust (exposure, contrast, saturation, warmth and the other Photos sliders), filters, crop, rotate, straighten.
+- [x] Save the edit to the server and revert to the original.
+- [x] Trim videos; choose a Live Photo's key frame and turn its motion off.
 
 ### Collections
 
-- [ ] Albums: list, create, rename, reorder, add and remove items, cover photo.
-- [ ] Shared albums with likes and comments; partner sharing.
-- [ ] People: grid of faces, person page, rename, merge, hide, set birthday.
-- [ ] Pets: detect cats and dogs on the device and group them like People.
-- [ ] Places: map with clustered photos.
-- [ ] Memories: on this day and birthdays from the server.
-- [ ] Memory movies: a slideshow video with music and titles, made on the device.
-- [ ] Trips: photos taken far from home, grouped by place and date.
-- [ ] Favorites, Recently Saved, Videos, Selfies, Portrait, Panoramas, Screenshots, RAW and the other media types.
-- [ ] Utilities: Receipts, Handwriting, Illustrations, QR codes.
-- [ ] Recently Deleted with restore and delete forever.
-- [ ] Duplicates: compare and merge.
-- [ ] Hidden: the locked folder behind Face ID.
-- [ ] Archive.
-- [ ] Pinned collections; collapse, reorder and hide sections.
+- [x] Albums: list, create, rename, add and remove items, cover photo.
+- [ ] Albums: manual order. Immich stores no album order, so the order must live on the device.
+- [x] Shared albums with likes and comments; partner sharing.
+- [x] People: grid of faces, person page, rename, merge, hide, set birthday.
+- [x] Pets: detect cats and dogs on the device and group them like People.
+- [x] Places: map with clustered photos.
+- [x] Memories: on this day and birthdays from the server.
+- [x] Memory movies: a slideshow video with music and titles, made on the device.
+- [x] Trips: photos taken far from home, grouped by place and date.
+- [x] Favorites, Recently Saved, Videos, Selfies, Portrait, Panoramas, Screenshots, RAW and the other media types.
+- [x] Utilities: Receipts, Handwriting, Illustrations, QR codes.
+- [x] Recently Deleted with restore and delete forever.
+- [x] Duplicates: compare and merge.
+- [x] Hidden: the locked folder behind Face ID.
+- [x] Archive.
+- [x] Pinned collections; collapse, reorder and hide sections.
 
 ### Search
 
-- [ ] Smart search with results as you type.
-- [ ] Suggestions for people, places and dates.
-- [ ] Filters: media type, date range, camera, favorites.
-- [ ] Text found by OCR in the results.
+- [x] Smart search with results as you type.
+- [x] Suggestions for people, places and dates.
+- [x] Filters: media type, date range, camera, favorites.
+- [x] Text found by OCR in the results.
 
 ### Selection
 
-- [ ] Drag across the grid to select.
-- [ ] Actions on a selection: add to album, favorite, archive, hide, delete, share, download.
-- [ ] Slideshow and AirPlay.
+- [x] Drag across the grid to select.
+- [x] Actions on a selection: add to album, favorite, archive, hide, delete, share, download.
+- [x] Slideshow and AirPlay.
 
 ### Backup
 
-- [ ] Choose the device albums to back up; upload new photos and videos with checksum dedup.
-- [ ] Upload in the background, on Wi-Fi only or also on cellular, and only while charging if chosen.
-- [ ] Progress, errors and a list of what is left.
-- [ ] Free up space: delete from the device what the server already has.
+- [x] Choose the device albums to back up; upload new photos and videos with checksum dedup.
+- [x] Upload in the background, on Wi-Fi only or also on cellular, and only while charging if chosen.
+- [x] Progress, errors and a list of what is left.
+- [x] Free up space: delete from the device what the server already has.
 
 ### Other
 
-- [ ] Featured Photos widget.
-- [ ] Offline mode for photos already viewed.
-- [ ] Settings: server, account, storage used by the cache, backup options.
+- [x] Featured Photos widget.
+- [x] Offline mode for photos already viewed.
+- [x] Settings: server, account, storage used by the cache, backup options.
 
 **Check:** every item above works on the iPhone against your server, and edits made in the app appear in the Immich web app.
 

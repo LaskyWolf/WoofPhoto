@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spatial Photo</title>
+<style>
+  :root { color-scheme: dark; --fg: #f2f2f2; --dim: #9a9a9a; --panel: rgba(30,30,30,.72); }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--fg); font: 15px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100dvh; touch-action: none; }
+  #ui { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: flex; gap: 12px; align-items: center;
+        background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-radius: 16px; padding: 10px 14px; flex-wrap: wrap; }
+  label.btn, button { background: #fff; color: #000; border: 0; border-radius: 999px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+  input[type=file] { display: none; }
+  #status { color: var(--dim); flex: 1 1 100%; font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 160px; }
+  input[type=range] { flex: 1; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <label class="btn">Choose photo<input id="file" type="file" accept="image/*"></label>
+  <button id="tilt" hidden>Enable tilt</button>
+  <label><input id="peek" type="checkbox"> Peek behind</label>
+  <div class="row"><span>Depth</span><input id="strength" type="range" min="0" max="0.6" step="0.01" value="0.25"></div>  <div id="status">Loading…</div>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+import { pipeline, RawImage, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
+import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.mjs';
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+
+const $ = id => document.getElementById(id);
+const status = msg => ($('status').textContent = msg);
+const WORK = 1280;   // longest side used for masks, fills and textures
+const LAMA = 512;    // LaMa's fixed input size
+const JUMP = 0.3;    // depth difference (0..1) within 3 px that counts as a separate object; lower values cut subjects apart
+const LAMA_URL = 'https://huggingface.co/opencv/inpainting_lama/resolve/main/inpainting_lama_2025jan.onnx';
+
+// --- renderer -------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+const DIST = 3;
+
+// loading animation, shared by both layers:
+// uScan  = analyzing: a band of light reads the flat photo top to bottom
+// uRise  = 0..1, depth grows in from the top once it is known
+// uBuild = rebuilding: the area LaMa is repainting (uMask) shimmers
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const fx = {
+  uTime: { value: 0 }, uScan: { value: 0 }, uRise: { value: 1 }, uBuild: { value: 0 },
+  uMask: { value: null }, uReduced: { value: reduced ? 1 : 0 },
+};
+
+// uData channels: R = foreground depth, G = foreground alpha, B = background depth (1 = near)
+const makeLayer = fg => new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 384, 384), new THREE.ShaderMaterial({
+  transparent: fg,
+  uniforms: { ...fx, uImage: { value: null }, uData: { value: null }, uStrength: { value: 0.25 } },
+  defines: fg ? { FG: 1 } : {},
+  vertexShader: `
+    uniform sampler2D uData; uniform float uStrength, uRise; varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      vec4 t = texture2D(uData, uv);
+      #ifdef FG
+        float d = t.r;
+      #else
+        float d = t.b;
+      #endif
+      float g = smoothstep(0., 1., clamp((uRise * 1.4 - (1. - uv.y)) / .4, 0., 1.));
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position + vec3(0., 0., d * uStrength * g), 1.);
+    }`,
+  fragmentShader: `
+    uniform sampler2D uImage, uData, uMask; uniform float uTime, uScan, uBuild, uReduced; varying vec2 vUv;
+    const vec3 LIGHT = vec3(.55, .82, 1.);
+    void main() {
+      #ifdef FG
+        float a = texture2D(uData, vUv).g;
+        if (a < .02) discard;
+      #else
+        float a = 1.;
+      #endif
+      vec3 c = texture2D(uImage, vUv).rgb;
+      if (uScan > 0.) {
+        float y = 1. - vUv.y;
+        float p = fract(uTime * .4) * 1.4 - .2;
+        float band = uReduced > .5 ? .25 + .25 * sin(uTime * 2.) : exp(-pow((y - p) * 14., 2.));
+        c = mix(c, vec3(dot(c, vec3(.299, .587, .114))), .4 * uScan);
+        c += LIGHT * band * .45 * uScan;
+      }
+      if (uBuild > 0.) {
+        float m = texture2D(uMask, vUv).r;
+        float s = uReduced > .5 ? .5 : .5 + .5 * sin((vUv.x + vUv.y) * 40. - uTime * 3.);
+        c += LIGHT * m * uBuild * (.12 + .3 * s);
+      }
+      gl_FragColor = vec4(c, a);
+      #include <colorspace_fragment>
+    }`,
+}));
+const bgMesh = makeLayer(false), fgMesh = makeLayer(true);
+fgMesh.renderOrder = 1;
+const layers = new THREE.Group().add(bgMesh, fgMesh);
+scene.add(layers);
+
+let aspect = 1;
+function fit() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  // show the whole picture, shrunk 10% so it stays on screen while the camera orbits
+  const viewH = 2 * DIST * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const viewW = viewH * camera.aspect;
+  const s = Math.min(viewW / aspect, viewH) * 0.9;
+  layers.scale.set(s * aspect, s, s);
+}
+addEventListener('resize', fit);
+
+// --- input: gyroscope, pointer fallback -------------------------------------
+const target = { x: 0, y: 0 }, cur = { x: 0, y: 0 };
+let base = null;
+function onOrient(e) {
+  if (e.beta == null) return;
+  base ??= { b: e.beta, g: e.gamma };              // first reading = neutral pose
+  const clamp = v => Math.max(-1, Math.min(1, v / 20)); // ±20° = full swing
+  target.x = clamp(e.gamma - base.g);
+  target.y = clamp(e.beta - base.b);
+}
+addEventListener('pointermove', e => {
+  target.x = (e.clientX / innerWidth) * 2 - 1;
+  target.y = (e.clientY / innerHeight) * 2 - 1;
+});
+if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+  // iOS Safari: permission must come from a tap
+  $('tilt').hidden = false;
+  $('tilt').onclick = async () => {
+    if (await DeviceOrientationEvent.requestPermission() === 'granted') {
+      addEventListener('deviceorientation', onOrient);
+      $('tilt').hidden = true;
+    }
+  };
+} else {
+  addEventListener('deviceorientation', onOrient);
+}
+
+$('strength').oninput = e => {
+  bgMesh.material.uniforms.uStrength.value = fgMesh.material.uniforms.uStrength.value = +e.target.value;
+};
+$('peek').onchange = e => (fgMesh.visible = !e.target.checked);
+
+const goal = { scan: 0, build: 0 };
+let riseStart = 0;
+const RISE_MS = reduced ? 300 : 1600;
+renderer.setAnimationLoop(now => {
+  const t = now / 1000;
+  fx.uTime.value = t;
+  fx.uScan.value += (goal.scan - fx.uScan.value) * 0.06;     // fades in and out instead of popping
+  fx.uBuild.value += (goal.build - fx.uBuild.value) * 0.04;
+  if (riseStart) fx.uRise.value = 1 - 2 ** (-10 * Math.min(1, (now - riseStart) / RISE_MS));  // expo ease-out
+
+  cur.x += (target.x - cur.x) * 0.08;               // smoothing
+  cur.y += (target.y - cur.y) * 0.08;
+  // while rebuilding, the camera sways on its own so the 3D shows without touching anything
+  const sway = reduced ? 0 : fx.uBuild.value;
+  const cx = cur.x + Math.sin(t * 0.7) * 0.6 * sway, cy = cur.y + Math.sin(t * 0.5) * 0.3 * sway;
+  const a = 0.25;                                   // max camera orbit, radians
+  camera.position.set(Math.sin(cx * a) * DIST, Math.sin(cy * a) * DIST, Math.cos(cx * a) * Math.cos(cy * a) * DIST);
+  camera.lookAt(0, 0, 0.1);
+  renderer.render(scene, camera);
+});
+
+// --- pixel helpers ------------------------------------------------------------
+const clampI = (v, n) => Math.min(n - 1, Math.max(0, v));
+
+// separable box blur (running sums), edges clamped
+function box(src, W, H, r) {
+  const tmp = new Float32Array(W * H), out = new Float32Array(W * H), n = 2 * r + 1;
+  for (let y = 0; y < H; y++) {
+    const o = y * W;
+    let s = 0;
+    for (let k = -r; k <= r; k++) s += src[o + clampI(k, W)];
+    for (let x = 0; x < W; x++) { tmp[o + x] = s / n; s += src[o + clampI(x + r + 1, W)] - src[o + clampI(x - r, W)]; }
+  }
+  for (let x = 0; x < W; x++) {
+    let s = 0;
+    for (let k = -r; k <= r; k++) s += tmp[clampI(k, H) * W + x];
+    for (let y = 0; y < H; y++) { out[y * W + x] = s / n; s += tmp[clampI(y + r + 1, H) * W + x] - tmp[clampI(y - r, H) * W + x]; }
+  }
+  return out;
+}
+
+// fills pixels where known[i] is 0 from the nearest known ones, coarse-to-fine (push-pull)
+function fill(data, known, W, H, C) {
+  if (W * H <= 1) return;
+  const w = Math.ceil(W / 2), h = Math.ceil(H / 2);
+  const d = new Float32Array(w * h * C), k = new Float32Array(w * h);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (!known[i]) continue;
+    const j = (y >> 1) * w + (x >> 1);
+    k[j]++;
+    for (let c = 0; c < C; c++) d[j * C + c] += data[i * C + c];
+  }
+  for (let j = 0; j < w * h; j++) if (k[j]) { for (let c = 0; c < C; c++) d[j * C + c] /= k[j]; k[j] = 1; }
+  fill(d, k, w, h, C);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (known[i]) continue;
+    // bilinear sample of the coarser level, so the fill has no blocks
+    const fx = Math.min(w - 1, Math.max(0, (x + .5) / 2 - .5)), fy = Math.min(h - 1, Math.max(0, (y + .5) / 2 - .5));
+    const x0 = fx | 0, y0 = fy | 0, x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1), tx = fx - x0, ty = fy - y0;
+    for (let c = 0; c < C; c++) {
+      const a = d[(y0 * w + x0) * C + c] * (1 - tx) + d[(y0 * w + x1) * C + c] * tx;
+      const b = d[(y1 * w + x0) * C + c] * (1 - tx) + d[(y1 * w + x1) * C + c] * tx;
+      data[i * C + c] = a * (1 - ty) + b * ty;
+    }
+  }
+}
+
+// smallest value within r pixels (for depth: the farthest point nearby), van Herk/Gil-Werman, O(N) for any r
+function erode(src, W, H, r) {
+  const w = 2 * r + 1;
+  const pass = (inp, out, n, count, stride, step) => {
+    const g = new Float32Array(n), h = new Float32Array(n);
+    for (let l = 0; l < count; l++) {
+      const o = l * step;
+      for (let i = 0; i < n; i++) { const v = inp[o + i * stride]; g[i] = i % w === 0 ? v : Math.min(g[i - 1], v); }
+      for (let i = n - 1; i >= 0; i--) { const v = inp[o + i * stride]; h[i] = i % w === w - 1 || i === n - 1 ? v : Math.min(h[i + 1], v); }
+      for (let i = 0; i < n; i++) out[o + i * stride] = Math.min(h[Math.max(0, i - r)], g[Math.min(n - 1, i + r)]);
+    }
+  };
+  const tmp = new Float32Array(W * H), out = new Float32Array(W * H);
+  pass(src, tmp, W, H, 1, W);
+  pass(tmp, out, H, W, W, 1);
+  return out;
+}
+
+const canvas = (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h });
+function texture(cnv, color) {
+  const t = new THREE.Texture(cnv);
+  if (color) t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+function setTextures(front, back, data, mask) {
+  const old = new Set();
+  for (const [mesh, image] of [[fgMesh, front], [bgMesh, back]]) {
+    const u = mesh.material.uniforms;
+    old.add(u.uImage.value); old.add(u.uData.value);
+    u.uImage.value = texture(image, true);
+  }
+  old.add(fx.uMask.value);
+  const dataTex = texture(data, false);
+  fgMesh.material.uniforms.uData.value = bgMesh.material.uniforms.uData.value = dataTex;
+  fx.uMask.value = texture(mask, false);
+  for (const t of old) t?.dispose();
+}
+
+// --- models -------------------------------------------------------------------
+status('Downloading depth model (~25 MB, once)…');
+// navigator.gpu can exist with no usable adapter; a failed WebGPU init also breaks the WASM backend afterwards
+const hasGpu = !!(await navigator.gpu?.requestAdapter().catch(() => null));
+// on CPU, run the models in a worker so the page (and the loading animation) never freezes
+if (!hasGpu) env.backends.onnx.wasm.proxy = ort.env.wasm.proxy = true;
+const depthModel = await pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small',
+  hasGpu ? { device: 'webgpu', dtype: 'fp16' } : { device: 'wasm', dtype: 'q8' },
+).catch(err => { status('Could not load the depth model: ' + err.message); throw err; });
+
+let lamaSession = null;
+async function getLama() {
+  if (lamaSession) return lamaSession;
+  let buf;
+  try {  // Cache API keeps the 92 MB model across visits; unavailable on plain http
+    const cache = await caches.open('lama');
+    let res = await cache.match(LAMA_URL);
+    if (!res) { res = await fetch(LAMA_URL); await cache.put(LAMA_URL, res.clone()); }
+    buf = await res.arrayBuffer();
+  } catch { buf = await (await fetch(LAMA_URL)).arrayBuffer(); }
+  return (lamaSession = await ort.InferenceSession.create(buf, { executionProviders: hasGpu ? ['webgpu', 'wasm'] : ['wasm'] }));
+}
+
+// --- loading a photo --------------------------------------------------------------
+let loadId = 0, src = null;
+async function load(url) {
+  const id = ++loadId;
+  status('Estimating depth…');
+  const t0 = performance.now();
+  const img = await RawImage.fromURL(url);
+
+  // everything below runs at WORK resolution
+  const k = Math.min(1, WORK / Math.max(img.width, img.height));
+  const W = Math.round(img.width * k), H = Math.round(img.height * k), N = W * H;
+  const photo = canvas(W, H), pctx = photo.getContext('2d', { willReadFrequently: true });
+  pctx.drawImage(img.toCanvas(), 0, 0, W, H);
+  const rgba = pctx.getImageData(0, 0, W, H).data;
+
+  // show the flat photo right away and scan it while the depth model reads it
+  const flat = canvas(1, 1), fctx = flat.getContext('2d');
+  fctx.fillStyle = '#00ff00';                      // depth 0, fully opaque, no hole
+  fctx.fillRect(0, 0, 1, 1);
+  setTextures(photo, photo, flat, flat);
+  fx.uRise.value = 0; riseStart = 0; goal.scan = 1; goal.build = 0;
+  aspect = W / H;
+  fit();
+
+  const { depth } = await depthModel(img);
+  if (id !== loadId) return;
+  const dc = canvas(W, H).getContext('2d', { willReadFrequently: true });
+  dc.drawImage(depth.toCanvas(), 0, 0, W, H);
+  const dpx = dc.getImageData(0, 0, W, H).data;
+  const d = new Float32Array(N);
+  for (let i = 0; i < N; i++) d[i] = dpx[i * 4] / 255;
+  src = { W, H, N, photo, rgba, d };
+  return process(id, t0);
+}
+
+async function process(id = ++loadId, t0 = performance.now()) {
+  const { W, H, N, photo, rgba, d: raw } = src;
+
+  // the depth map fades over a few pixels at an edge, and the subject's outline sits in that fade.
+  // Snap the fade into a clean step, pushed outward: anything 8% up the fade belongs to the subject,
+  // so the outline moves with it and the repaint removes it from the background.
+  const R = Math.max(4, Math.round(0.006 * Math.max(W, H)));
+  const lo = erode(raw, W, H, R), hiInv = erode(raw.map(v => 1 - v), W, H, R);
+  const d = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const hi = 1 - hiInv[i], range = hi - lo[i];
+    d[i] = range > JUMP ? (raw[i] - lo[i] > 0.08 * range ? hi : lo[i]) : raw[i];
+  }
+
+  // tears: pixels clearly farther than something 3 px away, i.e. the FAR side of a sharp depth jump.
+  // The depth map is blurrier than the photo, so tearing the near side would eat the subject's edge.
+  // Smooth depth (an arm reaching toward the camera) never tears.
+  const nearest = erode(d.map(v => 1 - v), W, H, 3);   // 1 - (nearest depth within 3 px)
+  const tear = new Float32Array(N);
+  for (let i = 0; i < N; i++) tear[i] = 1 - nearest[i] - d[i] > JUMP ? 1 : 0;
+  const alpha = box(tear, W, H, 1);
+  for (let i = 0; i < N; i++) alpha[i] = 1 - Math.min(1, alpha[i] * 2);
+
+  // back layer: the farthest depth within the widest parallax shift, so it always sits behind
+  const r = Math.max(4, Math.round(0.06 * Math.max(W, H)));
+  const dBg = erode(d, W, H, r);
+
+  // hole = near side of a tear, as wide as a tilt can uncover; only there the back layer gets new colors
+  const nearTear = box(tear, W, H, r);
+  const hole = new Uint8Array(N), keepBg = new Uint8Array(N);
+  for (let i = 0; i < N; i++) hole[i] = nearTear[i] > 0 && d[i] - dBg[i] > JUMP ? 1 : 0;
+  // grow 3 px past the edge: the outline's faint anti-aliased fringe is repainted too, not left behind
+  const grown = box(Float32Array.from(hole), W, H, 3);
+  for (let i = 0; i < N; i++) hole[i] = grown[i] > 0 ? 1 : 0;
+
+  // the subject's cast shadow is painted on the background, so depth calls it background and it would stay
+  // behind as a dark halo. In a band around the hole, repaint pixels clearly darker than the background past the band.
+  const S = Math.max(4, Math.round(0.02 * Math.max(W, H)));
+  const band = box(Float32Array.from(hole), W, H, S);
+  const lum = new Float32Array(N), known = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    lum[i] = (0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2]) / 255;
+    known[i] = band[i] > 0 ? 0 : 1;
+  }
+  const expected = Float32Array.from(lum);
+  fill(expected, known, W, H, 1);
+  for (let i = 0; i < N; i++) {
+    if (!hole[i] && band[i] > 0 && lum[i] < expected[i] * 0.85 - 0.04) hole[i] = 1;
+    keepBg[i] = 1 - hole[i];
+  }
+
+  // A: instant fill of the hole from surrounding colors
+  const rgb = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) for (let c = 0; c < 3; c++) rgb[i * 3 + c] = rgba[i * 4 + c];
+  fill(rgb, keepBg, W, H, 3);
+  const bg = canvas(W, H), bctx = bg.getContext('2d', { willReadFrequently: true });
+  const bgData = bctx.createImageData(W, H);
+  for (let i = 0; i < N; i++) {
+    for (let c = 0; c < 3; c++) bgData.data[i * 4 + c] = hole[i] ? rgb[i * 3 + c] : rgba[i * 4 + c];
+    bgData.data[i * 4 + 3] = 255;
+  }
+  bctx.putImageData(bgData, 0, 0);
+
+  const data = canvas(W, H), dctx = data.getContext('2d');
+  const dd = dctx.createImageData(W, H);
+  for (let i = 0; i < N; i++) {
+    dd.data[i * 4] = d[i] * 255; dd.data[i * 4 + 1] = alpha[i] * 255; dd.data[i * 4 + 2] = dBg[i] * 255; dd.data[i * 4 + 3] = 255;
+  }
+  dctx.putImageData(dd, 0, 0);
+  const holeCnv = canvas(W, H), hctx = holeCnv.getContext('2d');
+  const hd = hctx.createImageData(W, H);
+  const glow = box(Float32Array.from(hole), W, H, Math.round(r / 3));   // soft falloff for the shimmer, not slabs
+  for (let i = 0; i < N; i++) { hd.data[i * 4 + 3] = 255; hd.data[i * 4] = glow[i] * 255; }
+  hctx.putImageData(hd, 0, 0);
+
+  if (id !== loadId) return;
+  setTextures(photo, bg, data, holeCnv);
+  goal.scan = 0;
+  if (fx.uRise.value < 1) riseStart = performance.now();
+  goal.build = 1;
+  status(`Depth ready in ${((performance.now() - t0) / 1000).toFixed(1)} s. Rebuilding what's hidden behind the edges…`);
+
+  // B: LaMa repaints the hidden area; crop to the hole's bounding box so 512 px go where they matter
+  const t1 = performance.now();
+  let x0 = W, y0 = H, x1 = 0, y1 = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (hole[y * W + x]) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  if (x1 < x0) { goal.build = 0; status('Ready. No sharp depth edges found, nothing to rebuild.'); return; }
+  const pad = Math.round(0.1 * Math.max(x1 - x0, y1 - y0));
+  x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(W - 1, x1 + pad); y1 = Math.min(H - 1, y1 + pad);
+  const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+
+  const sq = canvas(LAMA, LAMA), sctx = sq.getContext('2d', { willReadFrequently: true });
+  sctx.drawImage(photo, x0, y0, cw, ch, 0, 0, LAMA, LAMA);
+  const sp = sctx.getImageData(0, 0, LAMA, LAMA).data;
+  sctx.drawImage(holeCnv, x0, y0, cw, ch, 0, 0, LAMA, LAMA);
+  const mp = sctx.getImageData(0, 0, LAMA, LAMA).data;
+
+  const P = LAMA * LAMA, imgIn = new Float32Array(3 * P), maskIn = new Float32Array(P);
+  for (let i = 0; i < P; i++) {
+    for (let c = 0; c < 3; c++) imgIn[c * P + i] = sp[i * 4 + c] / 255;
+    maskIn[i] = mp[i * 4] > 0 ? 1 : 0;
+  }
+  let out;
+  try {
+    const s = await getLama();
+    if (id !== loadId) return;
+    status('Repainting the hidden background…');
+    out = (await s.run({
+      image: new ort.Tensor('float32', imgIn, [1, 3, LAMA, LAMA]),
+      mask: new ort.Tensor('float32', maskIn, [1, 1, LAMA, LAMA]),
+    })).output.data;
+  } catch (err) {
+    goal.build = 0;
+    status('AI fill failed, keeping the quick fill: ' + err.message);
+    return;
+  }
+  if (id !== loadId) return;
+
+  // paste LaMa's result back, only inside the hole
+  const res = sctx.createImageData(LAMA, LAMA);
+  for (let i = 0; i < P; i++) { for (let c = 0; c < 3; c++) res.data[i * 4 + c] = out[c * P + i]; res.data[i * 4 + 3] = 255; }
+  sctx.putImageData(res, 0, 0);
+  const crop = canvas(cw, ch), cctx = crop.getContext('2d', { willReadFrequently: true });
+  cctx.drawImage(sq, 0, 0, LAMA, LAMA, 0, 0, cw, ch);
+  const cp = cctx.getImageData(0, 0, cw, ch).data;
+  const final = bctx.getImageData(0, 0, W, H);
+  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+    const i = (y + y0) * W + x + x0;
+    if (!hole[i]) continue;
+    for (let c = 0; c < 3; c++) final.data[i * 4 + c] = cp[(y * cw + x) * 4 + c];
+  }
+  bctx.putImageData(final, 0, 0);
+  bgMesh.material.uniforms.uImage.value.needsUpdate = true;
+  goal.build = 0;
+  status(`Ready. AI fill took ${((performance.now() - t1) / 1000).toFixed(1)} s. Tick "Peek behind" to see it.`);
+}
+
+$('file').onchange = e => {
+  const f = e.target.files[0];
+  if (f) load(URL.createObjectURL(f)).catch(err => status('Error: ' + err.message));
+};
+fit();
+load('https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/cats.jpg')
+  .catch(err => status('Error: ' + err.message));
+</script>
+</body>
+</html>

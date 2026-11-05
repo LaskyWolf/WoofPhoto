@@ -1,0 +1,128 @@
+import Foundation
+
+/// The few Immich endpoints the app uses. Every field the server might drop is optional,
+/// so a newer server version shows less data instead of failing to decode.
+struct ImmichClient {
+    let server: URL
+    var token: String?
+
+    /// Accepts "photos.example.com", "192.168.1.5:2283" or a full URL, with or without "/api".
+    static func serverURL(from text: String) -> URL? {
+        var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while text.hasSuffix("/") { text.removeLast() }
+        if text.hasSuffix("/api") { text.removeLast(4) }
+        if !text.contains("://") { text = "https://" + text }
+        guard let url = URL(string: text), url.host() != nil else { return nil }
+        return url
+    }
+
+    func request(_ path: String, query: [String: String] = [:]) -> URLRequest {
+        var components = URLComponents(url: server.appending(path: "api" + path), resolvingAgainstBaseURL: false)!
+        if !query.isEmpty { components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
+        var request = URLRequest(url: components.url!)
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        return request
+    }
+
+    func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
+        try await send(request(path, query: query))
+    }
+
+    private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private static func check(_ response: URLResponse, _ data: Data) throws {
+        guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
+        let message = (try? JSONDecoder().decode(ServerError.self, from: data))?.message
+        throw ImmichError.http(http.statusCode, message)
+    }
+
+    // MARK: Endpoints
+
+    func ping() async throws {
+        let _: Pong = try await get("/server/ping")
+    }
+
+    func login(email: String, password: String) async throws -> String {
+        var request = request("/auth/login")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["email": email, "password": password])
+        let response: LoginResponse = try await send(request)
+        return response.accessToken
+    }
+
+    /// Months that have photos, newest first.
+    func buckets() async throws -> [TimeBucket] {
+        try await get("/timeline/buckets", query: ["visibility": "timeline"])
+    }
+
+    func bucket(_ key: String) async throws -> BucketAssets {
+        try await get("/timeline/bucket", query: ["timeBucket": key, "visibility": "timeline"])
+    }
+
+    /// Downloads the original file and keeps the server's file name, so its extension says what it is.
+    func downloadOriginal(_ id: String) async throws -> URL {
+        let (temp, response) = try await URLSession.shared.download(for: request("/assets/\(id)/original"))
+        try Self.check(response, Data())
+        let name = response.suggestedFilename ?? id
+        let folder = FileManager.default.temporaryDirectory.appending(path: id)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appending(path: name)
+        try FileManager.default.moveItem(at: temp, to: file)
+        return file
+    }
+}
+
+struct TimeBucket: Decodable {
+    var timeBucket: String
+    var count: Int
+}
+
+/// One month of the timeline. The server sends one array per field, all in the same order.
+struct BucketAssets: Decodable {
+    var id: [String]
+    var isImage: [Bool]?
+    var livePhotoVideoId: [String?]?
+}
+
+private struct Pong: Decodable { var res: String }
+private struct LoginResponse: Decodable { var accessToken: String }
+private struct ServerError: Decodable { var message: String? }
+
+enum ImmichError: LocalizedError {
+    case http(Int, String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .http(401, _): "Wrong email or password, or the session expired."
+        case .http(404, _): "No Immich server at this address. Check the URL and the port."
+        case let .http(code, message): "The server answered \(code)\(message.map { ": \($0)" } ?? ".")"
+        }
+    }
+}
+
+extension Error {
+    /// A message that says what went wrong and what to try, for the errors a home server usually causes.
+    var explanation: String {
+        guard let error = self as? URLError else { return localizedDescription }
+        switch error.code {
+        case .appTransportSecurityRequiresSecureConnection:
+            return "iOS blocks plain HTTP outside the local network. Use the server's HTTPS address."
+        case .cannotFindHost, .dnsLookupFailed:
+            return "The server name was not found. Check the spelling, or use the IP address."
+        case .cannotConnectToHost:
+            return "Nothing answers at this address. Check the port (Immich uses 2283) and that the server is running."
+        case .timedOut, .notConnectedToInternet, .networkConnectionLost:
+            return "The server can't be reached from this network. Away from home, use its public HTTPS address."
+        case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed:
+            return "The server's HTTPS certificate is not trusted. Try its http:// address on the local network."
+        default:
+            return error.localizedDescription
+        }
+    }
+}

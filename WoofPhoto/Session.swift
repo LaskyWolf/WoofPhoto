@@ -1,0 +1,63 @@
+import Foundation
+import Security
+
+/// The signed-in server. The address lives in UserDefaults, the token in the Keychain.
+@MainActor @Observable
+final class Session {
+    private(set) var client: ImmichClient?
+
+    init() {
+        if let text = UserDefaults.standard.string(forKey: "server"), let url = URL(string: text),
+           let token = Keychain.read("token") {
+            client = ImmichClient(server: url, token: token)
+        }
+    }
+
+    func signIn(server text: String, email: String, password: String) async throws {
+        guard let url = ImmichClient.serverURL(from: text) else {
+            throw SignInError.badAddress
+        }
+        var client = ImmichClient(server: url)
+        try await client.ping()
+        client.token = try await client.login(email: email, password: password)
+        UserDefaults.standard.set(url.absoluteString, forKey: "server")
+        Keychain.write("token", client.token!)
+        self.client = client
+    }
+
+    func signOut() {
+        Keychain.delete("token")
+        client = nil
+    }
+}
+
+enum SignInError: LocalizedError {
+    case badAddress
+    var errorDescription: String? { "This is not a server address. Example: photos.example.com or 192.168.1.5:2283" }
+}
+
+enum Keychain {
+    private static func query(_ key: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "WoofPhoto", kSecAttrAccount as String: key]
+    }
+
+    static func read(_ key: String) -> String? {
+        var item: CFTypeRef?
+        var q = query(key)
+        q[kSecReturnData as String] = true
+        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func write(_ key: String, _ value: String) {
+        delete(key)
+        var q = query(key)
+        q[kSecValueData as String] = Data(value.utf8)
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(q as CFDictionary, nil)
+    }
+
+    static func delete(_ key: String) {
+        SecItemDelete(query(key) as CFDictionary)
+    }
+}

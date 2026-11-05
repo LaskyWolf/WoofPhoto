@@ -1,0 +1,73 @@
+name: WoofPhoto
+options:
+  bundleIdPrefix: com.laskywolf
+  deploymentTarget:
+    iOS: "26.0"
+packages:
+  # Runs the same ONNX models as the web prototype in prototype/spatial.
+  onnxruntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager.git
+    exactVersion: 1.20.0
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+targets:
+  WoofPhoto:
+    type: application
+    platform: iOS
+    scheme: {}
+    sources:
+      - path: WoofPhoto
+      - path: Shared
+    dependencies:
+      - package: onnxruntime
+        product: onnxruntime
+      - target: WoofPhotoWidget
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.woofphoto
+    entitlements:
+      path: WoofPhoto/WoofPhoto.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.laskywolf.woofphoto
+    info:
+      path: WoofPhoto/Info.plist
+      properties:
+        CFBundleDisplayName: WoofPhoto
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        # An Immich server at home is often plain HTTP on a local address.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: WoofPhoto connects to your Immich server on the local network.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+  WoofPhotoWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: WoofPhotoWidget
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.woofphoto.widget
+    entitlements:
+      path: WoofPhotoWidget/WoofPhotoWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.laskywolf.woofphoto
+    info:
+      path: WoofPhotoWidget/Info.plist
+      properties:
+        CFBundleDisplayName: WoofPhoto
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

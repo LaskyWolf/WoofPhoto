@@ -83,15 +83,7 @@ struct SpikeModel: Sendable {
     ]
 
     /// Kept in Caches, so a second run measures the model, not the download.
-    func download() async throws -> URL {
-        let folder = URL.cachesDirectory.appending(path: "models")
-        let file = folder.appending(path: url.lastPathComponent)
-        if FileManager.default.fileExists(atPath: file.path) { return file }
-        let (temp, _) = try await URLSession.shared.download(from: url)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try FileManager.default.moveItem(at: temp, to: file)
-        return file
-    }
+    func download() async throws -> URL { try await AIModel(url: url).download() }
 
     /// Returns load and run time in seconds. The session is released when this returns.
     func run(_ file: URL) throws -> (Double, Double) {

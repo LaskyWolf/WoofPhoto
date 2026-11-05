@@ -25,6 +25,7 @@ struct Viewer: View {
     @State private var message: String?
     @State private var addsToAlbum = false
     @State private var playsSlideshow = false
+    @State private var spatial: AssetRef?
     @State private var editing: AssetRef?
     @State private var trimming: SharedFile?
 
@@ -87,6 +88,7 @@ struct Viewer: View {
             .fullScreenCover(isPresented: $playsSlideshow) {
                 Slideshow(assets: timeline.assets, start: timeline.assets.firstIndex { $0.id == current } ?? 0)
             }
+            .fullScreenCover(item: $spatial) { SpatialView(asset: $0).environment(session) }
             .fullScreenCover(item: $editing) { asset in
                 EditorView(asset: asset) { editSaved() }
             }
@@ -110,6 +112,11 @@ struct Viewer: View {
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             Button("Close", systemImage: "xmark") { OpenPhoto.shared.close() }
+        }
+        if let shownAsset, shownAsset.isImage {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Spatial Scene", systemImage: "cube") { spatial = shownAsset }
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu("More", systemImage: "ellipsis") {

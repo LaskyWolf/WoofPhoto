@@ -59,7 +59,7 @@ struct WoofPhotoApp: App {
     }
 }
 
-/// The tabs, with the open photo in the mini viewer above them.
+/// The tabs, with the open photo full screen above them.
 struct MainTabs: View {
     @Environment(Session.self) private var session
     @Bindable private var open = OpenPhoto.shared
@@ -75,16 +75,12 @@ struct MainTabs: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        .bottomAccessory(open.asset != nil) {
-            MiniViewer()
-                .matchedTransitionSource(id: OpenPhoto.miniID, in: zoom) { $0.clipShape(RoundedRectangle(cornerRadius: 24)) }
-        }
         .environment(\.photoZoom, zoom)
         .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
         .fullScreenCover(isPresented: $open.isExpanded, onDismiss: open.dismissed) {
             if let timeline = open.timeline, let asset = open.asset {
                 Viewer(timeline: timeline, start: asset)
-                    .navigationTransition(.zoom(sourceID: open.zoomSource, in: zoom))
+                    .navigationTransition(.zoom(sourceID: asset.id, in: zoom))
                     .environment(session)
             }
         }

@@ -71,10 +71,6 @@ struct Viewer: View {
                 if let asset = timeline.assets.first(where: { $0.id == current }) { OpenPhoto.shared.asset = asset }
                 await currentChanged()
             }
-            .task {
-                try? await Task.sleep(for: .milliseconds(600))
-                OpenPhoto.shared.zoomedIn()
-            }
             .sheet(isPresented: $showsInfo) {
                 if let id = shownID { InfoSheet(id: id) }
             }

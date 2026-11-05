@@ -177,6 +177,7 @@ struct BucketAssets: Decodable {
     var livePhotoVideoId: [String?]?
     /// [stack id, number of assets] for the top asset of a stack.
     var stack: [[String]?]?
+    var fileCreatedAt: [String]?
 
     var refs: [AssetRef] {
         id.indices.map { i in
@@ -184,7 +185,8 @@ struct BucketAssets: Decodable {
             return AssetRef(id: id[i], isImage: Self.at(isImage, i) ?? true, isFavorite: Self.at(isFavorite, i) ?? false,
                             thumbhash: Self.at(thumbhash, i) ?? nil, duration: Self.at(duration, i) ?? nil,
                             livePhotoVideoId: Self.at(livePhotoVideoId, i) ?? nil,
-                            stackID: stack?.first, stackCount: stack.flatMap { Int($0.last ?? "") } ?? 0)
+                            stackID: stack?.first, stackCount: stack.flatMap { Int($0.last ?? "") } ?? 0,
+                            date: Self.at(fileCreatedAt, i).flatMap(Date.init(immich:)))
         }
     }
 

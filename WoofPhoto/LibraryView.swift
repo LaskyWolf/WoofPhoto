@@ -15,7 +15,7 @@ struct LibraryView: View {
                 }
                 .sheet(isPresented: $showsAccount) {
                     NavigationStack {
-                        SpikesView().toolbar {
+                        SettingsView().toolbar {
                             Button("Done", role: .close) { showsAccount = false }
                         }
                     }

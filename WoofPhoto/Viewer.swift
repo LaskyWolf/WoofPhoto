@@ -117,7 +117,13 @@ struct Viewer: View {
                 }
             }
         }
-        if timeline.query?.isTrash == true {
+        if shownAsset?.localID != nil {
+            ToolbarItemGroup(placement: .bottomBar) {
+                Label("Not backed up", systemImage: "icloud.slash").labelStyle(.titleAndIcon)
+                Spacer()
+                Button("Back Up Now") { if let client = session.client { Backup.shared.start(with: client) } }
+            }
+        } else if timeline.query?.isTrash == true {
             ToolbarItemGroup(placement: .bottomBar) {
                 Button("Delete", systemImage: "trash", role: .destructive) { confirmsDelete = true }
                 Spacer()
@@ -282,7 +288,9 @@ struct ViewerPage: View {
     let onTap: () -> Void
 
     var body: some View {
-        if !asset.isImage {
+        if asset.localID != nil {
+            DevicePage(asset: asset, isCurrent: isCurrent, onTap: onTap)
+        } else if !asset.isImage {
             VideoPage(asset: asset, isCurrent: isCurrent)
         } else if asset.livePhotoVideoId != nil {
             LivePage(asset: asset, isCurrent: isCurrent, onTap: onTap)
@@ -385,6 +393,39 @@ struct VideoPage: View {
             }
         }
         .onDisappear { player?.pause() }
+    }
+}
+
+/// A photo or video that is only on this iPhone, read from its Photos library.
+struct DevicePage: View {
+    let asset: AssetRef
+    let isCurrent: Bool
+    let onTap: () -> Void
+
+    @State private var image: UIImage?
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        ZStack {
+            if let player {
+                VideoPlayer(player: player)
+            } else {
+                ZoomableImage(image: image ?? Still.cached(asset), onTap: onTap) {}
+            }
+        }
+        .task {
+            guard let localID = asset.localID else { return }
+            image = await DeviceLibrary.image(localID, side: 2400)
+        }
+        .task(id: isCurrent) {
+            guard !asset.isImage, let localID = asset.localID else { return }
+            if isCurrent {
+                if player == nil, let item = await DeviceLibrary.playerItem(localID) { player = AVPlayer(playerItem: item) }
+                player?.play()
+            } else {
+                player?.pause()
+            }
+        }
     }
 }
 

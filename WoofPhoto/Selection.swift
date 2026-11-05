@@ -142,6 +142,31 @@ enum DeviceLibrary {
         var errorDescription: String? { "Allow WoofPhoto to add photos in Settings > Privacy & Security > Photos." }
     }
 
+    /// A photo from the iPhone's library, at about `side` pixels.
+    static func image(_ localID: String, side: CGFloat) async -> UIImage? {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject else { return nil }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat // one callback, the final image
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: side, height: side),
+                                                  contentMode: .aspectFill, options: options) { image, _ in
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    static func playerItem(_ localID: String) async -> AVPlayerItem? {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject else { return nil }
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, _ in
+                continuation.resume(returning: item)
+            }
+        }
+    }
+
     /// Saves the original; a Live Photo keeps its video so it still moves.
     static func save(_ asset: AssetRef, client: ImmichClient) async throws {
         let file = try await client.downloadOriginal(asset.id)

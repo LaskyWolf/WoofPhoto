@@ -11,6 +11,9 @@ struct AssetRef: Identifiable, Hashable {
     var livePhotoVideoId: String?
     var stackID: String?
     var stackCount = 0
+    var date: Date?
+    /// Set for photos only on this iPhone, not backed up yet.
+    var localID: String?
 }
 
 /// One asset as `GET /assets/{id}` and the search endpoints return it. Every field is optional,

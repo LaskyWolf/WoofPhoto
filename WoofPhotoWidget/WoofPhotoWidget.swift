@@ -1,45 +1,66 @@
 import SwiftUI
 import WidgetKit
 
-/// M0 spike: shows the value the app wrote to the App Group. A different group or "No access" means
-/// the signing tool gave the widget and the app different groups.
-struct GroupEntry: TimelineEntry {
+/// Featured Photos: a different photo from the library every hour, like the Photos widget.
+struct PhotoEntry: TimelineEntry {
     var date = Date.now
-    var value: String
-    var group = AppGroup.id
-    /// Where the widget's group came from, to tell a missing profile from a profile without groups.
-    var source = SigningProfile.current.map { $0.appGroups.isEmpty ? "Own profile, no group" : "Own profile" }
-        ?? (SigningProfile.containingApp == nil ? "No profile" : "App's profile")
-
-    static func current() -> GroupEntry {
-        guard let defaults = AppGroup.defaults else { return GroupEntry(value: "No access") }
-        return GroupEntry(value: defaults.string(forKey: "spike.value") ?? "Nothing written")
-    }
+    var item: Featured.Item?
+    var image: UIImage?
 }
 
-struct GroupProvider: TimelineProvider {
-    func placeholder(in context: Context) -> GroupEntry { GroupEntry(value: "12:00:00") }
-    func getSnapshot(in context: Context, completion: @escaping (GroupEntry) -> Void) { completion(.current()) }
-    func getTimeline(in context: Context, completion: @escaping (Timeline<GroupEntry>) -> Void) {
-        completion(Timeline(entries: [.current()], policy: .never))
+struct PhotoProvider: TimelineProvider {
+    func placeholder(in context: Context) -> PhotoEntry { PhotoEntry() }
+
+    func getSnapshot(in context: Context, completion: @escaping (PhotoEntry) -> Void) {
+        completion(entries(count: 1).first ?? PhotoEntry())
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<PhotoEntry>) -> Void) {
+        let entries = entries(count: 12)
+        completion(Timeline(entries: entries.isEmpty ? [PhotoEntry()] : entries, policy: .atEnd))
+    }
+
+    /// One entry per hour, each with the next photo.
+    private func entries(count: Int) -> [PhotoEntry] {
+        let items = Featured.items().shuffled()
+        guard let folder = Featured.folder, !items.isEmpty else { return [] }
+        return (0..<min(count, items.count)).map { hour in
+            let item = items[hour]
+            return PhotoEntry(date: .now.addingTimeInterval(Double(hour) * 3600), item: item,
+                              image: UIImage(contentsOfFile: folder.appending(path: item.file).path))
+        }
     }
 }
 
 @main
 struct WoofPhotoWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "AppGroupCheck", provider: GroupProvider()) { entry in
-            VStack(alignment: .leading, spacing: 4) {
-                Text("App Group").font(.caption).foregroundStyle(.secondary)
-                Text(entry.value).font(.headline).minimumScaleFactor(0.6)
-                Spacer()
-                Text(entry.source).font(.caption2)
-                Text(entry.group).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+        StaticConfiguration(kind: "FeaturedPhotos", provider: PhotoProvider()) { entry in
+            ZStack(alignment: .bottomLeading) {
+                if let image = entry.image {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: "photo.on.rectangle").font(.title)
+                        Text("Open WoofPhoto to choose photos.").font(.caption).multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                if let date = entry.item?.date {
+                    Text(date.formatted(.dateTime.month(.wide).year()))
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .shadow(radius: 3)
+                        .padding(12)
+                }
             }
             .containerBackground(.fill.tertiary, for: .widget)
+            .widgetURL(entry.item.map { URL(string: "woofphoto://asset/\($0.id)")! })
         }
-        .configurationDisplayName("WoofPhoto Check")
-        .description("Shows whether the app and the widget share data.")
-        .supportedFamilies([.systemSmall])
+        .configurationDisplayName("Featured Photos")
+        .description("A different photo from your Immich library every hour.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
     }
 }

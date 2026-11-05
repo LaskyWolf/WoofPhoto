@@ -27,16 +27,20 @@ final class Timeline {
     }
 
     var assets: [AssetRef] { months?.flatMap { $0.assets ?? [] } ?? [] }
+
+    /// Photos only on this iPhone, shown in the Library next to the server's.
+    private var local: [String: [AssetRef]] { query == .library ? Backup.shared.pendingByMonth : [:] }
     var count: Int { months?.reduce(0) { $0 + $1.count } ?? 0 }
 
     func reload(with client: ImmichClient) async throws {
         guard let query else { return }
-        let buckets = try await client.buckets(query).sorted { $0.timeBucket < $1.timeBucket }
+        var counts = Dictionary(try await client.buckets(query).map { ($0.timeBucket, $0.count) }) { $0 + $1 }
+        for (key, assets) in local { counts[key, default: 0] += assets.count }
         // keep months already loaded, so a reload after an edit doesn't blank the screen
         let old = Dictionary(uniqueKeysWithValues: (months ?? []).map { ($0.key, $0) })
-        months = buckets.map { bucket in
-            let kept = old[bucket.timeBucket].flatMap { $0.count == bucket.count ? $0.assets : nil }
-            return Month(key: bucket.timeBucket, count: bucket.count, assets: kept)
+        months = counts.keys.sorted().map { key in
+            let kept = old[key].flatMap { $0.count == counts[key] ? $0.assets : nil }
+            return Month(key: key, count: counts[key] ?? 0, assets: kept)
         }
     }
 
@@ -47,7 +51,10 @@ final class Timeline {
         defer { loading.remove(key) }
         // a failed or cancelled month stays grey and is retried when its cells appear again
         do {
-            let assets = try await client.bucket(key, query, order: "asc").refs
+            var assets = try await client.bucket(key, query, order: "asc").refs
+            if let device = local[key] {
+                assets = (assets + device).sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+            }
             if let index = months?.firstIndex(where: { $0.key == key }) {
                 months?[index].assets = assets
                 months?[index].count = assets.count

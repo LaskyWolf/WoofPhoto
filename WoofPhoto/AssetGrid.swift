@@ -322,6 +322,11 @@ struct Thumbnail: View {
                     Image(systemName: "heart.fill").overlayBadge()
                 }
             }
+            .overlay(alignment: .topLeading) {
+                if asset?.localID != nil {
+                    Image(systemName: "icloud.slash").overlayBadge()
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if let count = asset?.stackCount, count > 1 {
                     Label("\(count)", systemImage: "square.stack.fill").overlayBadge()
@@ -350,7 +355,13 @@ struct Thumbnail: View {
 
     private func load() async {
         loaded = nil
-        guard let asset, let client = session.client, ImageCache.image(asset.id, size: size) == nil else { return }
+        guard let asset, ImageCache.image(asset.id, size: size) == nil else { return }
+        if let localID = asset.localID {
+            loaded = await DeviceLibrary.image(localID, side: size == "thumbnail" ? 300 : 1200)
+            if let loaded { ImageCache.store(loaded, for: asset.id, size: size) }
+            return
+        }
+        guard let client = session.client else { return }
         if asset.thumbhash != nil, placeholder == nil {
             timeline?.problem = "Failed to decode the thumbhash \(asset.thumbhash ?? "")"
         }

@@ -1,12 +1,37 @@
+import BackgroundTasks
 import SwiftUI
 
 @main
 struct WoofPhotoApp: App {
     @State private var session = Session()
+    @Environment(\.scenePhase) private var scenePhase
+    /// A photo opened from the widget.
+    @State private var opened: AssetRef?
 
     init() {
         // Downloaded thumbnails stay on disk up to this size; iOS removes the oldest beyond it.
         URLCache.shared = URLCache(memoryCapacity: 32 << 20, diskCapacity: 512 << 20)
+        Backup.shared.refreshPending()
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Backup.taskID, using: .main) { task in
+            MainActor.assumeIsolated { Self.runBackup(task) }
+        }
+    }
+
+    /// The background run iOS starts: back up until done or until iOS says time is up.
+    @MainActor private static func runBackup(_ task: BGTask) {
+        let backup = Backup.shared
+        guard let text = UserDefaults.standard.string(forKey: "server"), let url = URL(string: text),
+              let token = Keychain.read("token") else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        task.expirationHandler = { MainActor.assumeIsolated { backup.stop() } }
+        backup.start(with: ImmichClient(server: url, token: token))
+        Task {
+            while backup.isRunning { try? await Task.sleep(for: .seconds(1)) }
+            backup.scheduleBackground()
+            task.setTaskCompleted(success: true)
+        }
     }
 
     var body: some Scene {
@@ -23,6 +48,19 @@ struct WoofPhotoApp: App {
                 }
             }
             .environment(session)
+            .onOpenURL { url in
+                // woofphoto://asset/<id>
+                if url.host() == "asset", let id = url.pathComponents.last { opened = AssetRef(id: id) }
+            }
+            .fullScreenCover(item: $opened) { asset in
+                Viewer(timeline: Timeline(assets: [asset]), start: asset).environment(session)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                let backup = Backup.shared
+                if phase == .active, backup.enabled, let client = session.client { backup.start(with: client) }
+                if phase == .active, let client = session.client { Task { await FeaturedPhotos.refreshIfStale(client: client) } }
+                if phase == .background { backup.scheduleBackground() }
+            }
             #if DEBUG
             .task { ImmichClient.selfCheck() }
             #endif

@@ -5,6 +5,8 @@ import SwiftUI
 @MainActor @Observable
 final class Library {
     var months: [TimeBucket]?
+    /// The last failure while loading months or thumbnails, shown under the grid.
+    var problem: String?
     private(set) var assets: [String: BucketAssets] = [:]
     private var loading: Set<String> = []
 
@@ -17,7 +19,18 @@ final class Library {
         loading.insert(key)
         defer { loading.remove(key) }
         // a failed or cancelled month stays grey and is retried when its cells appear again
-        if let month = try? await client.bucket(key, order: "asc") { assets[key] = month }
+        do {
+            assets[key] = try await client.bucket(key, order: "asc")
+        } catch {
+            report(error, while: "loading \(key.prefix(7))")
+        }
+    }
+
+    func report(_ error: Error, while step: String) {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+        let code = (error as? URLError).map { " (URLError \($0.code.rawValue))" }
+            ?? (error is DecodingError ? "\n\(String(describing: error).prefix(300))" : "")
+        problem = "Failed \(step): \(error.explanation)\(code)"
     }
 }
 
@@ -87,6 +100,17 @@ struct LibraryView: View {
             }
         }
         .defaultScrollAnchor(.bottom)
+        .safeAreaInset(edge: .bottom) {
+            if let problem = library.problem {
+                Text(problem)
+                    .font(.footnote)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+                    .onTapGesture { library.problem = nil }
+            }
+        }
+        .environment(library)
         .simultaneousGesture(MagnifyGesture().onEnded { value in
             let steps = Self.columnSteps
             let current = steps.firstIndex(of: columns) ?? 1
@@ -114,6 +138,7 @@ struct Thumbnail: View {
     let index: Int
 
     @Environment(Session.self) private var session
+    @Environment(Library.self) private var library
     @State private var loaded: UIImage?
 
     private var id: String? { assets?.id[index] }
@@ -159,11 +184,22 @@ struct Thumbnail: View {
     }
 
     private func load() async {
-        guard let id, let client = session.client, ImageCache.thumbnail(id) == nil,
-              let data = try? await client.thumbnail(id),
-              let image = await UIImage(data: data)?.byPreparingForDisplay() else { return }
-        ImageCache.store(image, for: id)
-        loaded = image
+        guard let id, let client = session.client, ImageCache.thumbnail(id) == nil else { return }
+        if let hash = assets?.thumbhash?[index] ?? nil, placeholder == nil {
+            library.problem = "Failed to decode the thumbhash \(hash)"
+        }
+        do {
+            let data = try await client.thumbnail(id)
+            guard let image = UIImage(data: data) else {
+                library.problem = "Failed to read a thumbnail: \(data.count) bytes that aren't an image"
+                return
+            }
+            let ready = await image.byPreparingForDisplay() ?? image
+            ImageCache.store(ready, for: id)
+            loaded = ready
+        } catch {
+            library.report(error, while: "loading a thumbnail")
+        }
     }
 }
 

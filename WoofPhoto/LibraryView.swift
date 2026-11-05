@@ -173,14 +173,11 @@ struct Thumbnail: View {
         return ImageCache.placeholder(id: id, hash: hash)
     }
 
-    /// "0:01:05.120000" becomes "1:05", like the Photos grid.
+    /// 65,120 ms becomes "1:05", like the Photos grid.
     private var duration: String? {
-        guard !isImage, let text = assets?.duration?[index] ?? nil else { return nil }
-        let parts = text.split(separator: ":").compactMap { Double($0) }
-        guard parts.count == 3 else { return nil }
-        let seconds = Int(parts[0] * 3600 + parts[1] * 60 + parts[2].rounded())
-        let clock = Duration.seconds(seconds)
-        return clock.formatted(.time(pattern: seconds >= 3600 ? .hourMinuteSecond : .minuteSecond))
+        guard !isImage, let milliseconds = assets?.duration?[index] ?? nil else { return nil }
+        let seconds = Int((Double(milliseconds) / 1000).rounded())
+        return Duration.seconds(seconds).formatted(.time(pattern: seconds >= 3600 ? .hourMinuteSecond : .minuteSecond))
     }
 
     private func load() async {

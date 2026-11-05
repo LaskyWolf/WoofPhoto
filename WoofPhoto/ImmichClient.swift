@@ -116,8 +116,8 @@ struct BucketAssets: Decodable {
     var id: [String]
     var isImage: [Bool]?
     var thumbhash: [String?]?
-    /// "0:00:12.345678" for videos.
-    var duration: [String?]?
+    /// Milliseconds, for videos and GIFs.
+    var duration: [Int?]?
     var livePhotoVideoId: [String?]?
 }
 
@@ -141,7 +141,7 @@ extension Error {
     /// A message that says what went wrong and what to try, for the errors a home server usually causes.
     var explanation: String {
         if self is DecodingError {
-            return "This address answered, but not as an Immich server. Enter only the address, for example http://192.168.1.5:2283."
+            return "The server answered with data WoofPhoto can't read. When signing in, enter only the address, for example http://192.168.1.5:2283."
         }
         guard let error = self as? URLError else { return localizedDescription }
         switch error.code {

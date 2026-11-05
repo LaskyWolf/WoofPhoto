@@ -79,8 +79,17 @@ struct ImmichClient {
         try await get("/timeline/buckets", query: ["visibility": "timeline"])
     }
 
-    func bucket(_ key: String) async throws -> BucketAssets {
-        try await get("/timeline/bucket", query: ["timeBucket": key, "visibility": "timeline"])
+    func bucket(_ key: String, order: String = "desc") async throws -> BucketAssets {
+        try await get("/timeline/bucket", query: ["timeBucket": key, "visibility": "timeline", "order": order])
+    }
+
+    /// The small square-ish preview (about 250 px). A cached copy wins: a photo's thumbnail never changes.
+    func thumbnail(_ id: String) async throws -> Data {
+        var request = request("/assets/\(id)/thumbnail", query: ["size": "thumbnail"])
+        request.cachePolicy = .returnCacheDataElseLoad
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.check(response, data)
+        return data
     }
 
     /// Downloads the original file and keeps the server's file name, so its extension says what it is.
@@ -106,6 +115,9 @@ struct TimeBucket: Decodable {
 struct BucketAssets: Decodable {
     var id: [String]
     var isImage: [Bool]?
+    var thumbhash: [String?]?
+    /// "0:00:12.345678" for videos.
+    var duration: [String?]?
     var livePhotoVideoId: [String?]?
 }
 

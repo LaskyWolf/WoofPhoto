@@ -4,11 +4,16 @@ import SwiftUI
 struct WoofPhotoApp: App {
     @State private var session = Session()
 
+    init() {
+        // Downloaded thumbnails stay on disk up to this size; iOS removes the oldest beyond it.
+        URLCache.shared = URLCache(memoryCapacity: 32 << 20, diskCapacity: 512 << 20)
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {
                 if session.client != nil {
-                    NavigationStack { SpikesView() }
+                    LibraryView()
                 } else {
                     SignInView()
                 }

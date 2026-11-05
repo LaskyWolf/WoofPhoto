@@ -90,7 +90,10 @@ struct PetsSection: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding()
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Tokens.cardColor, in: .rect(cornerRadius: Tokens.cardRadius))
+        .padding(.horizontal, Tokens.screenPadding)
     }
 
     private func pet(_ title: String, ids: [String], symbol: String) -> some View {

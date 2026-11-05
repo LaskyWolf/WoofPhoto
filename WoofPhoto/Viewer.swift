@@ -49,14 +49,21 @@ struct Viewer: View {
             .scrollPosition(id: $current)
             .scrollIndicators(.hidden)
             .ignoresSafeArea()
-            .background(chromeHidden ? Color.black : Color(.systemBackground))
+            // always black, like WoofMusic's player, so the photo's own colours lead
+            .background(Color.black)
             .navigationTitle(detail?.date?.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.wide).year()) ?? "")
-            .navigationSubtitle(detail?.date?.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()) ?? "")
+            .navigationSubtitle([detail?.date?.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()), detail?.exifInfo?.city]
+                .compactMap { $0 }.joined(separator: " · "))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)
             .statusBarHidden(chromeHidden)
             .toolbar { toolbar }
-            .safeAreaInset(edge: .bottom) { stackStrip }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 8) {
+                    cameraChips
+                    stackStrip
+                }
+            }
             .overlay { if busy { ProgressView().controlSize(.large) } }
             .task(id: current) {
                 if let asset = timeline.assets.first(where: { $0.id == current }) { OpenPhoto.shared.asset = asset }
@@ -94,6 +101,7 @@ struct Viewer: View {
             }
             .alert(message ?? "", isPresented: Binding { message != nil } set: { if !$0 { message = nil } }) {}
         }
+        .preferredColorScheme(.dark)
     }
 
     // MARK: Parts
@@ -165,13 +173,51 @@ struct Viewer: View {
             Button("Share", systemImage: "square.and.arrow.up") { Task { await share() } }
             Spacer()
             let favorite = shownAsset?.isFavorite == true
-            Button(favorite ? "Unfavorite" : "Favorite", systemImage: favorite ? "heart.fill" : "heart") {
+            Button {
                 Task { await toggleFavorite() }
+            } label: {
+                Label(favorite ? "Unfavorite" : "Favorite", systemImage: favorite ? "heart.fill" : "heart")
+                    .foregroundStyle(favorite ? AnyShapeStyle(.pink) : AnyShapeStyle(.primary))
+                    .contentTransition(.symbolEffect(.replace))
             }
+            .sensoryFeedback(.impact(weight: .light), trigger: favorite)
             Spacer()
             Button("Info", systemImage: "info.circle") { showsInfo = true }
             Spacer()
             Button("Delete", systemImage: "trash") { confirmsDelete = true }
+        }
+    }
+
+    /// The camera, lens and exposure as small chips above the buttons; hidden with the buttons.
+    @ViewBuilder private var cameraChips: some View {
+        if !chromeHidden, let exif = detail?.exifInfo {
+            let chips = [
+                exif.model ?? exif.make,
+                exif.focalLength.map { "\(Int($0.rounded())) mm" },
+                exif.fNumber.map { "ƒ\($0.formatted(.number.precision(.fractionLength(0...1))))" },
+                exif.exposureTime.map { "\($0) s" },
+                exif.iso?.value.map { "ISO \($0)" },
+            ].compactMap { $0 }
+            if !chips.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(chips, id: \.self) { text in
+                            Text(text)
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .glassEffect(.regular, in: .capsule)
+                        }
+                    }
+                    .padding(.horizontal, Tokens.screenPadding)
+                }
+                .scrollIndicators(.hidden)
+                .onTapGesture { showsInfo = true }
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("Shows the photo's details")
+                .transition(.opacity)
+            }
         }
     }
 

@@ -9,11 +9,17 @@ struct PeopleView: View {
 
     var body: some View {
         ScrollView {
-            PetsSection()
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 16)], spacing: 20) {
-                ForEach(shown) { PersonTile(person: $0) }
+            VStack(alignment: .leading, spacing: Tokens.sectionGap) {
+                PetsSection()
+                if !shown.isEmpty {
+                    Text("People").font(.title3.bold()).padding(.horizontal, Tokens.screenPadding)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 20) {
+                        ForEach(shown) { PersonTile(person: $0, size: nil) }
+                    }
+                    .padding(.horizontal, Tokens.screenPadding)
+                }
             }
-            .padding()
+            .padding(.vertical)
         }
         .overlay {
             if people == nil, error == nil { ProgressView() }
@@ -40,13 +46,15 @@ struct PeopleView: View {
 
 struct PersonTile: View {
     let person: Person
+    /// Fixed width in a row; nil fills a grid column.
+    var size: CGFloat? = 88
     @Environment(Pins.self) private var pins
 
     var body: some View {
         NavigationLink(value: Shelf.person(id: person.id, name: person.name)) {
             VStack(spacing: 6) {
                 PersonPhoto(id: person.id)
-                    .frame(width: 88, height: 88)
+                    .aspectRatio(1, contentMode: .fit)
                     .clipShape(.circle)
                     .overlay(alignment: .bottomTrailing) {
                         if person.isFavorite == true {
@@ -59,7 +67,7 @@ struct PersonTile: View {
                     .foregroundStyle(person.name.isEmpty ? .secondary : .primary)
                     .lineLimit(1)
             }
-            .frame(width: 96)
+            .frame(width: size)
         }
         .buttonStyle(.plain)
         .pinnable(.person(id: person.id, name: person.name), pins: pins)

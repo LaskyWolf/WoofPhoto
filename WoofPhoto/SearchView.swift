@@ -23,71 +23,104 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(spacing: 0) {
+                TabHeader(title: "Search") {
+                    HeaderButton(label: "Filters", systemImage: "line.3.horizontal.decrease", isOn: filters.isActive) { showsFilters = true }
+                }
+                FilterChips(items: Scope.allCases, selection: $scope) { $0.rawValue }
+                    .padding(.bottom, 8)
                 if query.isEmpty && !filters.isActive {
                     suggestions
                 } else {
                     resultsView
                 }
             }
-            .navigationTitle("Search")
-            .searchable(text: $query, prompt: "Photos, People, Places…")
-            .searchScopes($scope) {
-                ForEach(Scope.allCases, id: \.self) { Text($0.rawValue) }
-            }
-            .onSubmit(of: .search) { remember(query) }
-            .toolbar {
-                Button("Filters", systemImage: filters.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") {
-                    showsFilters = true
-                }
-            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showsFilters) { FiltersSheet(filters: $filters) }
             .navigationDestination(for: Shelf.self) { $0.destination }
             .task(id: SearchKey(query: query, scope: scope, filters: filters)) { await search() }
             .task { await loadSuggestions() }
         }
+        .searchable(text: $query, prompt: "Photos, people, places")
+        .autocorrectionDisabled()
+        .onSubmit(of: .search) { remember(query) }
         .environment(pins)
     }
 
     // MARK: Suggestions
 
     private var suggestions: some View {
-        List {
-            if !recent.isEmpty {
-                Section("Recent Searches") {
-                    ForEach(recent.split(separator: "\n").map(String.init), id: \.self) { text in
-                        Button(text, systemImage: "clock") { query = text }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                if !recent.isEmpty {
+                    sectionTitle("Recent") {
+                        Button("Clear") { withAnimation { recent = "" } }.font(.subheadline.weight(.semibold))
                     }
-                    Button("Clear", role: .destructive) { recent = "" }
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(recent.split(separator: "\n").map(String.init), id: \.self) { text in
+                                Button { query = text } label: { chip(text, symbol: "clock") }
+                                    .buttonStyle(ZoomPressStyle())
+                            }
+                        }
+                        .padding(.horizontal, Tokens.screenPadding)
+                    }
+                    .scrollIndicators(.hidden)
                 }
-            }
-            if !people.isEmpty {
-                Section("People") {
+                if !people.isEmpty {
+                    sectionTitle("People and Pets") {
+                        NavigationLink("See All") { PeopleView() }.font(.subheadline.weight(.semibold))
+                    }
                     ScrollView(.horizontal) {
                         LazyHStack(spacing: 12) {
                             ForEach(people.prefix(30)) { PersonTile(person: $0) }
                         }
+                        .padding(.horizontal, Tokens.screenPadding)
                     }
                     .scrollIndicators(.hidden)
                 }
-            }
-            if !cities.isEmpty {
-                Section("Places") {
-                    ForEach(cities.prefix(30)) { asset in
-                        if let city = asset.exifInfo?.city {
-                            NavigationLink {
-                                SearchedGrid(title: city) { try await $0.searchMetadata(["city": city]) }
-                            } label: {
-                                HStack {
-                                    Thumbnail(asset: asset.ref).frame(width: 44, height: 44).clipShape(.rect(cornerRadius: 6))
-                                    Text(city)
+                if !cities.isEmpty {
+                    sectionTitle("Places") { EmptyView() }
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())], spacing: 8) {
+                        ForEach(cities.prefix(30)) { asset in
+                            if let city = asset.exifInfo?.city {
+                                NavigationLink {
+                                    SearchedGrid(title: city) { try await $0.searchMetadata(["city": city]) }
+                                } label: {
+                                    Color.clear
+                                        .frame(height: 96)
+                                        .overlay { Thumbnail(asset: asset.ref, size: "preview") }
+                                        .overlay(alignment: .bottomLeading) {
+                                            Text(city)
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.white)
+                                                .lineLimit(1)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(10)
+                                                .background(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                                        }
+                                        .clipShape(.rect(cornerRadius: Tokens.tileRadius))
                                 }
+                                .buttonStyle(ZoomPressStyle())
                             }
                         }
                     }
+                    .padding(.horizontal, Tokens.screenPadding)
                 }
             }
+            .padding(.bottom, Tokens.sectionGap)
         }
+    }
+
+    private func sectionTitle<Trailing: View>(_ title: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
+            Spacer()
+            trailing()
+        }
+        .padding(.horizontal, Tokens.screenPadding)
+        .padding(.top, 16)
     }
 
     // MARK: Results
@@ -106,16 +139,19 @@ struct SearchView: View {
                                                                  "takenBefore": dateRange.end.formatted(.iso8601)])
                                 }
                             } label: { chip(dateRange.title, symbol: "calendar") }
+                            .buttonStyle(ZoomPressStyle())
                         }
                         ForEach(matches) { person in
                             NavigationLink(value: Shelf.person(id: person.id, name: person.name)) { chip(person.name, symbol: "person.crop.circle") }
+                                .buttonStyle(ZoomPressStyle())
                         }
                         ForEach(albumMatches) { album in
                             NavigationLink(value: Shelf.album(id: album.id, name: album.albumName)) { chip(album.albumName, symbol: "rectangle.stack") }
+                                .buttonStyle(ZoomPressStyle())
                         }
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, Tokens.screenPadding)
+                    .padding(.bottom, 8)
                 }
                 .scrollIndicators(.hidden)
             }
@@ -134,11 +170,16 @@ struct SearchView: View {
     }
 
     private func chip(_ title: String, symbol: String) -> some View {
-        Label(title, systemImage: symbol)
-            .font(.subheadline)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.quaternary, in: .capsule)
+        Label {
+            Text(title).foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(.secondary)
+        }
+        .font(.subheadline.weight(.medium))
+        .lineLimit(1)
+        .padding(.horizontal, 14)
+        .frame(minHeight: Tokens.controlHeight)
+        .background(Color(.systemGray5), in: .capsule)
     }
 
     /// "2023" or "May 2023" typed in the field, as a date range.

@@ -12,11 +12,24 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Account") {
-                LabeledContent("Name", value: me?.name ?? "…")
-                LabeledContent("Email", value: me?.email ?? "…")
-                LabeledContent("Server", value: session.client?.server.absoluteString ?? "?")
-                if let version { LabeledContent("Server Version", value: version) }
+            Section {
+                HStack(spacing: 12) {
+                    Text(me?.name.first.map(String.init) ?? "")
+                        .font(.title2.bold())
+                        .foregroundStyle(.white)
+                        .frame(width: 52, height: 52)
+                        .background(.tint, in: .circle)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(me?.name ?? "…").font(.headline)
+                        Text(me?.email ?? "…")
+                        Text([session.client?.server.host(), version.map { "Immich \($0)" }].compactMap { $0 }.joined(separator: " · "))
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+                .padding(.vertical, 4)
             }
             Section("Accent Color") {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 14) {
@@ -43,11 +56,11 @@ struct SettingsView: View {
                 .sensoryFeedback(.selection, trigger: accent)
             }
             Section {
-                NavigationLink("Backup") { BackupView() }
-                NavigationLink("Featured Photos Widget") { WidgetSettings() }
+                NavigationLink { BackupView() } label: { row("Backup", "icloud.and.arrow.up", .green) }
+                NavigationLink { WidgetSettings() } label: { row("Featured Photos Widget", "square.grid.2x2", .purple) }
             }
             Section {
-                LabeledContent("Saved Thumbnails", value: Int64(cacheSize).formatted(.byteCount(style: .file)))
+                LabeledContent { Text(Int64(cacheSize).formatted(.byteCount(style: .file))) } label: { row("Saved Thumbnails", "internaldrive", .gray) }
                 Button("Clear Saved Thumbnails") {
                     URLCache.shared.removeAllCachedResponses()
                     try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: "originals"))
@@ -59,7 +72,7 @@ struct SettingsView: View {
                 Text("Thumbnails and photos you opened stay on this iPhone, so they show without a connection. Up to 512 MB.")
             }
             Section {
-                NavigationLink("M0 Checks") { SpikesView() }
+                NavigationLink { SpikesView() } label: { row("M0 Checks", "checklist", .gray) }
             }
             Section {
                 Button("Sign Out", role: .destructive) { session.signOut() }
@@ -71,6 +84,19 @@ struct SettingsView: View {
             me = try? await client.me()
             let info: ServerVersion? = try? await client.get("/server/version")
             version = info.map { "\($0.major).\($0.minor).\($0.patch)" }
+        }
+    }
+
+    /// A row with a coloured icon square, like iOS Settings.
+    private func row(_ title: String, _ symbol: String, _ color: Color) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: symbol)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(color.gradient, in: .rect(cornerRadius: 7))
         }
     }
 }

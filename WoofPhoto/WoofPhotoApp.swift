@@ -103,44 +103,79 @@ struct SignInView: View {
     @State private var busy = false
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
+        ScrollView {
+            VStack(spacing: 12) {
+                Image("Logo")
+                    .resizable()
+                    .frame(width: 84, height: 84)
+                    .clipShape(.rect(cornerRadius: 20))
+                    .shadow(color: .black.opacity(0.15), radius: 12, y: 6)
+                    .accessibilityHidden(true)
+                Text("WoofPhoto").font(.largeTitle.bold()).padding(.top, 8)
+                Text("Your Immich photos, on your iPhone.").foregroundStyle(.secondary).padding(.bottom, 12)
+
+                field {
                     TextField("Server address", text: $server, prompt: Text("photos.example.com"))
                         .textContentType(.URL)
                         .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } footer: {
-                    Text("The address you open the Immich web app with.")
                 }
-                Section {
+                field {
                     TextField("Email", text: $email)
                         .textContentType(.username)
                         .keyboardType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                }
+                field {
                     SecureField("Password", text: $password)
                         .textContentType(.password)
+                        .onSubmit { if canSignIn { Task { await signIn() } } }
                 }
                 if let error {
-                    Section { Text(error).foregroundStyle(.red) }
+                    Text(error).font(.footnote).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Section {
-                    Button {
-                        Task { await signIn() }
-                    } label: {
-                        if busy { ProgressView() } else { Text("Sign In") }
-                    }
-                    .disabled(busy || server.isEmpty || email.isEmpty || password.isEmpty)
-                    Button("Sign In with SSO") { Task { await signInWithSSO() } }
-                        .disabled(busy || server.isEmpty)
-                } footer: {
-                    Text("SSO needs app.immich:///oauth-callback in the server's OAuth redirect list.")
+
+                Button {
+                    Task { await signIn() }
+                } label: {
+                    Group { if busy { ProgressView() } else { Text("Sign In") } }
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .fontWeight(.semibold)
+                .disabled(!canSignIn)
+                .padding(.top, 8)
+                Button { Task { await signInWithSSO() } } label: {
+                    Text("Sign In with SSO").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .fontWeight(.semibold)
+                .disabled(busy || server.isEmpty)
+
+                Text("The server is the address you open the Immich web app with. SSO needs app.immich:///oauth-callback in the server's OAuth redirect list.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 4)
             }
-            .navigationTitle("WoofPhoto")
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .padding(.horizontal, 24)
+            .padding(.top, 64)
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
         }
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var canSignIn: Bool { !busy && !server.isEmpty && !email.isEmpty && !password.isEmpty }
+
+    /// A text field on its own card.
+    private func field(@ViewBuilder _ content: () -> some View) -> some View {
+        content()
+            .padding(.horizontal, 16)
+            .frame(minHeight: 50)
+            .background(Tokens.cardColor, in: .rect(cornerRadius: 14))
     }
 
     private func signIn() async {

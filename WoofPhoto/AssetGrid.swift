@@ -15,6 +15,8 @@ struct AssetGrid: View {
     var showsLevels = false
     /// A tab's own title: the grid draws WoofMusic's header instead of the navigation bar.
     var title: String?
+    /// Scrolls above the photos, like an album's cover. The grid then opens at the top.
+    var hero: AnyView?
 
     @Environment(Session.self) private var session
     @AppStorage("library.columns") private var columns = 5
@@ -124,6 +126,7 @@ struct AssetGrid: View {
         let spacing = 1.5
         return ScrollViewReader { proxy in
             ScrollView {
+                hero
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns), spacing: spacing) {
                     ForEach(months) { month in
                         ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
@@ -164,7 +167,7 @@ struct AssetGrid: View {
                     drag = nil
                 }, including: selection == nil ? .subviews : .all)
             }
-            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(hero == nil ? .bottom : .top)
             .overlay(alignment: .trailing) {
                 if months.count > 1, selection == nil { Scrubber(months: months, proxy: proxy) }
             }

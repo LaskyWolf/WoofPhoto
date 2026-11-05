@@ -124,6 +124,7 @@ struct AlbumView: View {
     @State private var newName = ""
     @State private var showsActivity = false
     @State private var confirmsDelete = false
+    @State private var playsSlideshow = false
 
     init(id: String, name: String) {
         self.id = id
@@ -132,13 +133,10 @@ struct AlbumView: View {
     }
 
     var body: some View {
-        AssetGrid(timeline: timeline)
+        AssetGrid(timeline: timeline, hero: AnyView(hero))
             .navigationTitle(name)
-            .navigationSubtitle(timeline.months == nil ? "" : "\(timeline.count.formatted()) Items")
+            .toolbarTitleDisplayMode(.inline)
             .toolbar {
-                if album?.shared == true || album?.isActivityEnabled == true {
-                    Button("Activity", systemImage: "bubble.left.and.bubble.right") { showsActivity = true }
-                }
                 Menu("More", systemImage: "ellipsis") {
                     Button("Rename", systemImage: "pencil") {
                         newName = name
@@ -166,7 +164,58 @@ struct AlbumView: View {
                 }
             }
             .sheet(isPresented: $showsActivity) { ActivitySheet(album: id) }
+            .fullScreenCover(isPresented: $playsSlideshow) { Slideshow(assets: timeline.assets, start: 0) }
             .task { album = try? await session.client?.album(id) }
+    }
+
+    /// The cover with the title on it, then Play, like a WoofMusic playlist.
+    private var hero: some View {
+        VStack(spacing: 12) {
+            Color.clear
+                .aspectRatio(4 / 3, contentMode: .fit)
+                .overlay {
+                    Thumbnail(asset: album?.albumThumbnailAssetId.map { AssetRef(id: $0) }, size: "preview", square: false)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name).font(.title.bold()).lineLimit(2)
+                        Text(subtitle).font(.subheadline).foregroundStyle(.white.opacity(0.8))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                }
+                .clipShape(.rect(cornerRadius: Tokens.cardRadius))
+            HStack(spacing: 8) {
+                Button { playsSlideshow = true } label: {
+                    Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(timeline.assets.isEmpty)
+                if album?.shared == true || album?.isActivityEnabled == true {
+                    Button { showsActivity = true } label: {
+                        Label("Activity", systemImage: "bubble.left.and.bubble.right").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .fontWeight(.semibold)
+        }
+        .padding(.horizontal, Tokens.screenPadding)
+        .padding(.bottom, 8)
+    }
+
+    /// "128 Items · Jun – Aug 2026"
+    private var subtitle: String {
+        let count = timeline.months == nil ? nil : "\(timeline.count.formatted()) Items"
+        var range: String?
+        if let start = album?.startDate.flatMap({ Date(immich: $0) }), let end = album?.endDate.flatMap({ Date(immich: $0) }) {
+            range = (start..<max(start, end)).formatted(.interval.month(.abbreviated).year())
+        }
+        return [count, range].compactMap { $0 }.joined(separator: " · ")
     }
 }
 

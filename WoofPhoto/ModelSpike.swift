@@ -1,5 +1,5 @@
 import SwiftUI
-import onnxruntime_objc
+import OnnxRuntimeBindings
 import os
 
 /// M0 spike: time and peak memory of the two Spatial Scenes models on this iPhone.

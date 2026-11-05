@@ -100,7 +100,7 @@ Background task identifiers already work with FlareStore in your KDE Connect for
 | Extensions (widget, share extension) need their own profile and a shared App Group with the app. **Unknown:** whether FlareStore's per-extension profile keeps the App Group working. | The widget or "Upload to Immich" from the share sheet cannot read the login or the cache. | Test it in the M0 spike before building on it. |
 | Changing the bundle ID breaks push and Keychain sharing for that copy. | None if the bundle ID stays the same. | Keep one fixed bundle ID; don't use FlareStore's custom bundle ID option for this app. |
 | iOS decides when background tasks run. | Backup is slower than Apple's iCloud sync, which runs as a system service. | Upload on open and resume, plus `BGProcessingTask` while charging. This is the same limit the official app has. |
-| An Immich server on the home network over plain HTTP is blocked by App Transport Security. | Login fails with a network error. | Add `NSAllowsLocalNetworking` and the Local Network usage text. Recommend HTTPS for access outside home. |
+| An Immich server on the home network over plain HTTP is blocked by App Transport Security. | Login fails with a network error. | Set `NSAllowsArbitraryLoads` (and not `NSAllowsLocalNetworking`, which only covers `.local` names and switches the first key off). Add the Local Network usage text. |
 | The look copies Apple Photos. | Using system components is fine. Apple's Photos icon or name is not. | Name: WoofPhoto, with its own icon. |
 
 ## Spikes to run first

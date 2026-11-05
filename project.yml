@@ -12,7 +12,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
     TARGETED_DEVICE_FAMILY: "1"
 targets:
   WoofPhoto:
@@ -41,9 +41,11 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
-        # An Immich server at home is often plain HTTP on a local address.
+        # Immich servers are often plain HTTP: on an IP address, a .lan name or a VPN.
+        # NSAllowsLocalNetworking only covers .local and single-word names, and when it is
+        # present iOS ignores NSAllowsArbitraryLoads, so only this key is set.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: WoofPhoto connects to your Immich server on the local network.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

@@ -112,7 +112,7 @@ extension Error {
         guard let error = self as? URLError else { return localizedDescription }
         switch error.code {
         case .appTransportSecurityRequiresSecureConnection:
-            return "iOS blocks plain HTTP outside the local network. Use the server's HTTPS address."
+            return "iOS blocked the plain HTTP connection. Update WoofPhoto: this build is missing the HTTP permission."
         case .cannotFindHost, .dnsLookupFailed:
             return "The server name was not found. Check the spelling, or use the IP address."
         case .cannotConnectToHost:

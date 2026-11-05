@@ -14,6 +14,9 @@ struct WoofPhotoApp: App {
                 }
             }
             .environment(session)
+            #if DEBUG
+            .task { ImmichClient.selfCheck() }
+            #endif
         }
     }
 }

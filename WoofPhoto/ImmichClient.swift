@@ -6,15 +6,33 @@ struct ImmichClient {
     let server: URL
     var token: String?
 
-    /// Accepts "photos.example.com", "192.168.1.5:2283" or a full URL, with or without "/api".
+    /// Accepts "photos.example.com", "192.168.1.5:2283" or any URL copied from the web app,
+    /// such as ".../auth/login": Immich always serves its API from the root, so the path is dropped.
+    /// Without a scheme, an address with a port is Immich's own HTTP port; one without is a proxy on HTTPS.
     static func serverURL(from text: String) -> URL? {
         var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        while text.hasSuffix("/") { text.removeLast() }
-        if text.hasSuffix("/api") { text.removeLast(4) }
-        if !text.contains("://") { text = "https://" + text }
-        guard let url = URL(string: text), url.host() != nil else { return nil }
-        return url
+        if !text.contains("://") {
+            let hasPort = text.split(separator: "/").first?.contains(":") == true
+            text = (hasPort ? "http://" : "https://") + text
+        }
+        guard var components = URLComponents(string: text),
+              ["http", "https"].contains(components.scheme?.lowercased()),
+              let host = components.host, !host.isEmpty else { return nil }
+        components.path = ""
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
+
+    #if DEBUG
+    static func selfCheck() {
+        assert(serverURL(from: "http://server.ts.net:2283/auth/login?continue=%2F")?.absoluteString == "http://server.ts.net:2283")
+        assert(serverURL(from: " https://photos.example.com/api/ ")?.absoluteString == "https://photos.example.com")
+        assert(serverURL(from: "photos.example.com")?.absoluteString == "https://photos.example.com")
+        assert(serverURL(from: "192.168.1.5:2283")?.absoluteString == "http://192.168.1.5:2283")
+        assert(serverURL(from: "not a url") == nil)
+    }
+    #endif
 
     func request(_ path: String, query: [String: String] = [:]) -> URLRequest {
         var components = URLComponents(url: server.appending(path: "api" + path), resolvingAgainstBaseURL: false)!
@@ -109,6 +127,9 @@ enum ImmichError: LocalizedError {
 extension Error {
     /// A message that says what went wrong and what to try, for the errors a home server usually causes.
     var explanation: String {
+        if self is DecodingError {
+            return "This address answered, but not as an Immich server. Enter only the address, for example http://192.168.1.5:2283."
+        }
         guard let error = self as? URLError else { return localizedDescription }
         switch error.code {
         case .appTransportSecurityRequiresSecureConnection:

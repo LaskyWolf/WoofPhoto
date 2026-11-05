@@ -398,6 +398,14 @@ enum ImageCache {
     static func image(_ id: String, size: String) -> UIImage? { images.object(forKey: "\(size):\(id)" as NSString) }
     static func store(_ image: UIImage, for id: String, size: String) { images.setObject(image, forKey: "\(size):\(id)" as NSString) }
 
+    /// Drops every saved image of an asset after an edit changed it, in memory and on disk.
+    static func forget(_ id: String, client: ImmichClient) {
+        for size in ["thumbnail", "preview", "fullsize"] {
+            images.removeObject(forKey: "\(size):\(id)" as NSString)
+            URLCache.shared.removeCachedResponse(for: client.request("/assets/\(id)/thumbnail", query: ["size": size]))
+        }
+    }
+
     static func placeholder(id: String, hash: String) -> UIImage? {
         let key = "hash:\(id)" as NSString
         if let image = images.object(forKey: key) { return image }

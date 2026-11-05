@@ -132,6 +132,39 @@ struct ImmichClient {
         return AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token ?? "")"]])
     }
 
+    /// Uploads a file as a new asset and returns its id. The form is written to disk first and streamed,
+    /// so a large video doesn't fill memory. `fields` needs at least fileCreatedAt and fileModifiedAt.
+    func upload(_ file: URL, fields: [String: String], cellular: Bool = true) async throws -> String {
+        let boundary = "WoofPhoto-\(UUID().uuidString)"
+        let body = FileManager.default.temporaryDirectory.appending(path: "upload-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: body) }
+        FileManager.default.createFile(atPath: body.path, contents: nil)
+        let out = try FileHandle(forWritingTo: body)
+        let all = [
+            "deviceAssetId": "woofphoto-\(UUID().uuidString)",
+            "deviceId": "WoofPhoto",
+            "filename": file.lastPathComponent,
+        ].merging(fields) { $1 }
+        for (name, value) in all {
+            try out.write(contentsOf: Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
+        }
+        try out.write(contentsOf: Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"assetData\"; filename=\"\(file.lastPathComponent)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8))
+        let input = try FileHandle(forReadingFrom: file)
+        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { try out.write(contentsOf: chunk) }
+        try input.close()
+        try out.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+        try out.close()
+
+        var request = request("/assets")
+        request.httpMethod = "POST"
+        request.timeoutInterval = 300
+        request.allowsCellularAccess = cellular
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: body)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(Uploaded.self, from: data).id
+    }
+
     /// Downloads the original file once and keeps the server's file name, so its extension says what it is.
     func downloadOriginal(_ id: String) async throws -> URL {
         let folder = FileManager.default.temporaryDirectory.appending(path: "originals/\(id)")
@@ -197,6 +230,7 @@ struct BucketAssets: Decodable {
 }
 
 private struct Pong: Decodable { var res: String }
+private struct Uploaded: Decodable { var id: String }
 private struct LoginResponse: Decodable { var accessToken: String }
 private struct ServerError: Decodable { var message: String? }
 

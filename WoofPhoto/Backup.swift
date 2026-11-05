@@ -169,39 +169,14 @@ final class Backup {
         return file
     }
 
-    /// Uploads one file as a multipart form, streamed from disk so large videos don't fill memory.
     private func send(_ file: URL, of asset: PHAsset, client: ImmichClient, extra: [String: String]) async throws -> String {
-        let boundary = "WoofPhoto-\(UUID().uuidString)"
-        let body = file.deletingLastPathComponent().appending(path: "body-\(file.lastPathComponent)")
-        FileManager.default.createFile(atPath: body.path, contents: nil)
-        let out = try FileHandle(forWritingTo: body)
-        defer { try? out.close() }
         let fields = [
             "deviceAssetId": asset.localIdentifier,
-            "deviceId": "WoofPhoto-\(UIDevice.current.identifierForVendor?.uuidString ?? "iPhone")",
             "fileCreatedAt": (asset.creationDate ?? .now).formatted(.iso8601),
             "fileModifiedAt": (asset.modificationDate ?? asset.creationDate ?? .now).formatted(.iso8601),
-            "filename": file.lastPathComponent,
             "isFavorite": String(asset.isFavorite),
         ].merging(extra) { $1 }
-        for (name, value) in fields {
-            try out.write(contentsOf: Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
-        }
-        try out.write(contentsOf: Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"assetData\"; filename=\"\(file.lastPathComponent)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8))
-        let input = try FileHandle(forReadingFrom: file)
-        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { try out.write(contentsOf: chunk) }
-        try input.close()
-        try out.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
-        try out.close()
-
-        var request = client.request("/assets")
-        request.httpMethod = "POST"
-        request.timeoutInterval = 300
-        request.allowsCellularAccess = !wifiOnly
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: body)
-        try ImmichClient.check(response, data)
-        return try JSONDecoder().decode(UploadResult.self, from: data).id
+        return try await client.upload(file, fields: fields, cellular: !wifiOnly)
     }
 
     private static func sha1(_ file: URL) throws -> String {
@@ -241,10 +216,6 @@ private struct UploadCheck: Decodable {
         var action: String
         var assetId: String?
     }
-}
-
-private struct UploadResult: Decodable {
-    var id: String
 }
 
 /// Backup settings, progress and errors.

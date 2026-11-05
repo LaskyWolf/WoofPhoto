@@ -82,6 +82,12 @@ final class Timeline {
         }
     }
 
+    /// Forgets the loaded month holding `id`, so its cells load it again.
+    func invalidate(containing id: String) {
+        guard let index = months?.firstIndex(where: { $0.assets?.contains { $0.id == id } == true }) else { return }
+        months?[index].assets = nil
+    }
+
     /// Takes assets out after they were deleted, hidden or moved, without reloading.
     func remove(_ ids: Set<String>) {
         guard months != nil else { return }

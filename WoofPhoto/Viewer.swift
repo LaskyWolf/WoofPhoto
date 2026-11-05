@@ -25,6 +25,8 @@ struct Viewer: View {
     @State private var message: String?
     @State private var addsToAlbum = false
     @State private var playsSlideshow = false
+    @State private var editing: AssetRef?
+    @State private var trimming: SharedFile?
 
     init(timeline: Timeline, start: AssetRef) {
         self.timeline = timeline
@@ -71,6 +73,16 @@ struct Viewer: View {
             .fullScreenCover(isPresented: $playsSlideshow) {
                 Slideshow(assets: timeline.assets, start: timeline.assets.firstIndex { $0.id == current } ?? 0)
             }
+            .fullScreenCover(item: $editing) { asset in
+                EditorView(asset: asset) { editSaved() }
+            }
+            .sheet(item: $trimming) { file in
+                VideoTrimmer(file: file.url) { trimmed in
+                    trimming = nil
+                    if let trimmed { Task { await saveTrim(trimmed) } }
+                }
+                .ignoresSafeArea()
+            }
             .sheet(isPresented: $addsToAlbum) {
                 AlbumPicker(assets: [shownID].compactMap { $0 }) { message = "Added to \($0)." }
             }
@@ -86,6 +98,9 @@ struct Viewer: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu("More", systemImage: "ellipsis") {
+                if shownAsset?.localID == nil, timeline.query?.isTrash != true {
+                    Button("Edit", systemImage: "slider.horizontal.3") { Task { await startEdit() } }
+                }
                 Button("Copy", systemImage: "doc.on.doc") { Task { await copy() } }
                 Button("Save to iPhone", systemImage: "square.and.arrow.down") { Task { await save() } }
                 Button("Add to Album…", systemImage: "rectangle.stack.badge.plus") { addsToAlbum = true }
@@ -227,6 +242,38 @@ struct Viewer: View {
             removeCurrent()
             message = done
         }
+    }
+
+    private func startEdit() async {
+        guard let asset = shownAsset, let client = session.client else { return }
+        if asset.isImage {
+            editing = asset
+        } else {
+            await perform {
+                let url = try await client.downloadOriginal(asset.id)
+                trimming = SharedFile(url: url)
+            }
+        }
+    }
+
+    /// The trimmed video uploads as a new item with the original's date, albums and favorite, stacked on top of it.
+    private func saveTrim(_ file: URL) async {
+        guard let id = shownID, let client = session.client else { return }
+        await perform {
+            let detail = try await client.asset(id)
+            let new = try await client.upload(file, fields: ["fileCreatedAt": detail.fileCreatedAt ?? Date.now.formatted(.iso8601),
+                                                             "fileModifiedAt": Date.now.formatted(.iso8601)])
+            try await client.call("PUT", "/assets/copy", body: ["sourceId": id, "targetId": new, "albums": true, "favorite": true,
+                                                                "sharedLinks": true, "stack": false, "sidecar": false])
+            try await client.call("POST", "/stacks", body: ["assetIds": [new, id]])
+            editSaved()
+        }
+    }
+
+    /// An edit may replace the asset with a new one, so the grid reloads its month and the viewer closes.
+    private func editSaved() {
+        if let current { timeline.invalidate(containing: current) }
+        dismiss()
     }
 
     private func removeCurrent() {

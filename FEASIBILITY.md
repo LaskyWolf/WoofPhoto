@@ -6,9 +6,9 @@ The project is possible.
 
 - A SwiftUI app on iOS 26 gets the stock look from system components: tab bar, Liquid Glass, zoom transitions, sheets, menus, SF Symbols.
 - The Immich server already provides most of the data the Photos app shows: timeline, albums, people, places, smart search, memories, favorites, trash, locked folder, duplicates.
-- Three areas need real engineering: Spatial Scenes, camera-roll backup, and working within the certificate's limits (memory, extensions, revokes).
+- Four areas need real engineering: Spatial Scenes, camera-roll backup, editing, and working within the certificate's limits (memory, extensions, revokes).
 
-## Approach: new SwiftUI app, official app kept for backup and editing
+## Approach: new SwiftUI app
 
 | | New SwiftUI app | Fork of the official Flutter app |
 |---|---|---|
@@ -20,8 +20,8 @@ The project is possible.
 
 Decision: a new SwiftUI app.
 
-- Backup from the camera roll and editing are out of scope. The official Immich app stays installed next to this one and keeps doing both. FlareStore has no app limit, so two apps cost nothing.
-- Pets in People, Trips and memory movies are out of scope.
+- WoofPhoto covers every feature of Immich and of Photos, including backup and editing, so it can replace the official Immich app.
+- Features the server lacks (pets, Trips, memory movies) are computed on the device.
 - Spatial Scenes is a port of the local web prototype (`prototype/spatial/index.html`), not new research.
 
 Labels used below:
@@ -57,14 +57,14 @@ Status values:
 | Recently Deleted | Trash | Ready | |
 | Duplicates (merge) | Duplicate detection and resolve | Ready | |
 | Albums, shared albums | Albums, shared albums, activity (likes, comments) | Ready | |
-| People & Pets | People (faces) | Partial | Immich recognises people only. Pets are out of scope. |
+| People & Pets | People (faces) | Partial | Immich recognises people only. **Inference:** Vision's `VNRecognizeAnimalsRequest` finds cats and dogs on the device; telling two dogs apart needs extra work. |
 | Memories (on this day) | Memories, birthday memories (v3.3) | Ready | |
-| Memory movies with music and titles | — | Out of scope | — |
-| Trips | — | Out of scope | — |
+| Memory movies with music and titles | — | On device | AVFoundation builds the video from photos and a music file. |
+| Trips | — | On device | Grouped from the GPS position and date of each asset. |
 | Map / Places | Map markers, places | Ready | MapKit with clustered annotations. |
 | Natural-language search | Smart search (CLIP), Search v2 (v3.2), OCR (v2.3) | Ready | |
 | Live Text, Visual Look Up, subject lift | OCR text only | On device | VisionKit `ImageAnalysisInteraction` works on any image. |
-| Editing: adjust, filters, crop | Mobile editing (v3.0) | Out of scope | Done in the official Immich app. |
+| Editing: adjust, filters, crop | Mobile editing (v3.0) | Partial | Core Image applies the edit on the device. **Unknown:** how Immich 3 stores an edit and its original; read the API before M1's editing items. |
 | Spatial Scenes | — | Missing | Apple's API (`ImagePresentationComponent`) is visionOS only; Apple says it is not available on iOS. Port the web prototype from this folder. |
 | Media types: Videos, Selfies, Portrait, Panoramas, Screenshots, RAW | Type and EXIF filters | Partial | Videos and RAW are direct filters. Selfies, portraits and panoramas need EXIF rules. |
 | Utilities: Receipts, Handwriting, Illustrations, QR codes | Smart search queries | Partial | Saved CLIP queries; quality is lower than Apple's classifiers. |
@@ -73,8 +73,8 @@ Status values:
 | Burst, RAW + JPEG grouping | Stacks | Ready | |
 | Drag to multi-select | — | On device | |
 | Slideshow, AirPlay | — | On device | AVKit. |
-| Camera-roll backup | Upload endpoint, checksum dedup | Out of scope | Done in the official Immich app. |
-| Device photos and server photos in one grid | — | Out of scope | Needs backup; the official app covers it. |
+| Camera-roll backup | Upload endpoint, checksum dedup | Partial | PhotoKit reads the camera roll; a background `URLSession` uploads. iOS decides when background work runs, so large backups finish faster with the app open. |
+| Device photos and server photos in one grid | — | On device | Merge PhotoKit assets and the timeline by checksum. |
 | Featured Photos widget | — | On device | Needs a widget extension and an App Group (see FlareStore section). |
 | Use as wallpaper | — | On device | No public API. "Save to Photos" lets the user set it from Settings. |
 

@@ -33,7 +33,7 @@ xcodegen generate && open WoofPhoto.xcodeproj
 
 ## Spatial Scenes prototype
 
-`prototype/spatial` is the web version of Spatial Scenes that M6 ports to the app. To run it:
+`prototype/spatial` is the web version of Spatial Scenes that M3 ports to the app. To run it:
 
 ```bash
 python3 prototype/spatial/serve.py

@@ -117,15 +117,15 @@ WoofPhoto is a native SwiftUI client for an Immich server. It has every feature 
 
 Port of the web prototype (`prototype/spatial/index.html`). Each step reuses the prototype's logic; only the platform changes.
 
-- [ ] Depth: Depth Anything V2 Small with ONNX Runtime (M0 spike), replacing Transformers.js.
-- [ ] Layer split: depth snap, tears on the far side of sharp jumps, hole as wide as the maximum tilt, shadow band. Port `process()` to Swift with Accelerate for the box blur and erosion.
-- [ ] Fast fill: port the push-pull `fill()` so a scene shows before the AI finishes.
-- [ ] Inpainting: LaMa with ONNX Runtime on the hole's bounding box, replacing onnxruntime-web.
-- [ ] Rendering: two displaced meshes (front with alpha, back layer) in Metal or RealityKit, with the prototype's shader.
-- [ ] Motion: CoreMotion tilt replacing `DeviceOrientationEvent`; Reduce Motion turns it off.
-- [ ] Loading animation from the prototype: scan sweep, depth rising, shimmer on rebuilt areas.
-- [ ] Spatial button in the viewer's top bar, as in Photos.
-- [ ] Cache the depth map and the filled background per asset, so a scene is built only once.
-- [ ] Release each model after use; fall back to the fast fill when memory is low.
+- [x] Depth: Depth Anything V2 Small with ONNX Runtime (M0 spike), replacing Transformers.js.
+- [x] Layer split: depth snap, tears on the far side of sharp jumps, hole as wide as the maximum tilt, shadow band. Port `process()` to Swift with plain loops; switch to Accelerate if the split is slow on the iPhone.
+- [x] Fast fill: port the push-pull `fill()` so a scene shows before the AI finishes.
+- [x] Inpainting: LaMa with ONNX Runtime on the hole's bounding box, replacing onnxruntime-web.
+- [x] Rendering: two displaced meshes (front with alpha, back layer) in Metal, with the prototype's shader.
+- [x] Motion: CoreMotion tilt replacing `DeviceOrientationEvent`; Reduce Motion turns it off.
+- [x] Loading animation from the prototype: scan sweep, depth rising, shimmer on rebuilt areas.
+- [x] Spatial button in the viewer's top bar, as in Photos.
+- [x] Cache the depth map and the filled background per asset, so a scene is built only once.
+- [x] Release each model after use; fall back to the fast fill when memory is low.
 
 **Check:** on the oldest target iPhone, the cats test photo and your test drawings build in under 30 seconds without iOS closing the app, and match the web prototype's result.

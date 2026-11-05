@@ -157,8 +157,7 @@ struct Photo: Sendable {
 
     init?(_ image: UIImage) {
         let scale = min(1, Double(Self.workSize) / max(image.size.width, image.size.height))
-        width = Int((image.size.width * scale).rounded())
-        height = Int((image.size.height * scale).rounded())
+        let (width, height) = (Int((image.size.width * scale).rounded()), Int((image.size.height * scale).rounded()))
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
             guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
@@ -173,7 +172,7 @@ struct Photo: Sendable {
             return true
         }
         guard drawn else { return nil }
-        self.rgba = rgba
+        (self.width, self.height, self.rgba) = (width, height, rgba)
     }
 
     /// Red, green, blue as 0…255 floats, three per pixel.

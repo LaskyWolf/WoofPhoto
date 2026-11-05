@@ -38,6 +38,7 @@ struct ImmichClient {
         var components = URLComponents(url: server.appending(path: "api" + path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 30
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return request
     }

@@ -4,7 +4,7 @@ import SwiftUI
 /// M0 spike: can iOS build a Live Photo from the photo and video files Immich stores?
 struct LivePhotoSpike: View {
     @Environment(Session.self) private var session
-    @State private var status = "Looking for a Live Photo…"
+    @State private var status = "Not started"
     @State private var livePhoto: PHLivePhoto?
 
     var body: some View {
@@ -14,14 +14,20 @@ struct LivePhotoSpike: View {
                 Text("Passed. Touch and hold the photo to play it.").font(.footnote)
             }
             Text(status).font(.footnote).foregroundStyle(.secondary).padding()
+            Button("Search Again") { Task { await load() } }
         }
         .navigationTitle("Live Photo")
         .task { await load() }
     }
 
     private func load() async {
-        guard let client = session.client else { return }
+        guard let client = session.client else {
+            status = "Not signed in."
+            return
+        }
+        livePhoto = nil
         do {
+            status = "Loading the list of months…"
             // newest months first
             let buckets = try await client.buckets()
             for (number, bucket) in buckets.enumerated() {

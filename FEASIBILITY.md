@@ -108,7 +108,7 @@ Background task identifiers already work with FlareStore in your KDE Connect for
 Measured on your iPhone with the M0 build.
 
 - [x] **Login and timeline:** 50 months, 1,400 items from Immich 3.3.5 over Tailscale (plain HTTP).
-- [ ] **App Group between app and widget:** failed on the first try. FlareStore renamed the app's group to `group.b24f70af26b12cfb.5`. The widget got no group, so it read nothing.
+- [x] **App Group between app and widget:** passes with build 4. FlareStore's profile grants five groups (`group.b24f70af26b12cfb.1` to `.5`) instead of ours. The app and the widget both read the group name from the signing profile, so the code must never hard-code a group name.
 - [ ] **Live Photo:** no Live Photo found yet; the library may have none.
 - [x] **AI models (ONNX Runtime, CPU):**
 

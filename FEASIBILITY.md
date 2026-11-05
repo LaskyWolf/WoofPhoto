@@ -51,7 +51,7 @@ Status values:
 | Library / Collections / Search tabs | — | On device | Plain `TabView`. |
 | Viewer: paging, pinch zoom, swipe down to close, zoom transition | Thumbnail and original endpoints | Ready | `navigationTransition(.zoom)` gives the stock transition. |
 | Info panel: date, camera, lens, map, caption | Asset EXIF and description | Ready | |
-| Live Photos | Motion part stored as a linked video | Partial | **Unknown:** whether `PHLivePhoto` accepts the downloaded photo and video pair. Fallback: play the video on long press. |
+| Live Photos | Motion part stored as a linked video | Ready | `PHLivePhoto` accepts the downloaded photo and video originals and plays them on touch and hold. |
 | Favorites | Favorites | Ready | |
 | Hidden album with Face ID | Locked folder (PIN) | Ready | Face ID via `LocalAuthentication` on top of the server PIN. |
 | Recently Deleted | Trash | Ready | |
@@ -109,7 +109,7 @@ Measured on your iPhone with the M0 build.
 
 - [x] **Login and timeline:** 50 months, 1,400 items from Immich 3.3.5 over Tailscale (plain HTTP).
 - [x] **App Group between app and widget:** passes with build 4. FlareStore's profile grants five groups (`group.b24f70af26b12cfb.1` to `.5`) instead of ours. The app and the widget both read the group name from the signing profile, so the code must never hard-code a group name.
-- [ ] **Live Photo:** no Live Photo found yet; the library may have none.
+- [x] **Live Photo:** `PHLivePhoto.request(withResourceFileURLs:)` builds a playable Live Photo from the photo and video originals. The view needs an explicit size: without one, SwiftUI draws the photo at its pixel size.
 - [x] **AI models (ONNX Runtime, CPU):**
 
 | Model | Load | Run | Peak memory |

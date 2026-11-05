@@ -80,7 +80,7 @@ struct MainTabs: View {
         .tabBarMinimizeBehavior(.onScrollDown)
         .bottomAccessory(open.asset != nil) {
             MiniViewer()
-                .matchedTransitionSource(id: OpenPhoto.miniID, in: zoom) { $0.clipShape(.capsule) }
+                .matchedTransitionSource(id: OpenPhoto.miniID, in: zoom) { $0.clipShape(RoundedRectangle(cornerRadius: 24)) }
         }
         .environment(\.photoZoom, zoom)
         .fullScreenCover(isPresented: $open.isExpanded, onDismiss: open.dismissed) {

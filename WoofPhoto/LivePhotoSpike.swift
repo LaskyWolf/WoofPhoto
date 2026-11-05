@@ -65,10 +65,20 @@ struct LivePhotoView: UIViewRepresentable {
     func makeUIView(context: Context) -> PHLivePhotoView {
         let view = PHLivePhotoView()
         view.contentMode = .scaleAspectFit
+        view.clipsToBounds = true
         return view
     }
 
     func updateUIView(_ view: PHLivePhotoView, context: Context) {
         view.livePhoto = livePhoto
+    }
+
+    /// Without this SwiftUI uses the photo's full pixel size, so only its middle shows on screen.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PHLivePhotoView, context: Context) -> CGSize? {
+        let space = proposal.replacingUnspecifiedDimensions(by: CGSize(width: 300, height: 300))
+        let size = livePhoto.size
+        guard size.width > 0, size.height > 0 else { return space }
+        let scale = min(space.width / size.width, space.height / size.height)
+        return CGSize(width: size.width * scale, height: size.height * scale)
     }
 }

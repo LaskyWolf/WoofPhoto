@@ -23,6 +23,8 @@ struct Viewer: View {
     @State private var sharing: SharedFile?
     @State private var busy = false
     @State private var message: String?
+    @State private var addsToAlbum = false
+    @State private var playsSlideshow = false
 
     init(timeline: Timeline, start: AssetRef) {
         self.timeline = timeline
@@ -62,8 +64,15 @@ struct Viewer: View {
             .sheet(item: $sharing) { file in
                 ActivityView(items: [file.url]).ignoresSafeArea()
             }
-            .confirmationDialog("This item moves to Recently Deleted.", isPresented: $confirmsDelete, titleVisibility: .visible) {
+            .confirmationDialog(timeline.query?.isTrash == true ? "This item will be deleted for good. This can't be undone." : "This item moves to Recently Deleted.",
+                                isPresented: $confirmsDelete, titleVisibility: .visible) {
                 Button("Delete", role: .destructive) { Task { await delete() } }
+            }
+            .fullScreenCover(isPresented: $playsSlideshow) {
+                Slideshow(assets: timeline.assets, start: timeline.assets.firstIndex { $0.id == current } ?? 0)
+            }
+            .sheet(isPresented: $addsToAlbum) {
+                AlbumPicker(assets: [shownID].compactMap { $0 }) { message = "Added to \($0)." }
             }
             .alert(message ?? "", isPresented: Binding { message != nil } set: { if !$0 { message = nil } }) {}
         }
@@ -79,11 +88,52 @@ struct Viewer: View {
             Menu("More", systemImage: "ellipsis") {
                 Button("Copy", systemImage: "doc.on.doc") { Task { await copy() } }
                 Button("Save to iPhone", systemImage: "square.and.arrow.down") { Task { await save() } }
+                Button("Add to Album…", systemImage: "rectangle.stack.badge.plus") { addsToAlbum = true }
+                Button("Slideshow", systemImage: "play.rectangle") { playsSlideshow = true }
+                if let album = timeline.query?.albumID {
+                    Button("Make Key Photo", systemImage: "photo") {
+                        Task { await perform {
+                            try await session.client?.updateAlbum(album, ["albumThumbnailAssetId": shownID ?? ""])
+                            message = "Key photo changed."
+                        } }
+                    }
+                    Button("Remove from Album", systemImage: "minus.circle") {
+                        Task { await perform {
+                            try await session.client?.removeFromAlbum(album, assets: [shownID ?? ""])
+                            removeCurrent()
+                        } }
+                    }
+                }
                 Divider()
-                Button("Hide", systemImage: "eye.slash") { Task { await move(to: "locked", done: "Moved to Hidden.") } }
-                Button("Archive", systemImage: "archivebox") { Task { await move(to: "archive", done: "Moved to Archive.") } }
+                if timeline.query == .hidden {
+                    Button("Unhide", systemImage: "eye") { Task { await move(to: "timeline", done: "Moved to Library.") } }
+                } else {
+                    Button("Hide", systemImage: "eye.slash") { Task { await move(to: "locked", done: "Moved to Hidden.") } }
+                }
+                if timeline.query == .archive {
+                    Button("Unarchive", systemImage: "archivebox") { Task { await move(to: "timeline", done: "Moved to Library.") } }
+                } else {
+                    Button("Archive", systemImage: "archivebox") { Task { await move(to: "archive", done: "Moved to Archive.") } }
+                }
             }
         }
+        if timeline.query?.isTrash == true {
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button("Delete", systemImage: "trash", role: .destructive) { confirmsDelete = true }
+                Spacer()
+                Button("Recover") {
+                    Task { await perform {
+                        try await session.client?.restoreTrash([shownID ?? ""])
+                        removeCurrent()
+                    } }
+                }
+            }
+        } else {
+            bottomBar
+        }
+    }
+
+    @ToolbarContentBuilder private var bottomBar: some ToolbarContent {
         ToolbarItemGroup(placement: .bottomBar) {
             Button("Share", systemImage: "square.and.arrow.up") { Task { await share() } }
             Spacer()
@@ -158,7 +208,7 @@ struct Viewer: View {
     private func delete() async {
         guard let id = shownID, let client = session.client else { return }
         await perform {
-            try await client.deleteAssets([id])
+            try await client.deleteAssets([id], force: timeline.query?.isTrash == true)
             removeCurrent()
         }
     }
@@ -202,18 +252,7 @@ struct Viewer: View {
     private func save() async {
         guard let asset = shownAsset, let client = session.client else { return }
         await perform {
-            let file = try await client.downloadOriginal(asset.id)
-            var motion: URL?
-            if let video = asset.livePhotoVideoId { motion = try await client.downloadOriginal(video) }
-            guard await PHPhotoLibrary.requestAuthorization(for: .addOnly) == .authorized else {
-                message = "Allow WoofPhoto to add photos in Settings > Privacy & Security > Photos."
-                return
-            }
-            try await PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetCreationRequest.forAsset()
-                request.addResource(with: asset.isImage ? .photo : .video, fileURL: file, options: nil)
-                if let motion { request.addResource(with: .pairedVideo, fileURL: motion, options: nil) }
-            }
+            try await DeviceLibrary.save(asset, client: client)
             message = "Saved to Photos."
         }
     }

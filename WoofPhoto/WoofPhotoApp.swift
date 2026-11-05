@@ -15,6 +15,8 @@ struct WoofPhotoApp: App {
                 if session.client != nil {
                     TabView {
                         Tab("Library", systemImage: "photo.on.rectangle") { LibraryView() }
+                        Tab("Collections", systemImage: "rectangle.stack") { CollectionsView() }
+                        Tab(role: .search) { SearchView() }
                     }
                 } else {
                     SignInView()

@@ -20,6 +20,10 @@ struct AssetGrid: View {
     @State private var target: String?
     @State private var error: String?
     @State private var viewing: AssetRef?
+    /// nil outside Select mode.
+    @State private var selection: Set<String>?
+    @State private var drag: (start: Int, base: Set<String>, adds: Bool)?
+    @State private var gridWidth: CGFloat = 0
     @Namespace private var zoom
 
     var body: some View {
@@ -34,7 +38,9 @@ struct AssetGrid: View {
                             .background(.regularMaterial)
                             .onTapGesture { timeline.problem = nil }
                     }
-                    if showsLevels, timeline.months?.isEmpty == false {
+                    if selection != nil {
+                        SelectionBar(timeline: timeline, selection: $selection)
+                    } else if showsLevels, timeline.months?.isEmpty == false {
                         Picker("Show", selection: $level) {
                             ForEach(Level.allCases, id: \.self) { Text($0.rawValue) }
                         }
@@ -44,8 +50,18 @@ struct AssetGrid: View {
                     }
                 }
             }
+            .toolbar {
+                if level == .all, timeline.months?.isEmpty == false {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(selection == nil ? "Select" : "Cancel") {
+                            withAnimation(.snappy) { selection = selection == nil ? [] : nil }
+                        }
+                    }
+                }
+            }
+            .toolbar(selection == nil ? .automatic : .hidden, for: .tabBar)
             .environment(timeline)
-            .task { await reload() }
+            .task(id: ObjectIdentifier(timeline)) { await reload() }
             .fullScreenCover(item: $viewing) { asset in
                 Viewer(timeline: timeline, start: asset)
                     .navigationTransition(.zoom(sourceID: asset.id, in: zoom))
@@ -85,19 +101,44 @@ struct AssetGrid: View {
                         ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
                             let asset = month.assets?[index]
                             Thumbnail(asset: asset)
+                                .overlay(alignment: .bottomTrailing) {
+                                    if let selection, let id = asset?.id {
+                                        let selected = selection.contains(id)
+                                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                            .font(.title3)
+                                            .foregroundStyle(.white, .blue)
+                                            .shadow(radius: 2)
+                                            .padding(4)
+                                            .background(selected ? Color.white.opacity(0.25) : .clear)
+                                    }
+                                }
                                 .matchedTransitionSource(id: asset?.id ?? "\(month.key)#\(index)", in: zoom)
                                 .id("\(month.key)#\(index)")
-                                .onTapGesture { viewing = asset }
+                                .onTapGesture {
+                                    guard let asset else { return }
+                                    if selection != nil {
+                                        selection = toggled(asset.id, in: selection ?? [])
+                                    } else {
+                                        viewing = asset
+                                    }
+                                }
                                 .task {
                                     if month.assets == nil { await timeline.loadMonth(month.key, with: client) }
                                 }
                         }
                     }
                 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
+                // in Select mode, a drag that starts sideways selects every cell it crosses
+                .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { value in
+                    dragSelect(value, months: months, spacing: spacing)
+                }.onEnded { _ in
+                    drag = nil
+                }, including: selection == nil ? .subviews : .all)
             }
             .defaultScrollAnchor(.bottom)
             .overlay(alignment: .trailing) {
-                if months.count > 1 { Scrubber(months: months, proxy: proxy) }
+                if months.count > 1, selection == nil { Scrubber(months: months, proxy: proxy) }
             }
             .task {
                 guard let target else { return }
@@ -112,6 +153,30 @@ struct AssetGrid: View {
             let next = value.magnification > 1.15 ? current - 1 : value.magnification < 0.87 ? current + 1 : current
             withAnimation(.snappy) { columns = steps[min(max(next, 0), steps.count - 1)] }
         })
+    }
+
+    private func toggled(_ id: String, in set: Set<String>) -> Set<String> {
+        set.contains(id) ? set.subtracting([id]) : set.union([id])
+    }
+
+    private func dragSelect(_ value: DragGesture.Value, months: [Timeline.Month], spacing: CGFloat) {
+        guard let selection, gridWidth > 0 else { return }
+        let cell = (gridWidth - spacing * CGFloat(columns - 1)) / CGFloat(columns) + spacing
+        func index(_ point: CGPoint) -> Int {
+            max(Int(point.y / cell), 0) * columns + min(max(Int(point.x / cell), 0), columns - 1)
+        }
+        // every cell in grid order, nil where the month isn't loaded yet
+        let flat = months.flatMap { month in month.assets.map { $0.map(Optional.some) } ?? Array(repeating: nil, count: month.count) }
+        if drag == nil {
+            guard abs(value.translation.width) > abs(value.translation.height) else { return }
+            let start = index(value.startLocation)
+            let startID = (flat[safe: start] ?? nil)?.id
+            drag = (start, selection, !(startID.map(selection.contains) ?? false))
+        }
+        guard let drag else { return }
+        let end = index(value.location)
+        let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { (flat[safe: $0] ?? nil)?.id }
+        self.selection = drag.adds ? drag.base.union(ids) : drag.base.subtracting(ids)
     }
 
     /// A Years or Months card: the group's first photo, large, with its title.

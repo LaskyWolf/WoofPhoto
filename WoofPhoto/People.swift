@@ -9,6 +9,7 @@ struct PeopleView: View {
 
     var body: some View {
         ScrollView {
+            PetsSection()
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 16)], spacing: 20) {
                 ForEach(shown) { PersonTile(person: $0) }
             }
@@ -18,7 +19,7 @@ struct PeopleView: View {
             if people == nil, error == nil { ProgressView() }
             if let error { ContentUnavailableView("Can't Load People", systemImage: "exclamationmark.triangle", description: Text(error)) }
         }
-        .navigationTitle("People")
+        .navigationTitle("People & Pets")
         .toolbar {
             Toggle("Show Hidden", systemImage: "eye.slash", isOn: $showsHidden)
         }

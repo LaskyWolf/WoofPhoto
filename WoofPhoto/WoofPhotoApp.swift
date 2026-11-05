@@ -1,3 +1,4 @@
+import AuthenticationServices
 import BackgroundTasks
 import SwiftUI
 
@@ -70,6 +71,7 @@ struct WoofPhotoApp: App {
 
 struct SignInView: View {
     @Environment(Session.self) private var session
+    @Environment(\.webAuthenticationSession) private var webAuthentication
     @State private var server = UserDefaults.standard.string(forKey: "server") ?? ""
     @State private var email = ""
     @State private var password = ""
@@ -107,6 +109,10 @@ struct SignInView: View {
                         if busy { ProgressView() } else { Text("Sign In") }
                     }
                     .disabled(busy || server.isEmpty || email.isEmpty || password.isEmpty)
+                    Button("Sign In with SSO") { Task { await signInWithSSO() } }
+                        .disabled(busy || server.isEmpty)
+                } footer: {
+                    Text("SSO needs app.immich:///oauth-callback in the server's OAuth redirect list.")
                 }
             }
             .navigationTitle("WoofPhoto")
@@ -118,6 +124,19 @@ struct SignInView: View {
         defer { busy = false }
         do {
             try await session.signIn(server: server, email: email, password: password)
+        } catch {
+            self.error = error.explanation
+        }
+    }
+
+    private func signInWithSSO() async {
+        busy = true
+        defer { busy = false }
+        do {
+            try await session.signInWithSSO(server: server) { page in
+                try await webAuthentication.authenticate(using: page, callbackURLScheme: "app.immich")
+            }
+        } catch ASWebAuthenticationSessionError.canceledLogin {
         } catch {
             self.error = error.explanation
         }

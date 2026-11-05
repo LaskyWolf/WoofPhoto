@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 
 /// The few Immich endpoints the app uses. Every field the server might drop is optional,
@@ -66,10 +67,28 @@ struct ImmichClient {
         try JSONDecoder().decode(T.self, from: await call(method, path, query: query, body: body))
     }
 
+    /// Saves every answer; without a connection, returns the last saved one so the library still opens offline.
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try Self.check(response, data)
+        let file = Self.offlineFile(request)
+        let data: Data
+        do {
+            let (fresh, response) = try await URLSession.shared.data(for: request)
+            try Self.check(response, fresh)
+            data = fresh
+            try? fresh.write(to: file)
+        } catch let error as URLError {
+            guard let saved = try? Data(contentsOf: file) else { throw error }
+            data = saved
+        }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    static let offlineFolder = URL.cachesDirectory.appending(path: "api")
+
+    private static func offlineFile(_ request: URLRequest) -> URL {
+        try? FileManager.default.createDirectory(at: offlineFolder, withIntermediateDirectories: true)
+        let name = SHA256.hash(data: Data(request.url!.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+        return offlineFolder.appending(path: name + ".json")
     }
 
     static func check(_ response: URLResponse, _ data: Data) throws {
@@ -86,6 +105,22 @@ struct ImmichClient {
 
     func login(email: String, password: String) async throws -> String {
         let response: LoginResponse = try await fetch("POST", "/auth/login", body: ["email": email, "password": password])
+        return response.accessToken
+    }
+
+    /// SSO, with PKCE: the server answers with its login page, and the browser comes back to `redirect`.
+    static let redirect = "app.immich:///oauth-callback"
+
+    func ssoLogin(browser: (URL) async throws -> URL) async throws -> String {
+        let verifier = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64URL
+        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
+        let state = UUID().uuidString
+        let start: SSOStart = try await fetch("POST", "/oauth/authorize",
+                                              body: ["redirectUri": Self.redirect, "state": state, "codeChallenge": challenge])
+        guard let page = URL(string: start.url) else { throw ImmichError.http(0, "The server sent a bad SSO address.") }
+        let callback = try await browser(page)
+        let response: LoginResponse = try await fetch("POST", "/oauth/callback",
+                                                      body: ["url": callback.absoluteString, "state": state, "codeVerifier": verifier])
         return response.accessToken
     }
 
@@ -232,6 +267,14 @@ struct BucketAssets: Decodable {
 private struct Pong: Decodable { var res: String }
 private struct Uploaded: Decodable { var id: String }
 private struct LoginResponse: Decodable { var accessToken: String }
+private struct SSOStart: Decodable { var url: String }
+
+private extension Data {
+    var base64URL: String {
+        base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
 private struct ServerError: Decodable { var message: String? }
 
 enum ImmichError: LocalizedError {

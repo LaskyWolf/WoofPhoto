@@ -14,19 +14,33 @@ final class Session {
     }
 
     func signIn(server text: String, email: String, password: String) async throws {
-        guard let url = ImmichClient.serverURL(from: text) else {
-            throw SignInError.badAddress
-        }
-        var client = ImmichClient(server: url)
-        try await client.ping()
+        var client = try await reach(text)
         client.token = try await client.login(email: email, password: password)
-        UserDefaults.standard.set(url.absoluteString, forKey: "server")
+        save(client)
+    }
+
+    func signInWithSSO(server text: String, browser: (URL) async throws -> URL) async throws {
+        var client = try await reach(text)
+        client.token = try await client.ssoLogin(browser: browser)
+        save(client)
+    }
+
+    private func reach(_ text: String) async throws -> ImmichClient {
+        guard let url = ImmichClient.serverURL(from: text) else { throw SignInError.badAddress }
+        let client = ImmichClient(server: url)
+        try await client.ping()
+        return client
+    }
+
+    private func save(_ client: ImmichClient) {
+        UserDefaults.standard.set(client.server.absoluteString, forKey: "server")
         Keychain.write("token", client.token!)
         self.client = client
     }
 
     func signOut() {
         Keychain.delete("token")
+        try? FileManager.default.removeItem(at: ImmichClient.offlineFolder)
         client = nil
     }
 }

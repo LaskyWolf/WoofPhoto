@@ -101,7 +101,7 @@ enum Shelf: Hashable, Codable {
 struct CollectionsView: View {
     enum Section: String, CaseIterable, Identifiable {
         case pinned = "Pinned", albums = "Albums", shared = "Shared Albums", people = "People"
-        case memories = "Memories", places = "Places", mediaTypes = "Media Types", utilities = "Utilities"
+        case memories = "Memories", trips = "Trips", places = "Places", mediaTypes = "Media Types", utilities = "Utilities"
         var id: String { rawValue }
     }
 
@@ -211,6 +211,8 @@ struct CollectionsView: View {
             } else {
                 row(memories) { MemoryTile(memory: $0) }
             }
+        case .trips:
+            NavigationLink("See All Trips") { TripsView() }.padding(.horizontal)
         case .places:
             NavigationLink(value: Shelf.map) {
                 Map(interactionModes: []) {
@@ -370,7 +372,7 @@ struct MemoryTile: View {
 
     var body: some View {
         NavigationLink {
-            FixedGridScreen(title: memory.title, assets: memory.assets.map(\.ref))
+            MemoryScreen(memory: memory)
         } label: {
             Thumbnail(asset: memory.assets.first?.ref, size: "preview", square: false)
                 .frame(width: 260, height: 180)
@@ -384,6 +386,22 @@ struct MemoryTile: View {
                 }
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// A memory's photos, with a button that plays them as a movie.
+struct MemoryScreen: View {
+    let memory: Memory
+    @State private var plays = false
+
+    var body: some View {
+        FixedGridScreen(title: memory.title, assets: memory.assets.map(\.ref))
+            .toolbar {
+                Button("Play Movie", systemImage: "play.fill") { plays = true }
+            }
+            .fullScreenCover(isPresented: $plays) {
+                MemoryMovie(title: memory.title, assets: memory.assets.map(\.ref))
+            }
     }
 }
 

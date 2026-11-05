@@ -1,8 +1,8 @@
 # WoofPhoto
 
-A native SwiftUI client for an [Immich](https://immich.app) server, made to look and work like the iOS 26 Photos app.
+A native SwiftUI client for an [Immich](https://immich.app) server, with every feature of Immich and of the iOS 26 Photos app, in a look that mixes Photos with WoofMusic.
 
-The app is at milestone M0: a test screen that checks login, signing, the App Group, Live Photos and the AI models on a real iPhone. [ROADMAP.md](ROADMAP.md) lists the milestones; [FEASIBILITY.md](FEASIBILITY.md) explains the decisions behind them.
+The app is at milestone M1: the Library grid works; the M0 test screen sits behind the account button. [ROADMAP.md](ROADMAP.md) lists the milestones; [FEASIBILITY.md](FEASIBILITY.md) explains the decisions behind them.
 
 ## Install
 

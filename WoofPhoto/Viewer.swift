@@ -18,7 +18,11 @@ struct Viewer: View {
     @State private var shownInStack: [String: String] = [:]
     @State private var chromeHidden = false
     /// The photo strip's scroll position, which starts on the open photo.
-    @State private var stripID: String?
+    @State private var strip: ScrollPosition
+    /// The date, rail and strip over the photo; Live Text's button sits above them.
+    @State private var overlayHeight: CGFloat = 0
+    /// How far the tools follow a pull up before the details open.
+    @State private var pull: CGFloat = 0
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @State private var showsInfo = false
     @State private var confirmsDelete = false
@@ -33,7 +37,7 @@ struct Viewer: View {
     init(timeline: Timeline, start: AssetRef) {
         self.timeline = timeline
         _current = State(initialValue: start.id)
-        _stripID = State(initialValue: start.id)
+        _strip = State(initialValue: ScrollPosition(id: start.id, anchor: .center))
     }
 
     var body: some View {
@@ -52,7 +56,9 @@ struct Viewer: View {
                 await currentChanged()
             }
             .sheet(isPresented: $showsInfo) {
-                if let id = shownID { InfoSheet(id: id) }
+                if let asset = shownAsset {
+                    if let localID = asset.localID { DeviceInfoSheet(localID: localID) } else { InfoSheet(id: asset.id) }
+                }
             }
             .sheet(item: $sharing) { file in
                 ActivityView(items: [file.url]).ignoresSafeArea()
@@ -94,13 +100,14 @@ struct Viewer: View {
         .scrollPosition(id: $current)
         .scrollIndicators(.hidden)
         .scrollDisabled(spatial != nil)
+        .environment(\.liveTextInset, chromeHidden ? 0 : overlayHeight + 8)
         .ignoresSafeArea(edges: .top)
         // WoofTube's ambient mode: the photo itself, blurred, instead of black
         .background { ambient }
         // a swipe up pulls up the details, as in Photos
         .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
             let (x, y) = (value.translation.width, value.translation.height)
-            if y < -80, abs(y) > abs(x) * 2, spatial == nil, shownAsset?.localID == nil { showsInfo = true }
+            if y < -80, abs(y) > abs(x) * 2, spatial == nil { showsInfo = true }
         })
         .overlay(alignment: .bottom) {
             if !chromeHidden, spatial == nil {
@@ -115,6 +122,7 @@ struct Viewer: View {
                 }
                 // a video's progress bar and times sit under it
                 .padding(.bottom, shownAsset?.isImage == false ? 72 : 10)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { overlayHeight = $0 }
                 .transition(.opacity)
             }
         }
@@ -225,67 +233,83 @@ struct Viewer: View {
         }
         .scrollIndicators(.hidden)
         // starts on the open photo instead of scrolling there from the first one
-        .scrollPosition(id: $stripID, anchor: .center)
+        .scrollPosition($strip)
         .frame(height: 46)
-        .onChange(of: current) { withAnimation(.snappy) { stripID = current } }
+        .onAppear { centerStrip() }
+        .onChange(of: current) { withAnimation(.snappy) { centerStrip() } }
         .sensoryFeedback(.selection, trigger: current)
         .accessibilityHidden(true)
     }
 
-    /// Where Shorts has the comments: every tool, and a pull up for the map and the details.
+    private func centerStrip() {
+        if let current { strip.scrollTo(id: current, anchor: .center) }
+    }
+
+    /// Where Shorts has the comments: glass tools, named only when the icon alone isn't clear,
+    /// and a pull up for the map and the details.
     private var toolCard: some View {
-        let isServer = shownAsset?.localID == nil && timeline.query?.isTrash != true
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                if timeline.query?.isTrash == true {
-                    Button("Recover", systemImage: "arrow.uturn.backward") {
-                        Task { await perform {
-                            try await session.client?.restoreTrash([shownID ?? ""])
-                            removeCurrent()
-                        } }
-                    }
-                    Button("Delete", systemImage: "trash", role: .destructive) { confirmsDelete = true }
-                } else {
-                    Button("Edit", systemImage: "slider.horizontal.3") { editing = shownAsset }
-                    if let shownAsset, shownAsset.isImage {
-                        Button(spatial == nil ? "Spatial" : "Flat", systemImage: spatial == nil ? "cube" : "photo") {
-                            withAnimation(.easeOut(duration: 0.2)) { spatial = spatial == nil ? shownAsset : nil }
+        VStack(alignment: .leading, spacing: 10) {
+            Capsule()
+                .fill(.white.opacity(0.3))
+                .frame(width: 36, height: 5)
+                .frame(maxWidth: .infinity)
+            GlassEffectContainer {
+                HStack(spacing: 10) {
+                    if timeline.query?.isTrash == true {
+                        Button("Recover", systemImage: "arrow.uturn.backward") {
+                            Task { await perform {
+                                try await session.client?.restoreTrash([shownID ?? ""])
+                                removeCurrent()
+                            } }
                         }
-                    }
-                    if shownAsset?.localID != nil {
-                        Button("Back Up", systemImage: "icloud.and.arrow.up") {
-                            if let client = session.client { Backup.shared.start(with: client) }
-                        }
-                        .disabled(session.client == nil)
+                        .labelStyle(.titleAndIcon)
+                        .buttonBorderShape(.capsule)
+                        Button("Delete", systemImage: "trash", role: .destructive) { confirmsDelete = true }
+                            .foregroundStyle(.red)
                     } else {
-                        moreMenu
+                        Button("Edit", systemImage: "slider.horizontal.3") { editing = shownAsset }
+                        if let shownAsset, shownAsset.isImage {
+                            Button(spatial == nil ? "Spatial" : "Flat", systemImage: spatial == nil ? "cube" : "photo") {
+                                withAnimation(.easeOut(duration: 0.2)) { spatial = spatial == nil ? shownAsset : nil }
+                            }
+                        }
+                        if shownAsset?.localID != nil {
+                            Button("Back Up", systemImage: "icloud.and.arrow.up") {
+                                if let client = session.client { Backup.shared.start(with: client) }
+                            }
+                            .labelStyle(.titleAndIcon)
+                            .buttonBorderShape(.capsule)
+                            .disabled(session.client == nil)
+                        } else {
+                            moreMenu
+                        }
                     }
+                    Spacer(minLength: 0)
+                    Button("Details", systemImage: "info") { showsInfo = true }
                 }
-                Spacer(minLength: 0)
-                if isServer {
-                    Button("Details", systemImage: "chevron.up.chevron.down") { showsInfo = true }
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32, height: 36)
-                }
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.circle)
+                .buttonStyle(.glass)
+                .controlSize(.large)
+                .font(.body.weight(.semibold))
             }
-            .labelStyle(CardToolLabelStyle())
-            .buttonStyle(ZoomPressStyle())
             Text(summary)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.regularMaterial, in: .rect(cornerRadius: 16, style: .continuous))
-        .contentShape(.rect)
-        .onTapGesture { if isServer { showsInfo = true } }
-        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
-            if isServer, value.translation.height < -30 { showsInfo = true }
-        })
-        .padding(.horizontal, 8)
+        .padding(.horizontal, Tokens.screenPadding)
         .padding(.top, 8)
+        .offset(y: pull)
+        .contentShape(.rect)
+        .onTapGesture { showsInfo = true }
+        .simultaneousGesture(DragGesture(minimumDistance: 10).onChanged { value in
+            // follows the finger with some resistance, so the pull is felt
+            pull = min(0, value.translation.height) / 3
+        }.onEnded { value in
+            withAnimation(.snappy) { pull = 0 }
+            if value.translation.height < -40 || value.predictedEndTranslation.height < -120 { showsInfo = true }
+        })
     }
 
     /// One line under the tools: camera and settings, or where the item is.
@@ -340,6 +364,7 @@ struct Viewer: View {
         } label: {
             Label("More", systemImage: "ellipsis")
         }
+        .menuStyle(.button)
     }
 
     /// Thumbnails of a stack's members (a burst, or RAW + JPEG); tap one to show it.
@@ -497,21 +522,6 @@ private struct RailLabel: View {
         .shadow(color: .black.opacity(0.5), radius: 3)
         .frame(minWidth: 52, minHeight: 44)
         .contentShape(.rect)
-    }
-}
-
-/// A tool in the card: icon and name on a soft capsule.
-private struct CardToolLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 6) {
-            configuration.icon
-            configuration.title
-        }
-        .font(.subheadline.weight(.semibold))
-        .padding(.horizontal, 12)
-        .frame(height: 36)
-        .background(.white.opacity(0.12), in: .capsule)
-        .contentShape(.capsule)
     }
 }
 
@@ -874,12 +884,14 @@ struct ZoomableImage: UIViewRepresentable {
     var image: UIImage?
     var onTap: () -> Void
     var onZoomIn: () -> Void
+    @Environment(\.liveTextInset) private var liveTextInset
 
     func makeUIView(context: Context) -> ZoomView { ZoomView() }
 
     func updateUIView(_ view: ZoomView, context: Context) {
         view.onTap = onTap
         view.onZoomIn = onZoomIn
+        view.liveTextInset = liveTextInset
         view.show(image)
     }
 }
@@ -887,6 +899,10 @@ struct ZoomableImage: UIViewRepresentable {
 final class ZoomView: UIScrollView, UIScrollViewDelegate {
     var onTap: () -> Void = {}
     var onZoomIn: () -> Void = {}
+    /// Lifts Live Text's button above the date, rail and strip drawn over the photo.
+    var liveTextInset: CGFloat = 0 {
+        didSet { analysis.supplementaryInterfaceContentInsets = UIEdgeInsets(top: 0, left: 0, bottom: liveTextInset, right: 0) }
+    }
 
     private let imageView = UIImageView()
     private let analysis = ImageAnalysisInteraction()
@@ -1066,6 +1082,61 @@ struct InfoSheet: View {
         try? await session.client?.updateAssets([asset.id], ["description": caption])
         self.asset?.exifInfo?.description = caption
     }
+}
+
+/// The pull-up panel for an item only on this iPhone: its date, place, size and file name, from Photos.
+struct DeviceInfoSheet: View {
+    let localID: String
+    @State private var asset: PHAsset?
+    @State private var fileName: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if let asset {
+                    if let date = asset.creationDate {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(date.formatted(.dateTime.weekday(.wide).day().month(.wide).year())).font(.title3.bold())
+                            Text([date.formatted(date: .omitted, time: .shortened), fileName].compactMap { $0 }.joined(separator: " · "))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if let coordinate = asset.location?.coordinate {
+                        Map(initialPosition: .region(MKCoordinateRegion(center: coordinate, latitudinalMeters: 3000, longitudinalMeters: 3000))) {
+                            Marker("", coordinate: coordinate)
+                        }
+                        .frame(height: 180)
+                        .clipShape(.rect(cornerRadius: Tokens.cardRadius))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Only on this iPhone", systemImage: "icloud.slash")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.tint)
+                        let megapixels = (Double(asset.pixelWidth * asset.pixelHeight) / 1_000_000).formatted(.number.precision(.fractionLength(0...1)))
+                        Text("\(asset.pixelWidth) × \(asset.pixelHeight) · \(megapixels) MP").foregroundStyle(.secondary)
+                    }
+                    .font(.subheadline)
+                    .card()
+                } else {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
+            }
+            .padding(Tokens.screenPadding)
+            .padding(.top, 8)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .task {
+            asset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject
+            fileName = asset.flatMap { PHAssetResource.assetResources(for: $0).first?.originalFilename }
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// How far above the page's bottom Live Text's button goes.
+    @Entry var liveTextInset: CGFloat = 0
 }
 
 private extension View {

@@ -452,8 +452,10 @@ struct Thumbnail: View {
     @AppStorage("grid.backupBadge") private var backupBadge = true
 
     var body: some View {
-        Color(.secondarySystemFill)
-            .aspectRatio(square ? 1 : nil, contentMode: .fit)
+        // a nil ratio still makes a square (a colour's ideal size is square), so a card fills the frame it's given instead
+        Group {
+            if square { Color(.secondarySystemFill).aspectRatio(1, contentMode: .fit) } else { Color(.secondarySystemFill) }
+        }
             .overlay {
                 if let image = loaded ?? asset.flatMap({ ImageCache.image($0.id, size: size) }) ?? placeholder {
                     Image(uiImage: image).resizable().scaledToFill()
@@ -516,8 +518,9 @@ struct Thumbnail: View {
     }
 
     private func load() async {
-        loaded = nil
-        guard let asset, ImageCache.image(asset.id, size: size) == nil else { return }
+        // held here too: the cache drops images when the viewer needs memory, and nothing would load them again
+        loaded = asset.flatMap { ImageCache.image($0.id, size: size) }
+        guard let asset, loaded == nil else { return }
         if let localID = asset.localID {
             loaded = await DeviceLibrary.image(localID, side: size == "thumbnail" ? 300 : 1200)
             if let loaded { ImageCache.store(loaded, for: asset.id, size: size) }

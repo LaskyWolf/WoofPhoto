@@ -217,11 +217,11 @@ struct CollectionsView: View {
         HStack(spacing: 10) {
             NavigationLink(value: Shelf.favorites) {
                 ShortcutTile(title: "Favorites", subtitle: favoriteCount.map { "\($0.formatted()) items" }, icon: "heart.fill",
-                             tint: .pink, covers: favoriteCovers)
+                             tint: .red, covers: favoriteCovers)
             }
             NavigationLink(value: Shelf.duplicates) {
                 ShortcutTile(title: "Duplicates", subtitle: duplicates.isEmpty ? "None found" : "\(duplicates.count) groups",
-                             icon: "square.fill.on.square.fill", tint: .orange,
+                             icon: "square.fill.on.square.fill", tint: .teal,
                              covers: duplicates.prefix(2).compactMap { $0.assets.first?.id })
             }
             // locked, so no covers give it away
@@ -252,9 +252,9 @@ struct CollectionsView: View {
         case .pinned:
             row(pins.items) { ShelfTile(shelf: $0) }
         case .albums:
-            AlbumStack(albums: albums.filter { $0.shared != true })
+            grid(albums.filter { $0.shared != true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil) }
         case .shared:
-            row(albums.filter { $0.shared == true }) { AlbumTile(album: $0) }
+            grid(albums.filter { $0.shared == true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil) }
             if !partners.isEmpty {
                 row(partners) { partner in
                     NavigationLink(value: Shelf.partner(id: partner.id, name: partner.name)) {
@@ -264,7 +264,7 @@ struct CollectionsView: View {
                 }
             }
         case .people:
-            row(people.filter { $0.isHidden != true && !$0.name.isEmpty }) { PersonTile(person: $0) }
+            grid(people.filter { $0.isHidden != true && !$0.name.isEmpty }.prefix(8), columns: 4) { PersonTile(person: $0, size: nil) }
         case .memories:
             if memories.isEmpty {
                 Text("Memories from this day in past years appear here.").foregroundStyle(.secondary).padding(.horizontal, Tokens.screenPadding)
@@ -292,6 +292,15 @@ struct CollectionsView: View {
         case .utilities:
             ShelfList(shelves: Shelf.utilities)
         }
+    }
+
+    /// WoofMusic's library grid: equal columns, 16 points apart; See All has the rest.
+    private func grid<Items: RandomAccessCollection, Tile: View>(_ items: Items, columns: Int, @ViewBuilder tile: @escaping (Items.Element) -> Tile) -> some View
+    where Items.Element: Identifiable {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: columns), spacing: 16) {
+            ForEach(items) { tile($0) }
+        }
+        .padding(.horizontal, Tokens.screenPadding)
     }
 
     private func row<Item: Identifiable, Tile: View>(_ items: [Item], @ViewBuilder tile: @escaping (Item) -> Tile) -> some View {
@@ -458,83 +467,6 @@ struct MemoryTile: View {
         }
         .buttonStyle(ZoomPressStyle())
         .accessibilityLabel(memory.title)
-    }
-}
-
-/// Albums as WoofMusic's Keep Listening card: covers fanned in a stack that spreads out on tap.
-struct AlbumStack: View {
-    let albums: [Album]
-    @SceneStorage("albums.spread") private var spread = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private static let cover: CGFloat = 76
-
-    var body: some View {
-        let shown = Array(albums.prefix(spread ? 40 : 8).enumerated())
-        let shape = RoundedRectangle(cornerRadius: Tokens.cardRadius, style: .continuous)
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(albums.isEmpty ? "No albums yet" : "\(albums.count) albums").font(.subheadline).foregroundStyle(.secondary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.bold())
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(spread ? 180 : 0))
-            }
-            .padding(.horizontal, 12)
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: spread ? 10 : 24 - Self.cover) {
-                    ForEach(shown, id: \.element.id) { index, album in
-                        NavigationLink(value: Shelf.album(id: album.id, name: album.albumName)) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Thumbnail(asset: album.albumThumbnailAssetId.map { AssetRef(id: $0) })
-                                    .frame(width: Self.cover, height: Self.cover)
-                                    .clipShape(.rect(cornerRadius: 10))
-                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Tokens.cardColor, lineWidth: spread ? 0 : 2) }
-                                if spread {
-                                    Text(album.albumName).font(.caption).lineLimit(1).frame(width: Self.cover, alignment: .leading)
-                                }
-                            }
-                        }
-                        .buttonStyle(ZoomPressStyle())
-                        .rotationEffect(.degrees(spread || reduceMotion ? 0 : Double(index % 3 - 1) * 5))
-                        .zIndex(Double(shown.count - index))
-                        .allowsHitTesting(spread)
-                        .accessibilityHidden(!spread)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-            }
-            .scrollIndicators(.hidden)
-            .scrollDisabled(!spread)
-        }
-        .padding(.vertical, 12)
-        .background(Tokens.cardColor, in: shape)
-        .clipShape(shape)
-        // Stacked, the whole card is one button that spreads it.
-        .overlay {
-            Button { toggle() } label: { Color.clear.contentShape(shape) }
-                .buttonStyle(.plain)
-                .allowsHitTesting(!spread && !albums.isEmpty)
-                .accessibilityHidden(spread)
-                .accessibilityLabel("Albums, \(albums.count)")
-                .accessibilityHint("Spreads the albums out")
-        }
-        .overlay(alignment: .topTrailing) {
-            if spread {
-                Button("Stack", systemImage: "chevron.left") { toggle() }
-                    .labelStyle(.iconOnly)
-                    .frame(width: 44, height: 44)
-                    .contentShape(.rect)
-                    .foregroundStyle(.clear)
-            }
-        }
-        .sensoryFeedback(.impact(weight: .light), trigger: spread)
-        .padding(.horizontal, Tokens.screenPadding)
-    }
-
-    private func toggle() {
-        withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.45, bounce: 0.25)) { spread.toggle() }
     }
 }
 

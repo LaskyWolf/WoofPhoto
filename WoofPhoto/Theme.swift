@@ -149,28 +149,60 @@ struct HeaderButton: View {
     }
 }
 
-/// The signed-in user's initial in a circle; opens Settings.
+/// WoofMusic's account button: the profile picture in a glass circle; opens Settings.
 struct AccountButton: View {
     let action: () -> Void
     @Environment(Session.self) private var session
-    @State private var initial = ""
+    /// Loaded once per server, so every header shows it at once instead of popping it in later.
+    @MainActor private static var loaded: (server: URL, initial: String, image: UIImage?)?
+    @State private var initial = AccountButton.loaded?.initial ?? ""
+    @State private var image = AccountButton.loaded?.image
 
     var body: some View {
         Button(action: action) {
-            Text(initial)
-                .font(.headline)
-                .foregroundStyle(.white)
+            avatar
+                .frame(width: 28, height: 28)
+                .clipShape(.circle)
                 .frame(width: 36, height: 36)
-                .background(LinearGradient(colors: [Color(.systemGray), Color(.systemGray3)], startPoint: .top, endPoint: .bottom), in: .circle)
-                .overlay { if initial.isEmpty { Image(systemName: "person.fill").foregroundStyle(.white) } }
+                .glassEffect(.regular.interactive(), in: .circle)
+                .contentShape(.circle)
                 .tapArea(outset: 4)
         }
-        .buttonStyle(IconPressStyle())
+        .buttonStyle(.plain)
         .accessibilityLabel(session.client == nil ? "Sign In" : "Account and Settings")
-        .task(id: session.client?.server) {
-            let me = try? await session.client?.me()
-            initial = me?.name.first.map { String($0).uppercased() } ?? ""
+        .task(id: session.client?.server) { await load() }
+    }
+
+    @ViewBuilder private var avatar: some View {
+        if let image {
+            Image(uiImage: image).resizable().scaledToFill()
+        } else {
+            Circle()
+                .fill(Color(.systemGray4))
+                .overlay {
+                    if initial.isEmpty {
+                        Image(systemName: "person.fill").font(.caption)
+                    } else {
+                        Text(initial).font(.caption.weight(.semibold))
+                    }
+                }
+                .foregroundStyle(.white)
         }
+    }
+
+    private func load() async {
+        guard let client = session.client else { return }
+        if let loaded = Self.loaded, loaded.server == client.server {
+            (initial, image) = (loaded.initial, loaded.image)
+            return
+        }
+        guard let me = try? await client.me() else { return }
+        initial = me.name.first.map { String($0).uppercased() } ?? ""
+        if me.profileImagePath?.isEmpty == false,
+           let data = try? await URLSession.shared.data(for: client.request("/users/\(me.id)/profile-image")).0 {
+            image = UIImage(data: data)
+        }
+        Self.loaded = (client.server, initial, image)
     }
 }
 

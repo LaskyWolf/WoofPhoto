@@ -143,10 +143,17 @@ struct AssetGrid: View {
             if months.isEmpty {
                 ContentUnavailableView("No Photos", systemImage: "photo.on.rectangle")
             } else {
-                switch level {
-                case .all: grid(months, client: client)
-                case .months: monthsView(months, client: client)
-                case .years: yearsView(Self.years(months), client: client)
+                // All stays alive under Years and Months, so going back to it keeps its place
+                ZStack {
+                    grid(months, client: client)
+                        .opacity(level == .all ? 1 : 0)
+                        .allowsHitTesting(level == .all)
+                        .accessibilityHidden(level != .all)
+                    switch level {
+                    case .all: EmptyView()
+                    case .months: monthsView(months, client: client).background(Color(.systemBackground))
+                    case .years: yearsView(Self.years(months), client: client).background(Color(.systemBackground))
+                    }
                 }
             }
         } else if let error {
@@ -170,6 +177,7 @@ struct AssetGrid: View {
             ScrollView {
                 hero
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns), spacing: spacing) {
+                    ForEach(0..<leadingBlanks(months), id: \.self) { _ in Color.clear }
                     ForEach(months) { month in
                         ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
                             let asset = month.assets?[index]
@@ -229,9 +237,9 @@ struct AssetGrid: View {
             .overlay(alignment: .trailing) {
                 if months.count > 1, selection == nil { Scrubber(months: months, proxy: proxy) }
             }
-            .task {
-                guard let target else { return }
-                await Task.yield()
+            // a day tapped in Months
+            .onChange(of: target) {
+                guard let target, level == .all else { return }
                 proxy.scrollTo("\(target)#0", anchor: .top)
                 self.target = nil
             }
@@ -246,6 +254,13 @@ struct AssetGrid: View {
         })
     }
 
+    /// Empty cells before the oldest photo, so the newest row at the bottom is full, as in Photos.
+    private func leadingBlanks(_ months: [Timeline.Month]) -> Int {
+        guard hero == nil else { return 0 }
+        let total = months.reduce(0) { $0 + ($1.assets?.count ?? $1.count) }
+        return (columns - total % columns) % columns
+    }
+
     private func toggled(_ id: String, in set: Set<String>) -> Set<String> {
         set.contains(id) ? set.subtracting([id]) : set.union([id])
     }
@@ -257,7 +272,7 @@ struct AssetGrid: View {
             max(Int(point.y / cell), 0) * columns + min(max(Int(point.x / cell), 0), columns - 1)
         }
         // every cell in grid order, nil where the month isn't loaded yet
-        let flat = months.flatMap { month in month.assets.map { $0.map(Optional.some) } ?? Array(repeating: nil, count: month.count) }
+        let flat = Array(repeating: nil, count: leadingBlanks(months)) + months.flatMap { month in month.assets.map { $0.map(Optional.some) } ?? Array(repeating: nil, count: month.count) }
         if drag == nil {
             guard abs(value.translation.width) > abs(value.translation.height) else { return }
             let start = index(value.startLocation)

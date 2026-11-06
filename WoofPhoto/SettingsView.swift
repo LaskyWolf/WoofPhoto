@@ -13,26 +13,19 @@ struct SettingsView: View {
             Section("Appearance") {
                 SettingsRow("Appearance", icon: "paintpalette") { AppearanceSettings() }
             }
-            Section("Library & Viewer") {
-                SettingsRow("Timeline", icon: "square.grid.3x3") { TimelineSettings() }
-                SettingsRow("Photo & Video Viewer", icon: "play.rectangle") { ViewerSettings() }
-                SettingsRow("History", icon: "clock.arrow.circlepath") { HistorySettings() }
+            Section("Library") {
+                SettingsRow("Library & Viewer", icon: "photo.on.rectangle") { LibrarySettings() }
             }
             Section("Backup & Storage") {
                 SettingsRow("Backup", icon: "icloud.and.arrow.up") { BackupView() }
                 SettingsRow("Storage", icon: "internaldrive") { StorageSettings() }
             }
-            Section("Immich") {
-                SettingsRow("Features", icon: "switch.2") { ImmichFeatures() }
-                SettingsRow("Notifications", icon: "bell") { ImmichNotifications() }
-                SettingsRow("Downloads", icon: "arrow.down.to.line") { ImmichDownloads() }
-                SettingsRow("Networking", icon: "network") { NetworkingSettings() }
-            }
-            Section("Widgets") {
-                SettingsRow("Featured Photos", icon: "square.grid.2x2") { WidgetSettings() }
+            Section("Server") {
+                SettingsRow("Immich", icon: "server.rack") { ImmichSettings() }
             }
         }
         .listSectionSpacing(.compact)
+        .scrollBounceBehavior(.basedOnSize)
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showsChecks) { SpikesView() }
@@ -172,8 +165,22 @@ struct AppearanceSettings: View {
             } footer: {
                 Text("Applies to buttons, chips, selection and the selected tab.")
             }
+            WidgetSettings()
         }
         .navigationTitle("Appearance")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Grid, viewer and History on one page, as WoofMusic keeps the player's settings together.
+struct LibrarySettings: View {
+    var body: some View {
+        List {
+            TimelineSettings()
+            ViewerSettings()
+            HistorySettings()
+        }
+        .navigationTitle("Library & Viewer")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -183,22 +190,20 @@ struct TimelineSettings: View {
     @AppStorage("grid.backupBadge") private var backupBadge = true
 
     var body: some View {
-        List {
-            Section {
-                Picker(selection: $columns) {
-                    ForEach(AssetGrid.columnSteps, id: \.self) { Text("\($0)").tag($0) }
-                } label: { Label("Photos per Row", systemImage: "square.grid.3x3") }
-            } footer: {
-                Text("Pinching the grid changes it too.")
-            }
-            Section {
-                Toggle(isOn: $backupBadge) { Label("Not Backed Up Badge", systemImage: "icloud.slash") }
-            } footer: {
-                Text("Marks the photos on this iPhone that aren't on the server yet.")
-            }
+        Section {
+            Picker(selection: $columns) {
+                ForEach(AssetGrid.columnSteps, id: \.self) { Text("\($0)").tag($0) }
+            } label: { Label("Photos per Row", systemImage: "square.grid.3x3") }
+        } header: {
+            Text("Grid")
+        } footer: {
+            Text("Pinching the grid changes it too.")
         }
-        .navigationTitle("Timeline")
-        .navigationBarTitleDisplayMode(.inline)
+        Section {
+            Toggle(isOn: $backupBadge) { Label("Not Backed Up Badge", systemImage: "icloud.slash") }
+        } footer: {
+            Text("Marks the photos on this iPhone that aren't on the server yet.")
+        }
     }
 }
 
@@ -208,21 +213,17 @@ struct ViewerSettings: View {
     @AppStorage("video.loop") private var loop = false
 
     var body: some View {
-        List {
-            Section {
-                Toggle(isOn: $fullSize) { Label("Load Full-Size Photos", systemImage: "photo") }
-            } header: {
-                Text("Photos")
-            } footer: {
-                Text("Off, the full-size photo loads only when you zoom in. On, it loads as soon as the photo opens, which uses more data.")
-            }
-            Section("Videos") {
-                Toggle(isOn: $autoplay) { Label("Play Automatically", systemImage: "play") }
-                Toggle(isOn: $loop) { Label("Loop", systemImage: "repeat") }
-            }
+        Section {
+            Toggle(isOn: $fullSize) { Label("Load Full-Size Photos", systemImage: "photo") }
+        } header: {
+            Text("Photos")
+        } footer: {
+            Text("Off, the full-size photo loads only when you zoom in. On, it loads as soon as the photo opens, which uses more data.")
         }
-        .navigationTitle("Viewer")
-        .navigationBarTitleDisplayMode(.inline)
+        Section("Videos") {
+            Toggle(isOn: $autoplay) { Label("Play Automatically", systemImage: "play") }
+            Toggle(isOn: $loop) { Label("Loop", systemImage: "repeat") }
+        }
     }
 }
 
@@ -231,22 +232,20 @@ struct HistorySettings: View {
     @State private var confirmsClear = false
 
     var body: some View {
-        List {
-            Section {
-                Toggle(isOn: Binding { !paused } set: { paused = !$0 }) { Label("Record History", systemImage: "clock.arrow.circlepath") }
-            } footer: {
-                Text("History lists the photos you view, edit, delete, favorite, hide, archive or move between albums. It stays on this iPhone.")
-            }
-            Section {
-                Button("Clear History", role: .destructive) { confirmsClear = true }
-                    .disabled(History.shared.entries.isEmpty)
-            }
+        Section {
+            Toggle(isOn: Binding { !paused } set: { paused = !$0 }) { Label("Record History", systemImage: "clock.arrow.circlepath") }
+        } header: {
+            Text("History")
+        } footer: {
+            Text("History lists the photos you view, edit, delete, favorite, hide, archive or move between albums. It stays on this iPhone.")
+        }
+        Section {
+            Button("Clear History", role: .destructive) { confirmsClear = true }
+                .disabled(History.shared.entries.isEmpty)
         }
         .confirmationDialog("All of History is deleted. Your photos stay as they are.", isPresented: $confirmsClear, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) { History.shared.clear() }
         }
-        .navigationTitle("History")
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -309,81 +308,54 @@ final class ServerPreferences {
     }
 }
 
-/// A list of server preferences, with loading and errors handled once.
-private struct PreferencesList<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: (ServerPreferences, ImmichClient?) -> Content
+/// Everything about the server on one page: its shared preferences, then this iPhone's proxy headers.
+struct ImmichSettings: View {
     @Environment(Session.self) private var session
-    @State private var preferences = ServerPreferences()
-
-    var body: some View {
-        List {
-            if preferences.loaded {
-                content(preferences, session.client)
-            } else if preferences.error == nil {
-                ProgressView().frame(maxWidth: .infinity)
-            }
-            if let error = preferences.error {
-                Section { Text(error).foregroundStyle(.secondary) }
-            }
-        }
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await preferences.load(session.client) }
-    }
-}
-
-struct ImmichFeatures: View {
-    var body: some View {
-        PreferencesList(title: "Features") { prefs, client in
-            Section {
-                Toggle(isOn: prefs.binding("memories", "enabled", default: true, client: client)) { Label("Memories", systemImage: "clock.arrow.circlepath") }
-                Toggle(isOn: prefs.binding("people", "enabled", default: true, client: client)) { Label("People", systemImage: "person.2") }
-                Toggle(isOn: prefs.binding("ratings", "enabled", default: false, client: client)) { Label("Ratings", systemImage: "star") }
-                Toggle(isOn: prefs.binding("tags", "enabled", default: false, client: client)) { Label("Tags", systemImage: "tag") }
-                Toggle(isOn: prefs.binding("folders", "enabled", default: false, client: client)) { Label("Folders", systemImage: "folder") }
-                Toggle(isOn: prefs.binding("sharedLinks", "enabled", default: true, client: client)) { Label("Shared Links", systemImage: "link") }
-            } footer: {
-                Text("Saved on your Immich server, so the web app and the official app follow them too.")
-            }
-        }
-    }
-}
-
-struct ImmichNotifications: View {
-    var body: some View {
-        PreferencesList(title: "Notifications") { prefs, client in
-            Section {
-                Toggle(isOn: prefs.binding("emailNotifications", "enabled", default: true, client: client)) { Label("Email Notifications", systemImage: "envelope") }
-                Toggle(isOn: prefs.binding("emailNotifications", "albumInvite", default: true, client: client)) { Label("Album Invites", systemImage: "person.badge.plus") }
-                Toggle(isOn: prefs.binding("emailNotifications", "albumUpdate", default: true, client: client)) { Label("Album Updates", systemImage: "rectangle.stack.badge.plus") }
-            } footer: {
-                Text("Emails from your Immich server, if its administrator set up email.")
-            }
-        }
-    }
-}
-
-struct ImmichDownloads: View {
-    var body: some View {
-        PreferencesList(title: "Downloads") { prefs, client in
-            Section {
-                Picker(selection: prefs.binding("download", "archiveSize", default: 4 << 30, client: client)) {
-                    ForEach([1, 2, 4, 8, 16], id: \.self) { Text("\($0) GB").tag($0 << 30) }
-                } label: { Label("Archive Size", systemImage: "archivebox") }
-                Toggle(isOn: prefs.binding("download", "includeEmbeddedVideos", default: false, client: client)) { Label("Include Live Photo Videos", systemImage: "livephoto") }
-            } footer: {
-                Text("Downloads of many items are split into zip files of this size.")
-            }
-        }
-    }
-}
-
-struct NetworkingSettings: View {
+    @State private var prefs = ServerPreferences()
     @AppStorage("proxyHeaders") private var headers = ""
 
     var body: some View {
+        let client = session.client
         List {
+            if prefs.loaded {
+                Section {
+                    Toggle(isOn: prefs.binding("memories", "enabled", default: true, client: client)) { Label("Memories", systemImage: "clock.arrow.circlepath") }
+                    Toggle(isOn: prefs.binding("people", "enabled", default: true, client: client)) { Label("People", systemImage: "person.2") }
+                    Toggle(isOn: prefs.binding("ratings", "enabled", default: false, client: client)) { Label("Ratings", systemImage: "star") }
+                    Toggle(isOn: prefs.binding("tags", "enabled", default: false, client: client)) { Label("Tags", systemImage: "tag") }
+                    Toggle(isOn: prefs.binding("folders", "enabled", default: false, client: client)) { Label("Folders", systemImage: "folder") }
+                    Toggle(isOn: prefs.binding("sharedLinks", "enabled", default: true, client: client)) { Label("Shared Links", systemImage: "link") }
+                } header: {
+                    Text("Features")
+                } footer: {
+                    Text("Saved on your Immich server, so the web app and the official app follow them too.")
+                }
+                Section {
+                    Toggle(isOn: prefs.binding("emailNotifications", "enabled", default: true, client: client)) { Label("Email Notifications", systemImage: "envelope") }
+                    Toggle(isOn: prefs.binding("emailNotifications", "albumInvite", default: true, client: client)) { Label("Album Invites", systemImage: "person.badge.plus") }
+                    Toggle(isOn: prefs.binding("emailNotifications", "albumUpdate", default: true, client: client)) { Label("Album Updates", systemImage: "rectangle.stack.badge.plus") }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Emails from your Immich server, if its administrator set up email.")
+                }
+                Section {
+                    Picker(selection: prefs.binding("download", "archiveSize", default: 4 << 30, client: client)) {
+                        ForEach([1, 2, 4, 8, 16], id: \.self) { Text("\($0) GB").tag($0 << 30) }
+                    } label: { Label("Archive Size", systemImage: "archivebox") }
+                    Toggle(isOn: prefs.binding("download", "includeEmbeddedVideos", default: false, client: client)) { Label("Include Live Photo Videos", systemImage: "livephoto") }
+                } header: {
+                    Text("Downloads")
+                } footer: {
+                    Text("Downloads of many items are split into zip files of this size.")
+                }
+            } else if prefs.error == nil {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+            if let error = prefs.error {
+                Section { Text(error).foregroundStyle(.secondary) }
+            }
+            // outside the server's preferences: a proxy may need these before anything loads
             Section {
                 TextField("Name: value", text: $headers, axis: .vertical)
                     .font(.body.monospaced())
@@ -395,8 +367,9 @@ struct NetworkingSettings: View {
                 Text("One header per line, like CF-Access-Client-Id: abc. Sent with every request, for servers behind a proxy that needs them.")
             }
         }
-        .navigationTitle("Networking")
+        .navigationTitle("Immich")
         .navigationBarTitleDisplayMode(.inline)
+        .task { await prefs.load(client) }
     }
 }
 
@@ -408,19 +381,17 @@ struct WidgetSettings: View {
     @State private var busy = false
 
     var body: some View {
-        Form {
-            Section {
-                Toggle("Favorites Only", isOn: $favoritesOnly)
-                Button("Choose New Photos") { Task { await refresh() } }
-                    .disabled(busy)
-                if busy { ProgressView() }
-                if let status { Text(status).foregroundStyle(.secondary) }
-            } footer: {
-                Text("Add the WoofPhoto widget to the Home Screen. It shows a different one of these photos every hour. WoofPhoto chooses new ones once a day when you open it.")
-            }
+        Section {
+            Toggle("Favorites Only", isOn: $favoritesOnly)
+            Button("Choose New Photos") { Task { await refresh() } }
+                .disabled(busy)
+            if busy { ProgressView() }
+            if let status { Text(status).foregroundStyle(.secondary) }
+        } header: {
+            Text("Featured Photos Widget")
+        } footer: {
+            Text("Add the WoofPhoto widget to the Home Screen. It shows a different one of these photos every hour. WoofPhoto chooses new ones once a day when you open it.")
         }
-        .navigationTitle("Featured Photos")
-        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func refresh() async {

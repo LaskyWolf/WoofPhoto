@@ -645,10 +645,10 @@ struct VideoPage: View {
         .task(id: isCurrent) {
             if isCurrent, let client = session.client {
                 // back from the floating card, the same player carries on
-                let player = player ?? OpenPhoto.shared.player(for: asset.id) ?? AVPlayer(playerItem: AVPlayerItem(asset: client.video(asset.id)))
-                self.player = player
-                if OpenPhoto.shared.player(for: asset.id) == nil, autoplay { player.play() }
-                OpenPhoto.shared.adopt(player, for: asset.id)
+                let playing = player ?? OpenPhoto.shared.player(for: asset.id) ?? AVPlayer(playerItem: AVPlayerItem(asset: client.video(asset.id)))
+                player = playing
+                if OpenPhoto.shared.player(for: asset.id) == nil, autoplay { playing.play() }
+                OpenPhoto.shared.adopt(playing, for: asset.id)
             } else {
                 player?.pause()
             }

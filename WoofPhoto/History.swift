@@ -171,16 +171,22 @@ struct HistoryView: View {
     @State private var busy: UUID?
     @State private var error: String?
 
-    private var days: [(day: Date, entries: [HistoryEntry])] {
+    private struct Day: Identifiable {
+        let day: Date
+        var entries: [HistoryEntry]
+        var id: Date { day }
+    }
+
+    private var days: [Day] {
         let shown = history.entries.filter { entry in
             filter.matches(entry.kind) && (query.isEmpty || [entry.name, entry.kind.title].compactMap { $0 }
                 .contains { $0.localizedStandardContains(query) })
         }
         let calendar = Calendar.current
-        var days: [(day: Date, entries: [HistoryEntry])] = []
+        var days: [Day] = []
         for entry in shown {
             let day = calendar.startOfDay(for: entry.date)
-            if days.last?.day == day { days[days.count - 1].entries.append(entry) } else { days.append((day, [entry])) }
+            if days.last?.day == day { days[days.count - 1].entries.append(entry) } else { days.append(Day(day: day, entries: [entry])) }
         }
         return days
     }
@@ -197,7 +203,7 @@ struct HistoryView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            ForEach(days, id: \.day) { day in
+            ForEach(days) { day in
                 Section(Self.title(day.day)) {
                     ForEach(day.entries) { row($0) }
                 }

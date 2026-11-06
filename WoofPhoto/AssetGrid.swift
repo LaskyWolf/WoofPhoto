@@ -303,7 +303,7 @@ struct AssetGrid: View {
                             target = month.key
                             withAnimation(.snappy) { level = .months }
                         } label: {
-                            Thumbnail(asset: month.assets?.first, size: "preview", square: false, cornerRadius: 12)
+                            Thumbnail(asset: month.assets?.first, size: "preview", square: false, cornerRadius: Tokens.tileRadius)
                                 .aspectRatio(4 / 3, contentMode: .fit)
                                 .overlay(alignment: .topLeading) {
                                     Text(group.title)
@@ -460,6 +460,8 @@ struct Thumbnail: View {
     /// Cards keep the photo's own shape; grid cells are square.
     var square = true
     var cornerRadius: CGFloat = 0
+    /// Off in the viewer's strip, where the cells are too small for them.
+    var showsBadges = true
 
     @Environment(Session.self) private var session
     @Environment(Timeline.self) private var timeline: Timeline?
@@ -480,22 +482,22 @@ struct Thumbnail: View {
             .clipShape(.rect(cornerRadius: cornerRadius))
             .contentShape(.rect(cornerRadius: cornerRadius))
             .overlay(alignment: .bottomTrailing) {
-                if let duration {
+                if showsBadges, let duration {
                     Text(duration).overlayBadge()
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if asset?.isFavorite == true {
+                if showsBadges, asset?.isFavorite == true {
                     Image(systemName: "heart.fill").overlayBadge()
                 }
             }
             .overlay(alignment: .topLeading) {
-                if backupBadge, asset?.localID != nil {
+                if showsBadges, backupBadge, asset?.localID != nil {
                     Image(systemName: "icloud.slash").overlayBadge()
                 }
             }
             .overlay(alignment: .topTrailing) {
-                if let count = asset?.stackCount, count > 1 {
+                if showsBadges, let count = asset?.stackCount, count > 1 {
                     Label("\(count)", systemImage: "square.stack.fill").overlayBadge()
                 }
             }
@@ -674,7 +676,7 @@ struct DayMosaic: View {
 
     private func tileView(_ tile: Tile, width: CGFloat, height: CGFloat, size: String = "thumbnail") -> some View {
         Button(action: onTap) {
-            Thumbnail(asset: tile.asset, size: size, square: false, cornerRadius: 10)
+            Thumbnail(asset: tile.asset, size: size, square: false, cornerRadius: Tokens.tileRadius)
                 .frame(width: width, height: height)
                 .overlay(alignment: .topLeading) {
                     Text("\(tile.day)")

@@ -196,8 +196,24 @@ final class Backup {
         PHAsset.fetchAssets(withLocalIdentifiers: Array(uploaded.keys), options: nil)
     }
 
-    func freeUpSpace() async throws {
-        let assets = backedUpOnDevice()
+    /// Forgets what was backed up, for signing out: another account's server doesn't have these.
+    func forget() {
+        stop()
+        uploaded = [:]
+        try? FileManager.default.removeItem(at: Self.recordURL)
+        refreshPending()
+    }
+
+    /// Deletes from the iPhone only what the server still has, out of Recently Deleted.
+    func freeUpSpace(client: ImmichClient) async throws {
+        // ponytail: one request per item; a bulk check if thousands make it slow
+        let kept = await withTaskGroup(of: String?.self) { group in
+            for (local, server) in uploaded {
+                group.addTask { (try? await client.asset(server)).flatMap { $0.isTrashed == true ? nil : local } }
+            }
+            return await group.reduce(into: [String]()) { if let id = $1 { $0.append(id) } }
+        }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: kept, options: nil)
         guard assets.count > 0 else { return }
         // iOS shows its own confirmation and moves the items to Recently Deleted on the iPhone
         try await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(assets) }
@@ -272,7 +288,8 @@ struct BackupView: View {
                 Button("Free Up Space") {
                     Task {
                         do {
-                            try await backup.freeUpSpace()
+                            guard let client = session.client else { return }
+                            try await backup.freeUpSpace(client: client)
                         } catch {
                             message = error.localizedDescription
                         }

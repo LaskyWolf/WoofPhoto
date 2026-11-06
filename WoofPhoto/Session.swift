@@ -1,3 +1,4 @@
+import WidgetKit
 import Foundation
 import Security
 
@@ -38,9 +39,19 @@ final class Session {
         self.client = client
     }
 
+    /// Leaves nothing of the account on this iPhone: saved photos, History, the widget's photos and the backup record.
     func signOut() {
         Keychain.delete("token")
-        try? FileManager.default.removeItem(at: ImmichClient.offlineFolder)
+        Keychain.delete("hidden.pin")
+        Backup.shared.forget()
+        History.shared.clear()
+        URLCache.shared.removeAllCachedResponses()
+        for folder in [ImmichClient.offlineFolder, FileManager.default.temporaryDirectory.appending(path: "originals"),
+                       URL.cachesDirectory.appending(path: "spatial"), Featured.folder].compactMap({ $0 }) {
+            try? FileManager.default.removeItem(at: folder)
+        }
+        WidgetCenter.shared.reloadAllTimelines()
+        UserDefaults.standard.removeObject(forKey: "search.recent")
         client = nil
     }
 }
@@ -67,7 +78,8 @@ enum Keychain {
         delete(key)
         var q = query(key)
         q[kSecValueData as String] = Data(value.utf8)
-        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        // never copied to backups or a new iPhone; still readable by the background backup
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(q as CFDictionary, nil)
     }
 

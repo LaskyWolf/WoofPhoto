@@ -412,8 +412,13 @@ enum FeaturedPhotos {
     @discardableResult
     static func refresh(client: ImmichClient, favoritesOnly: Bool = UserDefaults.standard.bool(forKey: "featured.favoritesOnly")) async throws -> Int {
         guard let folder = Featured.folder else { throw FeaturedError.noGroup }
-        try? FileManager.default.removeItem(at: folder)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard !isRefreshing else { return 0 }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        // filled aside and swapped in at the end, so a failed refresh leaves the old photos
+        let fresh = folder.deletingLastPathComponent().appending(path: "featured-new")
+        try? FileManager.default.removeItem(at: fresh)
+        try FileManager.default.createDirectory(at: fresh, withIntermediateDirectories: true)
         var body: [String: Any] = ["size": 24, "type": "IMAGE"]
         if favoritesOnly { body["isFavorite"] = true }
         let assets: [Asset] = try await client.fetch("POST", "/search/random", body: body)
@@ -422,9 +427,11 @@ enum FeaturedPhotos {
             guard let data = try? await client.image(asset.id, size: "preview"), let image = UIImage(data: data),
                   let small = image.preparingThumbnail(of: fit(image.size, side: 800))?.jpegData(compressionQuality: 0.8) else { continue }
             let file = "\(asset.id).jpg"
-            try small.write(to: folder.appending(path: file))
+            try small.write(to: fresh.appending(path: file))
             items.append(Featured.Item(id: asset.id, file: file, date: asset.date))
         }
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.moveItem(at: fresh, to: folder)
         try Featured.save(items)
         UserDefaults.standard.set(Date.now, forKey: "featured.updated")
         WidgetCenter.shared.reloadAllTimelines()
@@ -432,7 +439,12 @@ enum FeaturedPhotos {
     }
 
     /// Refreshes at most once a day, when the app opens.
+    // ponytail: a plain flag; refreshes start from the main actor only
+    nonisolated(unsafe) private static var isRefreshing = false
+
+    /// Only for a widget on the Home Screen: without one, no photos are copied out of the app.
     static func refreshIfStale(client: ImmichClient) async {
+        guard let widgets = try? await WidgetCenter.shared.currentConfigurations(), !widgets.isEmpty else { return }
         let last = UserDefaults.standard.object(forKey: "featured.updated") as? Date ?? .distantPast
         guard Date.now.timeIntervalSince(last) > 86400 else { return }
         try? await refresh(client: client)

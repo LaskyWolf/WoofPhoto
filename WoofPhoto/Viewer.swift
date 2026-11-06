@@ -101,6 +101,7 @@ struct Viewer: View {
         .scrollIndicators(.hidden)
         .scrollDisabled(spatial != nil)
         .environment(\.liveTextInset, chromeHidden ? 0 : overlayHeight + 8)
+        .environment(\.videoControlsLift, Self.overlayBottom + Self.stripHeight + 10 + (stack.map { $0.assets.count > 1 ? 46 : 0 } ?? 0))
         .ignoresSafeArea(edges: .top)
         // WoofTube's ambient mode: the photo itself, blurred, instead of black
         .background { ambient }
@@ -117,11 +118,12 @@ struct Viewer: View {
                         rail
                     }
                     .padding(.horizontal, Tokens.screenPadding)
+                    // a video's progress bar and times sit here, drawn by the video page
+                    if shownAsset?.isImage == false { Color.clear.frame(height: Self.videoControlsHeight) }
                     stackStrip
                     filmstrip
                 }
-                // a video's progress bar and times sit under it
-                .padding(.bottom, shownAsset?.isImage == false ? 72 : 10)
+                .padding(.bottom, Self.overlayBottom)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { overlayHeight = $0 }
                 .transition(.opacity)
             }
@@ -142,6 +144,10 @@ struct Viewer: View {
         }
     }
 
+    private static let videoControlsHeight: CGFloat = 68
+    private static let stripHeight: CGFloat = 46
+    private static let overlayBottom: CGFloat = 10
+
     private var ambient: some View {
         ZStack {
             Color.black
@@ -158,6 +164,8 @@ struct Viewer: View {
         }
         .animation(.easeInOut(duration: 0.4), value: shownID)
         .ignoresSafeArea()
+        // the blur spills past the photos; the tools under them stay black
+        .clipped()
         .accessibilityHidden(true)
     }
 
@@ -221,8 +229,8 @@ struct Viewer: View {
             LazyHStack(spacing: 3) {
                 ForEach(timeline.assets) { asset in
                     let isCurrent = asset.id == current
-                    Thumbnail(asset: asset, square: false, cornerRadius: 6)
-                        .frame(width: isCurrent ? 46 : 30, height: 46)
+                    Thumbnail(asset: asset, square: false, cornerRadius: 6, showsBadges: false)
+                        .frame(width: isCurrent ? Self.stripHeight : 30, height: Self.stripHeight)
                         .overlay { if isCurrent { RoundedRectangle(cornerRadius: 6).stroke(.white, lineWidth: 2) } }
                         .onTapGesture { withAnimation(.snappy) { current = asset.id } }
                         .id(asset.id)
@@ -234,7 +242,7 @@ struct Viewer: View {
         .scrollIndicators(.hidden)
         // starts on the open photo instead of scrolling there from the first one
         .scrollPosition($strip)
-        .frame(height: 46)
+        .frame(height: Self.stripHeight)
         .onAppear { centerStrip() }
         .onChange(of: current) { withAnimation(.snappy) { centerStrip() } }
         .sensoryFeedback(.selection, trigger: current)
@@ -404,7 +412,8 @@ struct Viewer: View {
     private func currentChanged() async {
         guard let current else { return }
         defer {
-            if !Task.isCancelled {
+            // Hidden stays behind Face ID, so its photos stay out of History
+            if !Task.isCancelled, timeline.query != .hidden {
                 History.shared.record(HistoryEntry(kind: .viewed, assetID: current, localID: currentAsset?.localID, name: detail?.originalFileName))
             }
         }
@@ -707,6 +716,7 @@ struct DevicePage: View {
 /// WoofTube's player controls on a plain AVPlayer: play/pause in the middle, a thin accent progress bar,
 /// a gradient while visible, auto-hide while playing, double-tap a side to skip 10 seconds.
 struct VideoSurface: View {
+    @Environment(\.videoControlsLift) private var controlsLift
     let player: AVPlayer
     @Binding var chromeHidden: Bool
     let onTap: () -> Void
@@ -759,7 +769,8 @@ struct VideoSurface: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if !chromeHidden { controls.padding(.bottom, 4).transition(.opacity) }
+                // above the viewer's photo strip
+                if !chromeHidden { controls.padding(.bottom, controlsLift).transition(.opacity) }
             }
         }
         .task {
@@ -1137,6 +1148,8 @@ struct DeviceInfoSheet: View {
 extension EnvironmentValues {
     /// How far above the page's bottom Live Text's button goes.
     @Entry var liveTextInset: CGFloat = 0
+    /// How far above the page's bottom a video's controls go, clear of the photo strip.
+    @Entry var videoControlsLift: CGFloat = 4
 }
 
 private extension View {

@@ -1,7 +1,7 @@
 import MapKit
 import SwiftUI
 
-/// Everything the Collections tab can open, and what Pinned stores.
+/// Everything the Collections tab can open.
 enum Shelf: Hashable, Codable {
     case favorites, recentlySaved, map
     case videos, livePhotos, selfies, portraits, panoramas, screenshots, raw
@@ -98,7 +98,7 @@ enum Shelf: Hashable, Codable {
 }
 
 /// The Collections tab: sections of albums, people, memories, places, media types and utilities.
-/// Sections can be reordered and hidden, and any album, person or shelf can be pinned to the top.
+/// Settings > Appearance reorders and hides the sections, and switches grid and list.
 struct CollectionsView: View {
     enum Section: String, CaseIterable, Identifiable {
         case albums = "Albums", shared = "Shared Albums", people = "People"
@@ -107,7 +107,8 @@ struct CollectionsView: View {
     }
 
     @Environment(Session.self) private var session
-    @AppStorage("collections.order") private var order = Section.allCases.map(\.rawValue).joined(separator: ",")
+    static let defaultOrder = Section.allCases.map(\.rawValue).joined(separator: ",")
+    @AppStorage("collections.order") private var order = defaultOrder
     @AppStorage("collections.hidden") private var hiddenSections = ""
     @AppStorage("collections.collapsed") private var collapsed = ""
     /// WoofMusic's library layout: covers in a grid, or rows.
@@ -118,7 +119,6 @@ struct CollectionsView: View {
     @State private var partners: [User] = []
     @State private var memories: [Memory] = []
     @State private var markers: [MapMarker] = []
-    @State private var editing = false
     @State private var error: String?
     /// WoofMusic's library filter: one section, or every section when off.
     @State private var chip: Section?
@@ -147,19 +147,11 @@ struct CollectionsView: View {
             // on the list only: on the whole page the chips above would pull to refresh too
             .refreshable { await load() }
             .stickyHeader {
-                TabHeader(title: "Collections") {
-                    HeaderButton(label: listLayout ? "Show as Grid" : "Show as List", systemImage: listLayout ? "square.grid.2x2" : "list.bullet") {
-                        withAnimation(.snappy) { listLayout.toggle() }
-                    }
-                    HeaderButton(label: "Edit Sections", systemImage: "slider.horizontal.3") { editing = true }
-                }
+                TabHeader(title: "Collections")
                 FilterChips(items: sections, selection: $chip) { $0.rawValue }
             }
             .toolbar(.hidden, for: .navigationBar)
             .onChange(of: sections) { if let chip, !sections.contains(chip) { self.chip = nil } }
-            .sheet(isPresented: $editing) {
-                SectionEditor(order: $order, hidden: $hiddenSections)
-            }
             .navigationDestination(for: Shelf.self) { shelf in
                 shelf.destination.navigationTransition(.zoom(sourceID: shelf, in: shelfZoom))
             }
@@ -169,9 +161,14 @@ struct CollectionsView: View {
         .environment(\.shelfZoom, shelfZoom)
     }
 
+    /// The stored order, without names of removed sections and with new ones at the end.
+    static func sections(_ order: String) -> [Section] {
+        let stored = order.split(separator: ",").compactMap { Section(rawValue: String($0)) }
+        return stored + Section.allCases.filter { !stored.contains($0) }
+    }
+
     private var sections: [Section] {
-        order.split(separator: ",").compactMap { Section(rawValue: String($0)) }
-            .filter { !hiddenSections.split(separator: ",").contains(Substring($0.rawValue)) }
+        Self.sections(order).filter { !hiddenSections.split(separator: ",").contains(Substring($0.rawValue)) }
     }
 
     /// WoofMusic's library section: a bold title with its count, See All, and the content under it.
@@ -296,6 +293,8 @@ struct CollectionsView: View {
                 .frame(height: 200)
                 .clipShape(.rect(cornerRadius: Tokens.cardRadius))
                 .allowsHitTesting(false)
+                // the map ignores touches, so this layer takes the tap for the link
+                .overlay { Color.clear.contentShape(.rect) }
             }
             .zoomSource(Shelf.map, in: shelfZoom)
             .buttonStyle(ZoomPressStyle(scale: 0.97))
@@ -501,14 +500,12 @@ struct MemoryScreen: View {
 
 /// Reorder the sections and switch them on or off.
 struct SectionEditor: View {
-    @Binding var order: String
-    @Binding var hidden: String
-    @Environment(\.dismiss) private var dismiss
+    @AppStorage("collections.order") private var order = CollectionsView.defaultOrder
+    @AppStorage("collections.hidden") private var hidden = ""
 
     var body: some View {
-        NavigationStack {
             List {
-                ForEach(order.split(separator: ",").map(String.init), id: \.self) { name in
+                ForEach(CollectionsView.sections(order).map(\.rawValue), id: \.self) { name in
                     Toggle(name, isOn: Binding {
                         !hidden.split(separator: ",").contains(Substring(name))
                     } set: { _ in
@@ -516,18 +513,14 @@ struct SectionEditor: View {
                     })
                 }
                 .onMove { from, to in
-                    var names = order.split(separator: ",").map(String.init)
+                    var names = CollectionsView.sections(order).map(\.rawValue)
                     names.move(fromOffsets: from, toOffset: to)
                     order = names.joined(separator: ",")
                 }
             }
             .environment(\.editMode, .constant(.active))
-            .navigationTitle("Customize Collections")
+            .navigationTitle("Collections Sections")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button("Done", role: .confirm) { dismiss() }
-            }
-        }
     }
 }
 

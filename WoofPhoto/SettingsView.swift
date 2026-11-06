@@ -68,18 +68,28 @@ struct SettingsRow<Destination: View>: View {
     }
 }
 
-/// The user's initial on the accent colour.
+/// The user's Immich picture, or their initial on the accent colour.
 struct Avatar: View {
     let name: String?
     var size: CGFloat = 36
 
     var body: some View {
-        Text(name?.first.map(String.init) ?? "")
-            .font(.system(size: size * 0.42, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(.tint, in: .circle)
-            .accessibilityHidden(true)
+        // the Immich profile picture once the tab header's button has loaded it, else the initial
+        if let image = AccountButton.loaded?.image {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .clipShape(.circle)
+                .accessibilityHidden(true)
+        } else {
+            Text(name?.first.map(String.init) ?? "")
+                .font(.system(size: size * 0.42, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
+                .background(.tint, in: .circle)
+                .accessibilityHidden(true)
+        }
     }
 }
 
@@ -136,6 +146,7 @@ private struct ServerVersion: Decodable {
 
 struct AppearanceSettings: View {
     @AppStorage("accent") private var accent = AccentPreset.all[0].name
+    @AppStorage("collections.list") private var collectionsList = false
 
     var body: some View {
         List {
@@ -164,6 +175,10 @@ struct AppearanceSettings: View {
                 Text("Accent Color")
             } footer: {
                 Text("Applies to buttons, chips, selection and the selected tab.")
+            }
+            Section("Collections") {
+                Toggle("Show as List", isOn: $collectionsList)
+                NavigationLink("Sections") { SectionEditor() }
             }
             WidgetSettings()
         }

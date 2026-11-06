@@ -53,19 +53,32 @@ struct SearchView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
                 if !recent.isEmpty {
-                    sectionTitle("Recent") {
-                        Button("Clear") { withAnimation { recent = "" } }.font(.subheadline.weight(.semibold))
+                    // WoofMusic's history: a plain header, then one row per search
+                    HStack {
+                        Text("Recently Searched").font(.headline).accessibilityAddTraits(.isHeader)
+                        Spacer()
+                        Button("Clear") { withAnimation { recent = "" } }.font(.subheadline).foregroundStyle(.tint)
                     }
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            ForEach(recent.split(separator: "\n").map(String.init), id: \.self) { text in
-                                Button { query = text } label: { chip(text, symbol: "clock") }
-                                    .buttonStyle(ZoomPressStyle())
+                    .padding(.horizontal, Tokens.screenPadding)
+                    .padding(.top, 8)
+                    VStack(spacing: 0) {
+                        ForEach(recent.split(separator: "\n").map(String.init), id: \.self) { text in
+                            Button { query = text } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90").foregroundStyle(.tint)
+                                    Text(text).lineLimit(1)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, Tokens.screenPadding)
+                                .padding(.vertical, 12)
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                            .liftedMenu {
+                                Button("Delete", systemImage: "trash", role: .destructive) { forget(text) }
                             }
                         }
-                        .padding(.horizontal, Tokens.screenPadding)
                     }
-                    .scrollIndicators(.hidden)
                 }
                 if !people.isEmpty {
                     sectionTitle("People and Pets") {
@@ -234,6 +247,10 @@ struct SearchView: View {
         people = ((try? await client.people()) ?? []).filter { !$0.name.isEmpty && $0.isHidden != true }
         albums = (try? await client.albums()) ?? []
         cities = (try? await client.get("/search/cities")) ?? []
+    }
+
+    private func forget(_ text: String) {
+        withAnimation { recent = recent.split(separator: "\n").map(String.init).filter { $0 != text }.joined(separator: "\n") }
     }
 
     private func remember(_ text: String) {

@@ -1,4 +1,5 @@
 import AVFoundation
+import Photos
 import SwiftUI
 
 /// The photo open in the viewer or in the floating card, and the timeline the viewer pages through.
@@ -86,6 +87,9 @@ struct MiniViewer: View {
     @State private var isMiniLeading = false
     @State private var isMiniTop = false
     @State private var isDocked = false
+    @Environment(Session.self) private var session
+    /// The open item's date and place, read once per item: the timeline doesn't carry them.
+    @State private var caption: (id: String, title: String?, subtitle: String?)?
 
     /// The date, pause and close strip under the photo.
     private static let miniStripHeight: CGFloat = 44
@@ -110,8 +114,11 @@ struct MiniViewer: View {
         GeometryReader { geometry in
             if open.asset != nil {
                 content(geometry)
+                    // kept in place, so closing the viewer can zoom back into it, but unseen while the viewer is open
+                    .opacity(open.isExpanded ? 0 : 1)
             }
         }
+        .task(id: open.asset?.id) { await loadCaption() }
         .ignoresSafeArea(.keyboard)
         .accessibilityHidden(open.isExpanded)
         .onChange(of: open.isExpanded) { _, expanded in
@@ -178,7 +185,9 @@ struct MiniViewer: View {
 
             MiniControls(
                 player: player,
-                title: open.asset?.date?.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()),
+                title: caption?.id == open.asset?.id ? caption?.title : nil,
+                subtitle: caption?.id == open.asset?.id ? caption?.subtitle : nil,
+                placeholder: open.asset?.isImage == false ? "Video" : "Photo",
                 videoAreaHeight: Self.miniInset + miniSize.height,
                 onExpand: { open.expand() },
                 onClose: { open.close() },
@@ -192,6 +201,20 @@ struct MiniViewer: View {
         .matchedTransitionSource(id: OpenPhoto.miniSource, in: zoom) { source in
             source.clipShape(.rect(cornerRadius: Self.cardRadius))
         }
+    }
+
+    private func loadCaption() async {
+        guard let asset = open.asset else { return }
+        let day = Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()
+        if let localID = asset.localID {
+            let photo = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject
+            // a device date is a real moment, so it shows in this iPhone's time zone
+            caption = (asset.id, photo?.creationDate?.formatted(date: .abbreviated, time: .omitted), "On This iPhone")
+            return
+        }
+        guard let details = try? await session.client?.asset(asset.id) else { return }
+        let place = [details.exifInfo?.city, details.exifInfo?.country].compactMap { $0 }.joined(separator: ", ")
+        caption = (asset.id, details.date?.formatted(day), place.isEmpty ? details.originalFileName : place)
     }
 
     private var handle: some View {
@@ -249,10 +272,12 @@ private struct HandleChevron: Shape {
     }
 }
 
-/// The controls on the floating card: the photo shows above, then its date and pause for a video.
+/// The controls on the floating card: the photo shows above, then its date, place and pause for a video.
 private struct MiniControls: View {
     let player: AVPlayer?
     let title: String?
+    let subtitle: String?
+    let placeholder: String
     let videoAreaHeight: CGFloat
     let onExpand: () -> Void
     let onClose: () -> Void
@@ -264,11 +289,13 @@ private struct MiniControls: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: videoAreaHeight)
             HStack(spacing: 0) {
-                Text(title ?? "")
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .padding(.leading, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title ?? placeholder).font(.caption.weight(.semibold))
+                    if let subtitle { Text(subtitle).font(.caption2).foregroundStyle(.secondary) }
+                }
+                .lineLimit(1)
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 if let player {
                     Button {
                         if isPaused { player.play() } else { player.pause() }

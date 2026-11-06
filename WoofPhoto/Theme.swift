@@ -154,7 +154,7 @@ struct AccountButton: View {
     let action: () -> Void
     @Environment(Session.self) private var session
     /// Loaded once per server, so every header shows it at once instead of popping it in later.
-    @MainActor private static var loaded: (server: URL, initial: String, image: UIImage?)?
+    @MainActor static var loaded: (server: URL, initial: String, image: UIImage?)?
     @State private var initial = AccountButton.loaded?.initial ?? ""
     @State private var image = AccountButton.loaded?.image
 
@@ -192,14 +192,18 @@ struct AccountButton: View {
 
     private func load() async {
         guard let client = session.client else { return }
-        if let loaded = Self.loaded, loaded.server == client.server {
+        // a missing picture is asked again next time: the first try can fail while the app is still connecting
+        if let loaded = Self.loaded, loaded.server == client.server, loaded.image != nil {
             (initial, image) = (loaded.initial, loaded.image)
             return
         }
         guard let me = try? await client.me() else { return }
         initial = me.name.first.map { String($0).uppercased() } ?? ""
-        if me.profileImagePath?.isEmpty == false,
-           let data = try? await URLSession.shared.data(for: client.request("/users/\(me.id)/profile-image")).0 {
+        // asked even when profileImagePath is missing: servers that leave the field out still have the picture
+        var request = client.request("/users/\(me.id)/profile-image")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let (data, response) = try? await URLSession.shared.data(for: request),
+           (response as? HTTPURLResponse)?.statusCode == 200 {
             image = UIImage(data: data)
         }
         Self.loaded = (client.server, initial, image)

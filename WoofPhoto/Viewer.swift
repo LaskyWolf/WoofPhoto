@@ -1,4 +1,5 @@
 import AVKit
+import CoreImage
 import MapKit
 import Photos
 import PhotosUI
@@ -23,6 +24,10 @@ struct Viewer: View {
     @State private var overlayHeight: CGFloat = 0
     /// How far the tools follow a pull up before the details open.
     @State private var pull: CGFloat = 0
+    /// The page under the finger, with the fraction of the way to the next one, so the ambient blur fades as the photo slides.
+    @State private var progress = PageProgress()
+    /// Goes up when a neighbour's thumbnail arrives, so the ambient blur picks it up.
+    @State private var neighboursLoaded = 0
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @State private var showsInfo = false
     @State private var confirmsDelete = false
@@ -98,6 +103,11 @@ struct Viewer: View {
         }
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: $current)
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.containerSize.width > 0 ? geometry.contentOffset.x / geometry.containerSize.width : 0
+        } action: { _, value in
+            progress.value = value
+        }
         .scrollIndicators(.hidden)
         .scrollDisabled(spatial != nil)
         .environment(\.liveTextInset, chromeHidden ? 0 : overlayHeight + 8)
@@ -149,24 +159,12 @@ struct Viewer: View {
     private static let overlayBottom: CGFloat = 10
 
     private var ambient: some View {
-        ZStack {
-            Color.black
-            if let asset = shownAsset, let image = Still.cached(asset) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 50, opaque: true)
-                    .saturation(1.4)
-                    .opacity(0.55)
-                    .id(asset.id)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.4), value: shownID)
-        .ignoresSafeArea()
-        // the blur spills past the photos; the tools under them stay black
-        .clipped()
-        .accessibilityHidden(true)
+        AmbientBackground(assets: timeline.assets, progress: progress, shown: shown)
+            .id(neighboursLoaded)
+            .ignoresSafeArea()
+            // the blur spills past the photos; the tools under them stay black
+            .clipped()
+            .accessibilityHidden(true)
     }
 
     /// The only thing on top: Shorts' handle, which sends the photo to the floating card.
@@ -419,6 +417,16 @@ struct Viewer: View {
         }
         guard let client = session.client, currentAsset?.localID == nil else { return }
         await timeline.loadNeighbours(of: current, with: client)
+        // the ambient blur of the pages either side, ready before the swipe starts
+        if let index = timeline.assets.firstIndex(where: { $0.id == current }) {
+            for neighbour in [index - 1, index + 1] where timeline.assets.indices.contains(neighbour) {
+                let asset = shown(timeline.assets[neighbour])
+                if asset.localID == nil, ImageCache.image(asset.id, size: "thumbnail") == nil,
+                   await Still.load(asset.id, size: "thumbnail", client: client) != nil {
+                    neighboursLoaded += 1
+                }
+            }
+        }
         detail = try? await client.asset(current)
         if let stackID = currentAsset?.stackID {
             if stack?.id != stackID { stack = try? await client.stack(stackID) }
@@ -898,11 +906,66 @@ struct PlayerLayer: UIViewRepresentable {
 }
 
 /// Loads and caches the larger images the viewer shows.
+/// The scroll position in pages, kept outside the viewer's state so only the background redraws while swiping.
+@Observable final class PageProgress {
+    var value: CGFloat = 0
+}
+
+/// The two photos either side of the finger, blurred ahead of time, the second one fading in as it slides over.
+private struct AmbientBackground: View {
+    let assets: [AssetRef]
+    let progress: PageProgress
+    let shown: (AssetRef) -> AssetRef
+
+    var body: some View {
+        let index = min(max(Int(progress.value.rounded(.down)), 0), max(assets.count - 1, 0))
+        let fraction = min(max(progress.value - CGFloat(index), 0), 1)
+        ZStack {
+            Color.black
+            if index < assets.count {
+                layer(assets[index])
+                if index + 1 < assets.count, fraction > 0 {
+                    layer(assets[index + 1]).opacity(fraction)
+                }
+            }
+        }
+        .opacity(0.55)
+    }
+
+    @ViewBuilder private func layer(_ asset: AssetRef) -> some View {
+        if let image = Still.blurred(shown(asset)) {
+            Image(uiImage: image).resizable().interpolation(.high).scaledToFill()
+        }
+    }
+}
+
 enum Still {
     /// The best image already in memory: preview, then thumbnail, then the thumbhash.
     static func cached(_ asset: AssetRef) -> UIImage? {
         ImageCache.image(asset.id, size: "preview") ?? ImageCache.image(asset.id, size: "thumbnail")
             ?? asset.thumbhash.flatMap { ImageCache.placeholder(id: asset.id, hash: $0) }
+    }
+
+    private static let blurCache = NSCache<NSString, UIImage>()
+    private static let blurContext = CIContext()
+
+    /// A small, blurred and saturated copy of the photo for the viewer's background, made once per image.
+    static func blurred(_ asset: AssetRef) -> UIImage? {
+        guard let source = cached(asset) else { return nil }
+        // a thumbhash and a thumbnail differ in size, so the real image replaces the placeholder's blur
+        let key = "\(asset.id)-\(Int(source.size.width))" as NSString
+        if let image = blurCache.object(forKey: key) { return image }
+        let small = UIGraphicsImageRenderer(size: CGSize(width: 48, height: 48 * source.size.height / max(source.size.width, 1)))
+            .image { context in source.draw(in: context.format.bounds) }
+        guard let input = CIImage(image: small) else { return nil }
+        let output = input.clampedToExtent()
+            .applyingGaussianBlur(sigma: 4)
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.4])
+            .cropped(to: input.extent)
+        guard let cgImage = blurContext.createCGImage(output, from: input.extent) else { return nil }
+        let image = UIImage(cgImage: cgImage)
+        blurCache.setObject(image, forKey: key)
+        return image
     }
 
     static func load(_ id: String, size: String, client: ImmichClient?, cache: Bool = true) async -> UIImage? {

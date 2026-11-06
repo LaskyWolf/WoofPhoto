@@ -78,11 +78,11 @@ struct AlbumTile: View {
         let shelf = Shelf.album(id: album.id, name: album.albumName)
         NavigationLink(value: shelf) {
             if isRow {
-                HStack(spacing: 12) {
-                    Thumbnail(asset: cover, cornerRadius: 8)
-                        .frame(width: 56, height: 56)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(album.albumName).font(.body.weight(.semibold)).lineLimit(1)
+                HStack(spacing: 14) {
+                    Thumbnail(asset: cover, size: "preview", cornerRadius: Tokens.tileRadius)
+                        .frame(width: 80, height: 80)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(album.albumName).font(.headline).lineLimit(2)
                         Text("\((album.assetCount ?? 0).formatted()) items").font(.subheadline).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)

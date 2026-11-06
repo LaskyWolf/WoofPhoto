@@ -131,6 +131,8 @@ struct TripsView: View {
 
     /// Finding trips reads every month, so the result is kept for the session.
     static var found: [Trip]?
+    /// What the search saw, shown when it finds no trips: photos read, and how many have a location.
+    static var summary: String?
 
     @Environment(Session.self) private var session
     @State private var trips = TripsView.found
@@ -145,7 +147,7 @@ struct TripsView: View {
         }
         .overlay {
             if trips == nil, error == nil { ProgressView("Finding trips…") }
-            if trips?.isEmpty == true { ContentUnavailableView("No Trips", systemImage: "airplane", description: Text("Trips appear when photos have a location far from home.")) }
+            if trips?.isEmpty == true { ContentUnavailableView("No Trips", systemImage: "airplane", description: Text(Self.summary ?? "Trips appear when photos have a location far from home.")) }
             if let error { ContentUnavailableView("Can't Find Trips", systemImage: "exclamationmark.triangle", description: Text(error)) }
         }
         .navigationTitle("Trips")
@@ -172,14 +174,30 @@ struct TripsView: View {
         var query = TimelineQuery.library
         query.params["withCoordinates"] = "true"
         var places: [Place] = []
-        for bucket in try await client.buckets(query) {
-            let month: LocatedBucket = try await client.get("/timeline/bucket", query: query.params.merging(["timeBucket": bucket.timeBucket, "order": "asc"]) { $1 })
-            let refs = month.assets.refs
-            for (i, ref) in refs.enumerated() {
-                guard let lat = month.latitude?[safe: i] ?? nil, let lon = month.longitude?[safe: i] ?? nil else { continue }
-                places.append(Place(ref: ref, latitude: lat, longitude: lon, city: month.city?[safe: i] ?? nil, country: month.country?[safe: i] ?? nil))
+        var total = 0
+        // every month at once: the requests share the server's few connections, so they still queue, but without waiting on each other
+        try await withThrowingTaskGroup(of: (Int, [Place]).self) { group in
+            for bucket in try await client.buckets(query) {
+                group.addTask {
+                    let month: LocatedBucket = try await client.get("/timeline/bucket", query: query.params.merging(["timeBucket": bucket.timeBucket, "order": "asc"]) { $1 })
+                    let found = month.assets.refs.enumerated().compactMap { i, ref -> Place? in
+                        guard let lat = month.latitude?[safe: i] ?? nil, let lon = month.longitude?[safe: i] ?? nil else { return nil }
+                        var ref = ref
+                        // a server without per-photo dates in the month still dates the month
+                        if ref.date == nil { ref.date = bucket.date }
+                        return Place(ref: ref, latitude: lat, longitude: lon, city: month.city?[safe: i] ?? nil, country: month.country?[safe: i] ?? nil)
+                    }
+                    return (month.assets.id.count, found)
+                }
+            }
+            for try await (count, found) in group {
+                total += count
+                places += found
             }
         }
+        summary = places.isEmpty
+            ? "None of your \(total.formatted()) photos has a location, so there's no trip to find."
+            : "\(places.count.formatted()) of \(total.formatted()) photos have a location, but no 10 of them were taken more than 100 km from home within a few days."
         places.sort { ($0.ref.date ?? .distantPast) < ($1.ref.date ?? .distantPast) }
 
         // home: the 50 km cell with the most photos
@@ -249,7 +267,7 @@ struct TripsRow: View {
     var body: some View {
         Group {
             if let trips, trips.isEmpty {
-                Text(error ?? "A trip is 10 or more photos with a location more than 100 km from home, taken a few days apart. Photos without a location can't make one.")
+                Text(error ?? TripsView.summary ?? "A trip is 10 or more photos with a location more than 100 km from home, taken a few days apart.")
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, Tokens.screenPadding)
             } else if let trips {

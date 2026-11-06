@@ -223,8 +223,7 @@ struct AssetGrid: View {
                 }.onEnded { _ in
                     drag = nil
                 }, including: selection == nil ? .subviews : .all)
-                // WoofMusic's side margins
-                .padding(.horizontal, Tokens.screenPadding)
+                .padding(.horizontal, spacing)
                 .scaleEffect(pinch)
                 .animation(.snappy, value: columns)
             }

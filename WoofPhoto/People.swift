@@ -58,7 +58,7 @@ struct PersonTile: View {
             if isRow {
                 HStack(spacing: 12) {
                     PersonPhoto(id: person.id)
-                        .frame(width: 56, height: 56)
+                        .frame(width: 72, height: 72)
                         .clipShape(.circle)
                     Text(person.name.isEmpty ? "Add Name" : person.name)
                         .font(.body.weight(.semibold))

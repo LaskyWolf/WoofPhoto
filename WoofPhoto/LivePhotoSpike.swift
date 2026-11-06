@@ -61,6 +61,8 @@ struct LivePhotoSpike: View {
 
 struct LivePhotoView: UIViewRepresentable {
     var livePhoto: PHLivePhoto
+    /// Set by a SwiftUI hold gesture; nil leaves playback to the view's own press, as in the M0 spike.
+    var playing: Bool?
 
     func makeUIView(context: Context) -> PHLivePhotoView {
         let view = PHLivePhotoView()
@@ -70,7 +72,20 @@ struct LivePhotoView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PHLivePhotoView, context: Context) {
-        view.livePhoto = livePhoto
+        if view.livePhoto !== livePhoto { view.livePhoto = livePhoto }
+        guard let playing else { return }
+        // inside the pager the view's own press never wins against the scrolling, so SwiftUI drives it
+        view.playbackGestureRecognizer.isEnabled = false
+        if playing != context.coordinator.playing {
+            context.coordinator.playing = playing
+            if playing { view.startPlayback(with: .full) } else { view.stopPlayback() }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var playing = false
     }
 
     /// Without this SwiftUI uses the photo's full pixel size, so only its middle shows on screen.

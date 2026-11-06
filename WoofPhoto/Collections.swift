@@ -101,7 +101,7 @@ enum Shelf: Hashable, Codable {
 /// Sections can be reordered and hidden, and any album, person or shelf can be pinned to the top.
 struct CollectionsView: View {
     enum Section: String, CaseIterable, Identifiable {
-        case pinned = "Pinned", albums = "Albums", shared = "Shared Albums", people = "People"
+        case albums = "Albums", shared = "Shared Albums", people = "People"
         case memories = "Memories", trips = "Trips", places = "Places", mediaTypes = "Media Types", utilities = "Utilities"
         var id: String { rawValue }
     }
@@ -110,7 +110,9 @@ struct CollectionsView: View {
     @AppStorage("collections.order") private var order = Section.allCases.map(\.rawValue).joined(separator: ",")
     @AppStorage("collections.hidden") private var hiddenSections = ""
     @AppStorage("collections.collapsed") private var collapsed = ""
-    @State private var pins = Pins()
+    /// WoofMusic's library layout: covers in a grid, or rows.
+    @AppStorage("collections.list") private var listLayout = false
+    @Namespace private var shelfZoom
     @State private var albums: [Album] = []
     @State private var people: [Person] = []
     @State private var partners: [User] = []
@@ -146,6 +148,9 @@ struct CollectionsView: View {
             .refreshable { await load() }
             .stickyHeader {
                 TabHeader(title: "Collections") {
+                    HeaderButton(label: listLayout ? "Show as Grid" : "Show as List", systemImage: listLayout ? "square.grid.2x2" : "list.bullet") {
+                        withAnimation(.snappy) { listLayout.toggle() }
+                    }
                     HeaderButton(label: "Edit Sections", systemImage: "slider.horizontal.3") { editing = true }
                 }
                 FilterChips(items: sections, selection: $chip) { $0.rawValue }
@@ -155,10 +160,13 @@ struct CollectionsView: View {
             .sheet(isPresented: $editing) {
                 SectionEditor(order: $order, hidden: $hiddenSections)
             }
-            .navigationDestination(for: Shelf.self) { $0.destination }
+            .navigationDestination(for: Shelf.self) { shelf in
+                shelf.destination.navigationTransition(.zoom(sourceID: shelf, in: shelfZoom))
+            }
             .task { await load() }
         }
-        .environment(pins)
+        // on the stack, so See All pages zoom from their tiles too
+        .environment(\.shelfZoom, shelfZoom)
     }
 
     private var sections: [Section] {
@@ -204,8 +212,7 @@ struct CollectionsView: View {
         switch section {
         case .albums: albums.filter { $0.shared != true }.count
         case .shared: albums.filter { $0.shared == true }.count
-        case .people: people.filter { $0.isHidden != true && !$0.name.isEmpty }.count
-        case .pinned: pins.items.count
+        case .people: shownPeople.count
         default: nil
         }
     }
@@ -219,15 +226,18 @@ struct CollectionsView: View {
                 ShortcutTile(title: "Favorites", subtitle: favoriteCount.map { "\($0.formatted()) items" }, icon: "heart.fill",
                              tint: .red, covers: favoriteCovers)
             }
+            .zoomSource(Shelf.favorites, in: shelfZoom)
             NavigationLink(value: Shelf.duplicates) {
                 ShortcutTile(title: "Duplicates", subtitle: duplicates.isEmpty ? "None found" : "\(duplicates.count) groups",
                              icon: "square.fill.on.square.fill", tint: .teal,
                              covers: duplicates.prefix(2).compactMap { $0.assets.first?.id })
             }
+            .zoomSource(Shelf.duplicates, in: shelfZoom)
             // locked, so no covers give it away
             NavigationLink(value: Shelf.hidden) {
                 ShortcutTile(title: "Hidden", subtitle: "Locked", icon: "eye.slash.fill", tint: .indigo, covers: [])
             }
+            .zoomSource(Shelf.hidden, in: shelfZoom)
         }
         .buttonStyle(ZoomPressStyle())
         .padding(.horizontal, Tokens.screenPadding)
@@ -249,12 +259,10 @@ struct CollectionsView: View {
 
     @ViewBuilder private func content(_ section: Section) -> some View {
         switch section {
-        case .pinned:
-            row(pins.items) { ShelfTile(shelf: $0) }
         case .albums:
-            grid(albums.filter { $0.shared != true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil) }
+            grid(albums.filter { $0.shared != true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil, isRow: listLayout) }
         case .shared:
-            grid(albums.filter { $0.shared == true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil) }
+            grid(albums.filter { $0.shared == true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil, isRow: listLayout) }
             if !partners.isEmpty {
                 row(partners) { partner in
                     NavigationLink(value: Shelf.partner(id: partner.id, name: partner.name)) {
@@ -264,7 +272,11 @@ struct CollectionsView: View {
                 }
             }
         case .people:
-            grid(people.filter { $0.isHidden != true && !$0.name.isEmpty }.prefix(8), columns: 4) { PersonTile(person: $0, size: nil) }
+            if shownPeople.isEmpty {
+                Text("People appear once Immich finds faces in your photos.").foregroundStyle(.secondary).padding(.horizontal, Tokens.screenPadding)
+            } else {
+                grid(shownPeople.prefix(8), columns: 4) { PersonTile(person: $0, size: nil, isRow: listLayout) }
+            }
         case .memories:
             if memories.isEmpty {
                 Text("Memories from this day in past years appear here.").foregroundStyle(.secondary).padding(.horizontal, Tokens.screenPadding)
@@ -285,6 +297,7 @@ struct CollectionsView: View {
                 .clipShape(.rect(cornerRadius: Tokens.cardRadius))
                 .allowsHitTesting(false)
             }
+            .zoomSource(Shelf.map, in: shelfZoom)
             .buttonStyle(ZoomPressStyle(scale: 0.97))
             .padding(.horizontal, Tokens.screenPadding)
         case .mediaTypes:
@@ -294,11 +307,22 @@ struct CollectionsView: View {
         }
     }
 
-    /// WoofMusic's library grid: equal columns, 16 points apart; See All has the rest.
+    /// Named people first; unnamed ones too, so faces Immich found but nobody named still show.
+    private var shownPeople: [Person] {
+        people.filter { $0.isHidden != true }.sorted { !$0.name.isEmpty && $1.name.isEmpty }
+    }
+
+    /// WoofMusic's library grid: equal columns, 16 points apart, or rows in list layout; See All has the rest.
     private func grid<Items: RandomAccessCollection, Tile: View>(_ items: Items, columns: Int, @ViewBuilder tile: @escaping (Items.Element) -> Tile) -> some View
     where Items.Element: Identifiable {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: columns), spacing: 16) {
-            ForEach(items) { tile($0) }
+        Group {
+            if listLayout {
+                LazyVStack(alignment: .leading, spacing: 8) { ForEach(items) { tile($0) } }
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: columns), spacing: 16) {
+                    ForEach(items) { tile($0) }
+                }
+            }
         }
         .padding(.horizontal, Tokens.screenPadding)
     }
@@ -354,70 +378,10 @@ struct TrailingIcon: LabelStyle {
     }
 }
 
-/// The shelves pinned to the top of Collections, stored on the device.
-@MainActor @Observable
-final class Pins {
-    private(set) var items: [PinnedShelf]
-
-    init() {
-        let data = UserDefaults.standard.data(forKey: "collections.pins") ?? Data()
-        items = (try? JSONDecoder().decode([PinnedShelf].self, from: data))
-            ?? [Shelf.favorites, .recentlySaved, .map, .videos].map(PinnedShelf.init)
-    }
-
-    func contains(_ shelf: Shelf) -> Bool { items.contains { $0.shelf == shelf } }
-
-    func toggle(_ shelf: Shelf) {
-        if contains(shelf) { items.removeAll { $0.shelf == shelf } } else { items.append(PinnedShelf(shelf: shelf)) }
-        UserDefaults.standard.set(try? JSONEncoder().encode(items), forKey: "collections.pins")
-    }
-}
-
-struct PinnedShelf: Codable, Identifiable, Hashable {
-    var shelf: Shelf
-    var id: Shelf { shelf }
-}
-
-extension View {
-    /// The Pin / Unpin item for a shelf's context menu.
-    func pinnable(_ shelf: Shelf, pins: Pins) -> some View {
-        liftedMenu {
-            Button(pins.contains(shelf) ? "Unpin" : "Pin", systemImage: pins.contains(shelf) ? "pin.slash" : "pin") {
-                pins.toggle(shelf)
-            }
-        }
-    }
-}
-
-/// A square tile with the shelf's symbol and name; albums and people show their own picture.
-struct ShelfTile: View {
-    let shelf: PinnedShelf
-    @Environment(Pins.self) private var pins
-
-    var body: some View {
-        NavigationLink(value: shelf.shelf) {
-            VStack(alignment: .leading, spacing: 4) {
-                RoundedRectangle(cornerRadius: Tokens.tileRadius)
-                    .fill(Tokens.cardColor)
-                    .frame(width: 110, height: 110)
-                    .overlay {
-                        switch shelf.shelf {
-                        case let .person(id, _): PersonPhoto(id: id).clipShape(.rect(cornerRadius: 12))
-                        default: Image(systemName: shelf.shelf.symbol).font(.largeTitle).foregroundStyle(.tint)
-                        }
-                    }
-                Text(shelf.shelf.title).font(.subheadline).lineLimit(1).frame(width: 110, alignment: .leading)
-            }
-        }
-        .buttonStyle(ZoomPressStyle())
-        .pinnable(shelf.shelf, pins: pins)
-    }
-}
-
 /// The Media Types and Utilities lists.
 struct ShelfList: View {
     let shelves: [Shelf]
-    @Environment(Pins.self) private var pins
+    @Environment(\.shelfZoom) private var shelfZoom
 
     var body: some View {
         VStack(spacing: 0) {
@@ -434,7 +398,7 @@ struct ShelfList: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .pinnable(shelf, pins: pins)
+                .zoomSource(shelf, in: shelfZoom)
                 if shelf != shelves.last { Divider().padding(.leading, 52) }
             }
         }

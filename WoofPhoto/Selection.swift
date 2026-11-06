@@ -190,6 +190,25 @@ enum DeviceLibrary {
         }
     }
 
+    /// The photo and its video, for a Live Photo; nil for any other photo.
+    static func livePhoto(_ localID: String) async -> PHLivePhoto? {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject,
+              asset.mediaSubtypes.contains(.photoLive) else { return nil }
+        let options = PHLivePhotoRequestOptions()
+        options.deliveryMode = .highQualityFormat // one callback, the final one
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { continuation in
+            var resumed = false
+            PHImageManager.default().requestLivePhoto(for: asset, targetSize: PHImageManagerMaximumSize,
+                                                      contentMode: .aspectFit, options: options) { photo, info in
+                // PhotoKit may call back with a low-quality version first
+                guard info?[PHImageResultIsDegradedKey] as? Bool != true, !resumed else { return }
+                resumed = true
+                continuation.resume(returning: photo)
+            }
+        }
+    }
+
     static func playerItem(_ localID: String) async -> AVPlayerItem? {
         guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject else { return nil }
         let options = PHVideoRequestOptions()

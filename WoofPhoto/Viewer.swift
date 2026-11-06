@@ -605,8 +605,7 @@ struct LivePage: View {
     var body: some View {
         Group {
             if let livePhoto {
-                LivePhotoView(livePhoto: livePhoto)
-                    .onTapGesture(perform: onTap)
+                HoldToPlay(livePhoto: livePhoto, onTap: onTap)
             } else {
                 PhotoPage(asset: asset, onTap: onTap)
             }
@@ -629,6 +628,7 @@ struct LivePage: View {
     }
 
     static func livePhoto(_ files: [URL]) async -> PHLivePhoto? {
+        // ponytail: continuation guarded by `resumed`; PhotoKit may call back twice
         await withCheckedContinuation { continuation in
             var resumed = false
             PHLivePhoto.request(withResourceFileURLs: files, placeholderImage: nil, targetSize: .zero, contentMode: .aspectFit) { photo, info in
@@ -638,6 +638,25 @@ struct LivePage: View {
                 continuation.resume(returning: photo)
             }
         }
+    }
+}
+
+/// A Live Photo that plays while a finger rests on it, as in Photos.
+struct HoldToPlay: View {
+    let livePhoto: PHLivePhoto
+    let onTap: () -> Void
+    @State private var playing = false
+
+    var body: some View {
+        LivePhotoView(livePhoto: livePhoto, playing: playing)
+            .onTapGesture(perform: onTap)
+            .onLongPressGesture(minimumDuration: 0.2) {
+                playing = true
+            } onPressingChanged: { pressing in
+                if !pressing { playing = false }
+            }
+            .sensoryFeedback(.impact(weight: .light), trigger: playing) { _, now in now }
+            .accessibilityAction(named: "Play Live Photo") { playing.toggle() }
     }
 }
 
@@ -685,11 +704,14 @@ struct DevicePage: View {
     @AppStorage("video.autoplay") private var autoplay = true
     @State private var image: UIImage?
     @State private var player: AVPlayer?
+    @State private var livePhoto: PHLivePhoto?
 
     var body: some View {
         ZStack {
             if let player {
                 VideoSurface(player: player, chromeHidden: $chromeHidden, onTap: onTap)
+            } else if let livePhoto {
+                HoldToPlay(livePhoto: livePhoto, onTap: onTap)
             } else {
                 ZoomableImage(image: image ?? Still.cached(asset), onTap: onTap) {}
             }
@@ -697,6 +719,10 @@ struct DevicePage: View {
         .task {
             guard let localID = asset.localID else { return }
             image = await DeviceLibrary.image(localID, side: 2400)
+        }
+        .task(id: isCurrent) {
+            guard isCurrent, asset.isImage, livePhoto == nil, let localID = asset.localID else { return }
+            livePhoto = await DeviceLibrary.livePhoto(localID)
         }
         .task(id: isCurrent) {
             guard !asset.isImage, let localID = asset.localID else { return }

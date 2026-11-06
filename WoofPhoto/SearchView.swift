@@ -19,7 +19,6 @@ struct SearchView: View {
     @State private var albums: [Album] = []
     @State private var cities: [Asset] = []
     @AppStorage("search.recent") private var recent = ""
-    @State private var pins = Pins()
 
     var body: some View {
         NavigationStack {
@@ -46,7 +45,6 @@ struct SearchView: View {
         .searchable(text: $query, prompt: "Photos, people, places")
         .autocorrectionDisabled()
         .onSubmit(of: .search) { remember(query) }
-        .environment(pins)
     }
 
     // MARK: Suggestions

@@ -244,11 +244,12 @@ struct TripCard: View {
 struct TripsRow: View {
     @Environment(Session.self) private var session
     @State private var trips = TripsView.found
+    @State private var error: String?
 
     var body: some View {
         Group {
             if let trips, trips.isEmpty {
-                Text("Trips appear when photos have a location far from home.")
+                Text(error ?? "A trip is 10 or more photos with a location more than 100 km from home, taken a few days apart. Photos without a location can't make one.")
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, Tokens.screenPadding)
             } else if let trips {
@@ -265,8 +266,13 @@ struct TripsRow: View {
         }
         .task {
             guard trips == nil, let client = session.client else { return }
-            trips = (try? await TripsView.find(client)) ?? []
-            TripsView.found = trips
+            do {
+                trips = try await TripsView.find(client)
+                TripsView.found = trips
+            } catch {
+                self.error = error.explanation
+                trips = []
+            }
         }
     }
 }

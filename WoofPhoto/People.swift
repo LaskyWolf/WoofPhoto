@@ -48,10 +48,26 @@ struct PersonTile: View {
     let person: Person
     /// Fixed width in a row; nil fills a grid column.
     var size: CGFloat? = 88
-    @Environment(Pins.self) private var pins
+    /// WoofMusic's list layout: a small round photo beside the name.
+    var isRow = false
+    @Environment(\.shelfZoom) private var shelfZoom
 
     var body: some View {
-        NavigationLink(value: Shelf.person(id: person.id, name: person.name)) {
+        let shelf = Shelf.person(id: person.id, name: person.name)
+        NavigationLink(value: shelf) {
+            if isRow {
+                HStack(spacing: 12) {
+                    PersonPhoto(id: person.id)
+                        .frame(width: 56, height: 56)
+                        .clipShape(.circle)
+                    Text(person.name.isEmpty ? "Add Name" : person.name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(person.name.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(.rect)
+            } else {
             VStack(spacing: 6) {
                 PersonPhoto(id: person.id)
                     .aspectRatio(1, contentMode: .fit)
@@ -68,9 +84,10 @@ struct PersonTile: View {
                     .lineLimit(1)
             }
             .frame(width: size)
+            }
         }
         .buttonStyle(.plain)
-        .pinnable(.person(id: person.id, name: person.name), pins: pins)
+        .zoomSource(shelf, in: shelfZoom)
     }
 }
 

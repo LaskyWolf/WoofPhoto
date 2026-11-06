@@ -88,8 +88,26 @@ extension ImmichClient {
         try await get("/map/markers")
     }
 
-    func memories(on date: Date = .now) async throws -> [Memory] {
-        try await get("/memories", query: ["for": date.formatted(.iso8601)])
+    /// Immich's memories, newest first. The server makes them each night; without any yet,
+    /// this week's photos from each past year stand in.
+    func memories() async throws -> [Memory] {
+        let saved: [Memory] = try await get("/memories")
+        if !saved.isEmpty { return saved.sorted { ($0.memoryAt ?? "") > ($1.memoryAt ?? "") } }
+        let calendar = Calendar.current
+        let found = await withTaskGroup(of: Memory?.self) { group in
+            for yearsAgo in 1...20 {
+                group.addTask {
+                    guard let day = calendar.date(byAdding: .year, value: -yearsAgo, to: .now),
+                          let assets = try? await self.firstAssets(["takenAfter": (day - 3 * 86400).formatted(.iso8601),
+                                                                    "takenBefore": (day + 4 * 86400).formatted(.iso8601)], count: 30),
+                          !assets.isEmpty else { return nil }
+                    return Memory(id: "week-\(yearsAgo)", type: "on_this_day", memoryAt: day.formatted(.iso8601),
+                                  data: Memory.Info(year: calendar.component(.year, from: day)), assets: assets)
+                }
+            }
+            return await group.reduce(into: [Memory]()) { if let memory = $1 { $0.append(memory) } }
+        }
+        return found.sorted { ($0.memoryAt ?? "") > ($1.memoryAt ?? "") }
     }
 
     // MARK: Search

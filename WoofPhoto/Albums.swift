@@ -61,33 +61,54 @@ struct AlbumTile: View {
     let album: Album
     /// Fixed width in a row; nil fills a grid column.
     var size: CGFloat? = 150
+    /// WoofMusic's list layout: a small cover beside the name.
+    var isRow = false
     var onChange: () -> Void = {}
 
     @Environment(Session.self) private var session
-    @Environment(Pins.self) private var pins
+    @Environment(\.shelfZoom) private var shelfZoom
+    /// The newest photo, for an album without a key photo (often one shared with you).
+    @State private var firstPhoto: String?
     @State private var renaming = false
     @State private var name = ""
     @State private var confirmsDelete = false
 
     var body: some View {
-        NavigationLink(value: Shelf.album(id: album.id, name: album.albumName)) {
-            VStack(alignment: .leading, spacing: 2) {
-                Thumbnail(asset: album.albumThumbnailAssetId.map { AssetRef(id: $0) }, size: "preview")
-                    .frame(width: size)
-                    .clipShape(.rect(cornerRadius: 12))
-                Text(album.albumName).font(.subheadline).lineLimit(1)
-                Text((album.assetCount ?? 0).formatted()).font(.subheadline).foregroundStyle(.secondary)
+        let cover = (album.albumThumbnailAssetId ?? firstPhoto).map { AssetRef(id: $0) }
+        let shelf = Shelf.album(id: album.id, name: album.albumName)
+        NavigationLink(value: shelf) {
+            if isRow {
+                HStack(spacing: 12) {
+                    Thumbnail(asset: cover, cornerRadius: 8)
+                        .frame(width: 56, height: 56)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(album.albumName).font(.body.weight(.semibold)).lineLimit(1)
+                        Text("\((album.assetCount ?? 0).formatted()) items").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(.rect)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Thumbnail(asset: cover, size: "preview", cornerRadius: Tokens.tileRadius)
+                        .frame(width: size)
+                    Text(album.albumName).font(.subheadline).lineLimit(1)
+                    Text((album.assetCount ?? 0).formatted()).font(.subheadline).foregroundStyle(.secondary)
+                }
+                .frame(width: size)
             }
-            .frame(width: size)
         }
         .buttonStyle(.plain)
+        .zoomSource(shelf, in: shelfZoom)
+        .task {
+            guard album.albumThumbnailAssetId == nil, firstPhoto == nil, let client = session.client else { return }
+            firstPhoto = try? await client.firstAssets(["albumIds": [album.id]], count: 1).first?.id
+        }
         .liftedMenu {
             Button("Rename", systemImage: "pencil") {
                 name = album.albumName
                 renaming = true
             }
-            let shelf = Shelf.album(id: album.id, name: album.albumName)
-            Button(pins.contains(shelf) ? "Unpin" : "Pin", systemImage: "pin") { pins.toggle(shelf) }
             Button("Delete Album", systemImage: "trash", role: .destructive) { confirmsDelete = true }
         }
         .alert("Rename Album", isPresented: $renaming) {

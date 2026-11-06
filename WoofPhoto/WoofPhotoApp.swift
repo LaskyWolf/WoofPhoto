@@ -88,11 +88,9 @@ struct MainTabs: View {
         .environment(\.photoZoom, zoom)
         .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
         .overlay { MiniViewer(zoom: zoom) }
-        .privacyCover()
         .fullScreenCover(isPresented: $open.isExpanded) {
             if let timeline = open.timeline, let asset = open.asset {
                 Viewer(timeline: timeline, start: asset)
-                    .privacyCover()
                     .navigationTransition(.zoom(sourceID: open.zoomSource, in: zoom))
                     .environment(session)
             }
@@ -208,21 +206,6 @@ struct SignInView: View {
         } catch ASWebAuthenticationSessionError.canceledLogin {
         } catch {
             self.error = error.explanation
-        }
-    }
-}
-
-extension View {
-    /// Covers the app while it isn't in front, so the app switcher's snapshot shows no photos.
-    func privacyCover() -> some View { modifier(PrivacyCover()) }
-}
-
-private struct PrivacyCover: ViewModifier {
-    @Environment(\.scenePhase) private var phase
-
-    func body(content: Content) -> some View {
-        content.overlay {
-            if phase != .active { Rectangle().fill(.ultraThickMaterial).ignoresSafeArea() }
         }
     }
 }

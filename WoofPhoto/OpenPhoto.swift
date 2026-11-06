@@ -66,11 +66,13 @@ extension EnvironmentValues {
     @Entry var photoZoom: Namespace.ID?
     /// Goes up each time the selected Library tab is tapped again.
     @Entry var libraryReselects = 0
+    /// The namespace Collections' pages zoom out of: albums, people, the map and the shortcuts.
+    @Entry var shelfZoom: Namespace.ID?
 }
 
 extension View {
     /// Marks a cell as a place the viewer can zoom out of and back into.
-    @ViewBuilder func zoomSource(_ id: String, in namespace: Namespace.ID?) -> some View {
+    @ViewBuilder func zoomSource(_ id: some Hashable, in namespace: Namespace.ID?) -> some View {
         if let namespace { matchedTransitionSource(id: id, in: namespace) } else { self }
     }
 }
@@ -213,10 +215,20 @@ struct MiniViewer: View {
         .accessibilityLabel("Show Photo")
     }
 
-    /// Snaps to the corner the flick is heading for. A flick past the screen's side hides the card.
+    /// Snaps to the corner the flick is heading for. A flick past the screen's side hides the card,
+    /// and one past the bottom edge closes it.
     private func finishMiniDrag(_ value: DragGesture.Value, origin: CGPoint, screen: CGSize) {
         let endX = origin.x + value.predictedEndTranslation.width + miniCardWidth / 2
         let endY = origin.y + value.predictedEndTranslation.height + miniCardHeight / 2
+        if endY > screen.height {
+            withAnimation(.snappy) {
+                dragOffset.height = screen.height - origin.y
+            } completion: {
+                open.close()
+                dragOffset = .zero
+            }
+            return
+        }
         withAnimation(.snappy) {
             isMiniLeading = endX < screen.width / 2
             isMiniTop = endY < screen.height / 2
@@ -237,7 +249,7 @@ private struct HandleChevron: Shape {
     }
 }
 
-/// The controls on the floating card: the photo shows above, then its date, pause for a video, and close.
+/// The controls on the floating card: the photo shows above, then its date and pause for a video.
 private struct MiniControls: View {
     let player: AVPlayer?
     let title: String?
@@ -272,8 +284,8 @@ private struct MiniControls: View {
                             try? await Task.sleep(for: .milliseconds(500))
                         }
                     }
+                    .padding(.trailing, 4)
                 }
-                Button("Close", systemImage: "xmark", action: onClose)
             }
             .labelStyle(MiniGlyphLabelStyle())
             .buttonStyle(ZoomPressStyle())
@@ -281,6 +293,8 @@ private struct MiniControls: View {
         }
         .contentShape(.rect)
         .onTapGesture(perform: onExpand)
+        // closing is a flick past the bottom edge, so VoiceOver gets it as an action
+        .accessibilityAction(named: "Close", onClose)
         .gesture(
             DragGesture(minimumDistance: 8, coordinateSpace: .global)
                 .onChanged(onDragChanged)

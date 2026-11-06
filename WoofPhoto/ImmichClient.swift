@@ -116,6 +116,15 @@ struct ImmichClient {
         let _: Pong = try await get("/server/ping")
     }
 
+    /// Asks the server directly with a short wait. `ping()` can answer from the offline copy, so it can't tell.
+    func isReachable() async -> Bool {
+        var request = request("/server/ping")
+        request.timeoutInterval = 8
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
     func login(email: String, password: String) async throws -> String {
         let response: LoginResponse = try await fetch("POST", "/auth/login", body: ["email": email, "password": password])
         return response.accessToken

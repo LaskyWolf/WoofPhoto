@@ -88,6 +88,7 @@ struct PersonPhoto: View {
                 }
             }
             .clipped()
+            .contentShape(.rect)
             .task(id: id) {
                 guard ImageCache.image(id, size: "person") == nil,
                       let data = try? await session.client?.personImage(id), let image = UIImage(data: data) else { return }

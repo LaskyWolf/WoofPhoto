@@ -23,12 +23,7 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                TabHeader(title: "Search") {
-                    HeaderButton(label: "Filters", systemImage: "line.3.horizontal.decrease", isOn: filters.isActive) { showsFilters = true }
-                }
-                FilterChips(items: Scope.allCases, selection: $scope) { $0.rawValue }
-                    .padding(.bottom, 8)
+            Group {
                 if query.isEmpty && !filters.isActive {
                     suggestions
                 } else {
@@ -36,6 +31,14 @@ struct SearchView: View {
                 }
             }
             .frame(maxHeight: .infinity, alignment: .top)
+            .stickyHeader {
+                VStack(alignment: .leading, spacing: 4) {
+                    TabHeader(title: "Search") {
+                        HeaderButton(label: "Filters", systemImage: "line.3.horizontal.decrease", isOn: filters.isActive) { showsFilters = true }
+                    }
+                    FilterChips(items: Scope.allCases, selection: $scope) { $0.rawValue }
+                }
+            }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showsFilters) { FiltersSheet(filters: $filters) }
             .navigationDestination(for: Shelf.self) { $0.destination }

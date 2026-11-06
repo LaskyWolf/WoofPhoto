@@ -28,6 +28,9 @@ struct AssetGrid: View {
     @State private var drag: (start: Int, base: Set<String>, adds: Bool)?
     @State private var gridWidth: CGFloat = 0
     @Environment(\.photoZoom) private var zoom
+    @Environment(\.libraryReselects) private var reselects
+    /// The pinch in progress, shown as a scale before the column count changes.
+    @GestureState private var pinch: CGFloat = 1
 
     var body: some View {
         content
@@ -53,9 +56,7 @@ struct AssetGrid: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if let title { header(title) }
-            }
+            .stickyHeader { if let title { header(title) } }
             .toolbar(title == nil ? .automatic : .hidden, for: .navigationBar)
             .toolbar {
                 if title == nil, canSelect {
@@ -89,14 +90,6 @@ struct AssetGrid: View {
                 FilterChips(items: Level.allCases, selection: $level) { $0.rawValue }
             }
         }
-        .padding(.bottom, 10)
-        .background {
-            LinearGradient(stops: [.init(color: Color(.systemBackground), location: 0),
-                                   .init(color: Color(.systemBackground).opacity(0.8), location: 0.6),
-                                   .init(color: Color(.systemBackground).opacity(0), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-        }
     }
 
     @ViewBuilder private var content: some View {
@@ -125,7 +118,9 @@ struct AssetGrid: View {
     }
 
     private func grid(_ months: [Timeline.Month], client: ImmichClient?) -> some View {
-        let spacing = 1.5
+        // rounded cells with small gaps, like WoofTube's thumbnails; tighter as the cells get smaller
+        let spacing: CGFloat = columns >= 9 ? 2 : 3
+        let radius: CGFloat = columns <= 3 ? 10 : columns <= 5 ? 6 : 3
         return ScrollViewReader { proxy in
             ScrollView {
                 hero
@@ -133,13 +128,13 @@ struct AssetGrid: View {
                     ForEach(months) { month in
                         ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
                             let asset = month.assets?[index]
-                            Thumbnail(asset: asset)
+                            Thumbnail(asset: asset, cornerRadius: radius)
                                 .overlay(alignment: .bottomTrailing) {
                                     if let selection, let id = asset?.id {
                                         let selected = selection.contains(id)
                                         Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                                             .font(.title3)
-                                            .foregroundStyle(.white, .blue)
+                                            .foregroundStyle(.white, .tint)
                                             .shadow(radius: 2)
                                             .padding(4)
                                             .background(selected ? Color.white.opacity(0.25) : .clear)
@@ -169,8 +164,16 @@ struct AssetGrid: View {
                 }.onEnded { _ in
                     drag = nil
                 }, including: selection == nil ? .subviews : .all)
+                .padding(.horizontal, spacing)
+                .scaleEffect(pinch)
+                .animation(.snappy, value: columns)
             }
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
+            // Photos opens at the newest, so tapping the tab again goes back down to it
+            .onChange(of: reselects) {
+                guard title != nil, let last = months.last else { return }
+                withAnimation(.smooth) { proxy.scrollTo("\(last.key)#\((last.assets?.count ?? last.count) - 1)", anchor: .bottom) }
+            }
             .overlay(alignment: .trailing) {
                 if months.count > 1, selection == nil { Scrubber(months: months, proxy: proxy) }
             }
@@ -181,7 +184,9 @@ struct AssetGrid: View {
                 self.target = nil
             }
         }
-        .simultaneousGesture(MagnifyGesture().onEnded { value in
+        .simultaneousGesture(MagnifyGesture().updating($pinch) { value, pinch, _ in
+            pinch = min(max(value.magnification, 0.6), 1.6)
+        }.onEnded { value in
             let steps = Self.columnSteps
             let current = steps.firstIndex(of: columns) ?? 1
             let next = value.magnification > 1.15 ? current - 1 : value.magnification < 0.87 ? current + 1 : current
@@ -332,6 +337,7 @@ struct Thumbnail: View {
     var size = "thumbnail"
     /// Cards keep the photo's own shape; grid cells are square.
     var square = true
+    var cornerRadius: CGFloat = 0
 
     @Environment(Session.self) private var session
     @Environment(Timeline.self) private var timeline: Timeline?
@@ -345,7 +351,9 @@ struct Thumbnail: View {
                     Image(uiImage: image).resizable().scaledToFill()
                 }
             }
-            .clipped()
+            // the filled image spills past the cell; without the shape a tap there opens the neighbour drawn on top
+            .clipShape(.rect(cornerRadius: cornerRadius))
+            .contentShape(.rect(cornerRadius: cornerRadius))
             .overlay(alignment: .bottomTrailing) {
                 if let duration {
                     Text(duration).overlayBadge()

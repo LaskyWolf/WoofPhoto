@@ -64,14 +64,21 @@ struct MainTabs: View {
     @Environment(Session.self) private var session
     @Bindable private var open = OpenPhoto.shared
     @Namespace private var zoom
+    @State private var tab = 0
+    @State private var libraryReselects = 0
 
     var body: some View {
-        TabView {
-            Tab("Library", systemImage: "photo.on.rectangle") { LibraryView() }
+        TabView(selection: Binding(get: { tab }, set: { selected in
+            if selected == tab, selected == 0 { libraryReselects += 1 }
+            tab = selected
+        })) {
+            Tab("Library", systemImage: "photo.on.rectangle", value: 0) {
+                LibraryView().environment(\.libraryReselects, libraryReselects)
+            }
             // without a server the app is a viewer for this iPhone's photos
             if session.client != nil {
-                Tab("Collections", systemImage: "rectangle.stack") { CollectionsView() }
-                Tab(role: .search) { SearchView() }
+                Tab("Collections", systemImage: "rectangle.stack", value: 1) { CollectionsView() }
+                Tab(value: 2, role: .search) { SearchView() }
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)

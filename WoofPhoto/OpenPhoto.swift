@@ -28,6 +28,8 @@ final class OpenPhoto {
 extension EnvironmentValues {
     /// The namespace the viewer zooms in, set at the root so every grid shares it.
     @Entry var photoZoom: Namespace.ID?
+    /// Goes up each time the selected Library tab is tapped again.
+    @Entry var libraryReselects = 0
 }
 
 extension View {

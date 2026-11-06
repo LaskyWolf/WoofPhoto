@@ -78,6 +78,23 @@ struct TabHeader<Buttons: View>: View {
     }
 }
 
+extension View {
+    /// A tab's title and chips, pinned above the content over a fade, so what scrolls under them stays out of the way.
+    func stickyHeader<Header: View>(@ViewBuilder _ header: () -> Header) -> some View {
+        safeAreaInset(edge: .top, spacing: 0) {
+            header()
+                .padding(.bottom, 10)
+                .background {
+                    LinearGradient(stops: [.init(color: Color(.systemBackground), location: 0),
+                                           .init(color: Color(.systemBackground).opacity(0.8), location: 0.6),
+                                           .init(color: Color(.systemBackground).opacity(0), location: 1)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .ignoresSafeArea()
+                }
+        }
+    }
+}
+
 extension TabHeader where Buttons == EmptyView {
     init(title: String, subtitle: String? = nil) {
         self.init(title: title, subtitle: subtitle) { EmptyView() }

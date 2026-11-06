@@ -123,11 +123,6 @@ struct CollectionsView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    TabHeader(title: "Collections") {
-                        HeaderButton(label: "Edit Sections", systemImage: "slider.horizontal.3") { editing = true }
-                    }
-                    FilterChips(items: ["All"] + sections.map(\.rawValue), selection: $chip) { $0 }
-                        .padding(.bottom, 4)
                     if let error {
                         Label(error, systemImage: "wifi.exclamationmark")
                             .font(.footnote)
@@ -140,6 +135,14 @@ struct CollectionsView: View {
                     }
                 }
                 .padding(.bottom, Tokens.sectionGap)
+            }
+            .stickyHeader {
+                VStack(alignment: .leading, spacing: 4) {
+                    TabHeader(title: "Collections") {
+                        HeaderButton(label: "Edit Sections", systemImage: "slider.horizontal.3") { editing = true }
+                    }
+                    FilterChips(items: ["All"] + sections.map(\.rawValue), selection: $chip) { $0 }
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .onChange(of: sections) { if !sections.map(\.rawValue).contains(chip) { chip = "All" } }

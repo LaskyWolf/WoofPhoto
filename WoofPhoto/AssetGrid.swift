@@ -31,6 +31,8 @@ struct AssetGrid: View {
     @Environment(\.libraryReselects) private var reselects
     /// The pinch in progress, shown as a scale before the column count changes.
     @GestureState private var pinch: CGFloat = 1
+    /// The long-press menu's actions.
+    @State private var actions = AssetActions()
 
     var body: some View {
         content
@@ -67,6 +69,8 @@ struct AssetGrid: View {
             }
             .toolbar(selection == nil ? .automatic : .hidden, for: .tabBar)
             .environment(timeline)
+            .assetActions(actions)
+            .onAppear { actions.timeline = timeline }
             .task(id: ObjectIdentifier(timeline)) { await reload() }
     }
 
@@ -138,6 +142,12 @@ struct AssetGrid: View {
                                             .shadow(radius: 2)
                                             .padding(4)
                                             .background(selected ? Color.white.opacity(0.25) : .clear)
+                                    }
+                                }
+                                .contentShape(.contextMenuPreview, .rect(cornerRadius: radius))
+                                .liftedMenu(background: nil) {
+                                    if let asset, asset.localID == nil, client != nil {
+                                        AssetMenuItems(actions: actions, ids: [asset.id], isFavorite: asset.isFavorite)
                                     }
                                 }
                                 .zoomSource(asset?.id ?? "\(month.key)#\(index)", in: zoom)
@@ -342,6 +352,7 @@ struct Thumbnail: View {
     @Environment(Session.self) private var session
     @Environment(Timeline.self) private var timeline: Timeline?
     @State private var loaded: UIImage?
+    @AppStorage("grid.backupBadge") private var backupBadge = true
 
     var body: some View {
         Color(.secondarySystemFill)
@@ -365,7 +376,7 @@ struct Thumbnail: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                if asset?.localID != nil {
+                if backupBadge, asset?.localID != nil {
                     Image(systemName: "icloud.slash").overlayBadge()
                 }
             }

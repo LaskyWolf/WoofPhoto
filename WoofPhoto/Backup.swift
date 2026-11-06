@@ -288,6 +288,7 @@ struct BackupView: View {
             }
         }
         .navigationTitle("Backup")
+        .navigationBarTitleDisplayMode(.inline)
         .alert(message ?? "", isPresented: Binding { message != nil } set: { if !$0 { message = nil } }) {}
         .task {
             guard await backup.authorize() else { return }

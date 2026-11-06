@@ -42,6 +42,11 @@ struct ImmichClient {
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 30
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // Settings > Networking: "Name: value" lines for a proxy in front of the server
+        for line in (UserDefaults.standard.string(forKey: "proxyHeaders") ?? "").split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, !parts[0].isEmpty { request.setValue(parts[1], forHTTPHeaderField: parts[0]) }
+        }
         return request
     }
 

@@ -203,6 +203,8 @@ struct User: Decodable, Identifiable, Hashable {
     var id: String
     var name: String
     var email: String?
+    var quotaUsageInBytes: Int64?
+    var quotaSizeInBytes: Int64?
 }
 
 struct MapMarker: Decodable, Identifiable {

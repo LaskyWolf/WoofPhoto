@@ -64,21 +64,31 @@ struct TabHeader<Buttons: View>: View {
         }
         .padding(.horizontal, Tokens.screenPadding)
         .padding(.vertical, 8)
-        .sheet(isPresented: $showsAccount) {
-            if session.client == nil {
-                SignInView()
-            } else {
-                NavigationStack {
-                    SettingsView().toolbar {
-                        Button("Done", role: .close) { showsAccount = false }
-                    }
-                }
-            }
+        .sheet(isPresented: Binding { showsAccount && session.client == nil } set: { showsAccount = $0 }) { SignInView() }
+        .navigationDestination(isPresented: Binding { showsAccount && session.client != nil } set: { showsAccount = $0 }) {
+            SettingsView()
         }
     }
 }
 
 extension View {
+    /// WoofMusic's long press: a lifted view gets a background matching what's behind it, so text doesn't
+    /// float over the blur. The margin goes back after the menu. Nil is for a view that fills its own shape.
+    @ViewBuilder
+    func liftedMenu<Items: View>(background: Color? = Color(.systemBackground), margin: CGFloat = 6,
+                                 @ViewBuilder items: () -> Items) -> some View {
+        if let background {
+            let shape = RoundedRectangle(cornerRadius: Tokens.tileRadius, style: .continuous)
+            padding(margin)
+                .background(background, in: shape)
+                .contentShape(.contextMenuPreview, shape)
+                .contextMenu(menuItems: items)
+                .padding(-margin)
+        } else {
+            contextMenu(menuItems: items)
+        }
+    }
+
     /// A tab's title and chips, pinned above the content over a fade, so what scrolls under them stays out of the way.
     func stickyHeader<Header: View>(@ViewBuilder _ header: () -> Header) -> some View {
         safeAreaInset(edge: .top, spacing: 0) {

@@ -321,7 +321,7 @@ struct PinnedShelf: Codable, Identifiable, Hashable {
 extension View {
     /// The Pin / Unpin item for a shelf's context menu.
     func pinnable(_ shelf: Shelf, pins: Pins) -> some View {
-        contextMenu {
+        liftedMenu {
             Button(pins.contains(shelf) ? "Unpin" : "Pin", systemImage: pins.contains(shelf) ? "pin.slash" : "pin") {
                 pins.toggle(shelf)
             }

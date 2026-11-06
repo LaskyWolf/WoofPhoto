@@ -1,102 +1,135 @@
 import SwiftUI
 import WidgetKit
 
-/// Account, backup, storage and the M0 checks, behind the Library's account button.
+/// WoofMusic's settings page: the account on top, then one page per area. Pushed from the account button.
 struct SettingsView: View {
     @Environment(Session.self) private var session
     @State private var me: User?
-    @State private var version: String?
-    @State private var cacheSize = URLCache.shared.currentDiskUsage
-    @AppStorage("library.columns") private var columns = 5
-    @AppStorage("accent") private var accent = AccentPreset.all[0].name
+    @State private var showsChecks = false
 
     var body: some View {
-        Form {
+        List {
+            Section { accountRow }
+            Section("Appearance") {
+                SettingsRow("Appearance", icon: "paintpalette") { AppearanceSettings() }
+            }
+            Section("Library & Viewer") {
+                SettingsRow("Timeline", icon: "square.grid.3x3") { TimelineSettings() }
+                SettingsRow("Photo & Video Viewer", icon: "play.rectangle") { ViewerSettings() }
+            }
+            Section("Backup & Storage") {
+                SettingsRow("Backup", icon: "icloud.and.arrow.up") { BackupView() }
+                SettingsRow("Storage", icon: "internaldrive") { StorageSettings() }
+            }
+            Section("Immich") {
+                SettingsRow("Features", icon: "switch.2") { ImmichFeatures() }
+                SettingsRow("Notifications", icon: "bell") { ImmichNotifications() }
+                SettingsRow("Downloads", icon: "arrow.down.to.line") { ImmichDownloads() }
+                SettingsRow("Networking", icon: "network") { NetworkingSettings() }
+            }
+            Section("Widgets") {
+                SettingsRow("Featured Photos", icon: "square.grid.2x2") { WidgetSettings() }
+            }
+        }
+        .listSectionSpacing(.compact)
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $showsChecks) { SpikesView() }
+        .task { me = try? await session.client?.me() }
+    }
+
+    /// Opens the account page. A long press opens the M0 checks, like WoofMusic's hidden Diagnostics.
+    private var accountRow: some View {
+        NavigationLink { AccountSettings() } label: {
+            HStack(spacing: 14) {
+                Avatar(name: me?.name, size: 48)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(me?.name ?? "Account").font(.headline)
+                    Text(me?.email ?? session.client?.server.host() ?? "").font(.subheadline).foregroundStyle(.secondary)
+                }
+                .lineLimit(1)
+            }
+            .padding(.vertical, 4)
+        }
+        .simultaneousGesture(LongPressGesture(minimumDuration: 0.8).onEnded { _ in showsChecks = true })
+        .sensoryFeedback(.impact(weight: .medium), trigger: showsChecks) { _, shown in shown }
+        .accessibilityAction(named: "M0 Checks") { showsChecks = true }
+    }
+}
+
+/// WoofMusic's SettingsNavigationRow: a label with its icon in the accent colour.
+struct SettingsRow<Destination: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder var destination: () -> Destination
+
+    init(_ title: String, icon: String, @ViewBuilder destination: @escaping () -> Destination) {
+        self.title = title
+        self.icon = icon
+        self.destination = destination
+    }
+
+    var body: some View {
+        NavigationLink { destination() } label: { Label(title, systemImage: icon) }
+    }
+}
+
+/// The user's initial on the accent colour.
+struct Avatar: View {
+    let name: String?
+    var size: CGFloat = 36
+
+    var body: some View {
+        Text(name?.first.map(String.init) ?? "")
+            .font(.system(size: size * 0.42, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(.tint, in: .circle)
+            .accessibilityHidden(true)
+    }
+}
+
+struct AccountSettings: View {
+    @Environment(Session.self) private var session
+    @State private var me: User?
+    @State private var version: String?
+
+    var body: some View {
+        List {
             Section {
-                HStack(spacing: 12) {
-                    Text(me?.name.first.map(String.init) ?? "")
-                        .font(.title2.bold())
-                        .foregroundStyle(.white)
-                        .frame(width: 52, height: 52)
-                        .background(.tint, in: .circle)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(me?.name ?? "…").font(.headline)
-                        Text(me?.email ?? "…")
-                        Text([session.client?.server.host(), version.map { "Immich \($0)" }].compactMap { $0 }.joined(separator: " · "))
+                VStack(spacing: 8) {
+                    Avatar(name: me?.name, size: 84)
+                    Text(me?.name ?? "…").font(.title2.bold())
+                    Text(me?.email ?? "").foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .listRowBackground(Color.clear)
+            }
+            Section("Server") {
+                LabeledContent("Address", value: session.client?.server.absoluteString ?? "")
+                LabeledContent("Immich", value: version ?? "…")
+            }
+            if let used = me?.quotaUsageInBytes {
+                Section("Storage on the Server") {
+                    LabeledContent("Used", value: used.formatted(.byteCount(style: .file)))
+                    if let quota = me?.quotaSizeInBytes {
+                        LabeledContent("Quota", value: quota.formatted(.byteCount(style: .file)))
+                        ProgressView(value: Double(used), total: Double(max(quota, 1)))
                     }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
                 }
-                .padding(.vertical, 4)
-            }
-            Section("Accent Color") {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 14) {
-                    ForEach(AccentPreset.all) { preset in
-                        Button {
-                            accent = preset.name
-                        } label: {
-                            Circle()
-                                .fill(preset.color)
-                                .frame(width: 36, height: 36)
-                                .overlay {
-                                    if preset.name == accent {
-                                        Image(systemName: "checkmark").font(.footnote.bold()).foregroundStyle(.white)
-                                    }
-                                }
-                                .frame(width: 44, height: 44)
-                        }
-                        .buttonStyle(ZoomPressStyle())
-                        .accessibilityLabel(preset.name)
-                        .accessibilityAddTraits(preset.name == accent ? .isSelected : [])
-                    }
-                }
-                .padding(.vertical, 6)
-                .sensoryFeedback(.selection, trigger: accent)
-            }
-            Section {
-                NavigationLink { BackupView() } label: { row("Backup", "icloud.and.arrow.up", .green) }
-                NavigationLink { WidgetSettings() } label: { row("Featured Photos Widget", "square.grid.2x2", .purple) }
-            }
-            Section {
-                LabeledContent { Text(Int64(cacheSize).formatted(.byteCount(style: .file))) } label: { row("Saved Thumbnails", "internaldrive", .gray) }
-                Button("Clear Saved Thumbnails") {
-                    URLCache.shared.removeAllCachedResponses()
-                    try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: "originals"))
-                    cacheSize = URLCache.shared.currentDiskUsage
-                }
-            } header: {
-                Text("Storage")
-            } footer: {
-                Text("Thumbnails and photos you opened stay on this iPhone, so they show without a connection. Up to 512 MB.")
-            }
-            Section {
-                NavigationLink { SpikesView() } label: { row("M0 Checks", "checklist", .gray) }
             }
             Section {
                 Button("Sign Out", role: .destructive) { session.signOut() }
             }
         }
-        .navigationTitle("Settings")
+        .listSectionSpacing(.compact)
+        .navigationTitle("Account")
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             guard let client = session.client else { return }
             me = try? await client.me()
             let info: ServerVersion? = try? await client.get("/server/version")
             version = info.map { "\($0.major).\($0.minor).\($0.patch)" }
-        }
-    }
-
-    /// A row with a coloured icon square, like iOS Settings.
-    private func row(_ title: String, _ symbol: String, _ color: Color) -> some View {
-        Label {
-            Text(title)
-        } icon: {
-            Image(systemName: symbol)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 28)
-                .background(color.gradient, in: .rect(cornerRadius: 7))
         }
     }
 }
@@ -105,6 +138,241 @@ private struct ServerVersion: Decodable {
     var major: Int
     var minor: Int
     var patch: Int
+}
+
+struct AppearanceSettings: View {
+    @AppStorage("accent") private var accent = AccentPreset.all[0].name
+
+    var body: some View {
+        List {
+            Section {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 6), spacing: 14) {
+                    ForEach(AccentPreset.all) { preset in
+                        Button { accent = preset.name } label: {
+                            Circle()
+                                .fill(preset.color)
+                                .frame(width: 34, height: 34)
+                                .overlay {
+                                    if preset.name == accent {
+                                        Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+                                    }
+                                }
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(preset.name)
+                        .accessibilityAddTraits(preset.name == accent ? .isSelected : [])
+                    }
+                }
+                .padding(.vertical, 4)
+                .sensoryFeedback(.selection, trigger: accent)
+            } header: {
+                Text("Accent Color")
+            } footer: {
+                Text("Applies to buttons, chips, selection and the selected tab.")
+            }
+        }
+        .navigationTitle("Appearance")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct TimelineSettings: View {
+    @AppStorage("library.columns") private var columns = 5
+    @AppStorage("grid.backupBadge") private var backupBadge = true
+
+    var body: some View {
+        List {
+            Section {
+                Picker(selection: $columns) {
+                    ForEach(AssetGrid.columnSteps, id: \.self) { Text("\($0)").tag($0) }
+                } label: { Label("Photos per Row", systemImage: "square.grid.3x3") }
+            } footer: {
+                Text("Pinching the grid changes it too.")
+            }
+            Section {
+                Toggle(isOn: $backupBadge) { Label("Not Backed Up Badge", systemImage: "icloud.slash") }
+            } footer: {
+                Text("Marks the photos on this iPhone that aren't on the server yet.")
+            }
+        }
+        .navigationTitle("Timeline")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct ViewerSettings: View {
+    @AppStorage("viewer.fullSize") private var fullSize = false
+    @AppStorage("video.autoplay") private var autoplay = true
+    @AppStorage("video.loop") private var loop = false
+
+    var body: some View {
+        List {
+            Section {
+                Toggle(isOn: $fullSize) { Label("Load Full-Size Photos", systemImage: "photo") }
+            } header: {
+                Text("Photos")
+            } footer: {
+                Text("Off, the full-size photo loads only when you zoom in. On, it loads as soon as the photo opens, which uses more data.")
+            }
+            Section("Videos") {
+                Toggle(isOn: $autoplay) { Label("Play Automatically", systemImage: "play") }
+                Toggle(isOn: $loop) { Label("Loop", systemImage: "repeat") }
+            }
+        }
+        .navigationTitle("Viewer")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct StorageSettings: View {
+    @State private var cacheSize = URLCache.shared.currentDiskUsage
+
+    var body: some View {
+        List {
+            Section {
+                LabeledContent("Saved Thumbnails", value: Int64(cacheSize).formatted(.byteCount(style: .file)))
+                Button("Clear Saved Thumbnails", role: .destructive) {
+                    URLCache.shared.removeAllCachedResponses()
+                    try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: "originals"))
+                    try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "spatial"))
+                    cacheSize = URLCache.shared.currentDiskUsage
+                }
+            } footer: {
+                Text("Thumbnails, photos you opened and Spatial Scenes stay on this iPhone, so they show without a connection. Thumbnails use up to 512 MB.")
+            }
+        }
+        .navigationTitle("Storage")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// The user's preferences stored on the Immich server, shared with the web app and the official app.
+@MainActor @Observable
+final class ServerPreferences {
+    private var values: [String: [String: Any]] = [:]
+    var loaded = false
+    var error: String?
+
+    func load(_ client: ImmichClient?) async {
+        guard let client else { return }
+        do {
+            let data = try await client.call("GET", "/users/me/preferences")
+            values = (try JSONSerialization.jsonObject(with: data) as? [String: [String: Any]]) ?? [:]
+            loaded = true
+        } catch {
+            self.error = error.explanation
+        }
+    }
+
+    func value<T>(_ group: String, _ key: String, default fallback: T) -> T { values[group]?[key] as? T ?? fallback }
+
+    /// Saves at once; on failure the switch goes back.
+    func binding<T>(_ group: String, _ key: String, default fallback: T, client: ImmichClient?) -> Binding<T> {
+        Binding { self.value(group, key, default: fallback) } set: { new in
+            let old = self.values[group]?[key]
+            self.values[group, default: [:]][key] = new
+            Task {
+                do {
+                    try await client?.call("PUT", "/users/me/preferences", body: [group: [key: new]])
+                } catch {
+                    self.values[group]?[key] = old
+                    self.error = error.explanation
+                }
+            }
+        }
+    }
+}
+
+/// A list of server preferences, with loading and errors handled once.
+private struct PreferencesList<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: (ServerPreferences, ImmichClient?) -> Content
+    @Environment(Session.self) private var session
+    @State private var preferences = ServerPreferences()
+
+    var body: some View {
+        List {
+            if preferences.loaded {
+                content(preferences, session.client)
+            } else if preferences.error == nil {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+            if let error = preferences.error {
+                Section { Text(error).foregroundStyle(.secondary) }
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await preferences.load(session.client) }
+    }
+}
+
+struct ImmichFeatures: View {
+    var body: some View {
+        PreferencesList(title: "Features") { prefs, client in
+            Section {
+                Toggle(isOn: prefs.binding("memories", "enabled", default: true, client: client)) { Label("Memories", systemImage: "clock.arrow.circlepath") }
+                Toggle(isOn: prefs.binding("people", "enabled", default: true, client: client)) { Label("People", systemImage: "person.2") }
+                Toggle(isOn: prefs.binding("ratings", "enabled", default: false, client: client)) { Label("Ratings", systemImage: "star") }
+                Toggle(isOn: prefs.binding("tags", "enabled", default: false, client: client)) { Label("Tags", systemImage: "tag") }
+                Toggle(isOn: prefs.binding("folders", "enabled", default: false, client: client)) { Label("Folders", systemImage: "folder") }
+                Toggle(isOn: prefs.binding("sharedLinks", "enabled", default: true, client: client)) { Label("Shared Links", systemImage: "link") }
+            } footer: {
+                Text("Saved on your Immich server, so the web app and the official app follow them too.")
+            }
+        }
+    }
+}
+
+struct ImmichNotifications: View {
+    var body: some View {
+        PreferencesList(title: "Notifications") { prefs, client in
+            Section {
+                Toggle(isOn: prefs.binding("emailNotifications", "enabled", default: true, client: client)) { Label("Email Notifications", systemImage: "envelope") }
+                Toggle(isOn: prefs.binding("emailNotifications", "albumInvite", default: true, client: client)) { Label("Album Invites", systemImage: "person.badge.plus") }
+                Toggle(isOn: prefs.binding("emailNotifications", "albumUpdate", default: true, client: client)) { Label("Album Updates", systemImage: "rectangle.stack.badge.plus") }
+            } footer: {
+                Text("Emails from your Immich server, if its administrator set up email.")
+            }
+        }
+    }
+}
+
+struct ImmichDownloads: View {
+    var body: some View {
+        PreferencesList(title: "Downloads") { prefs, client in
+            Section {
+                Picker(selection: prefs.binding("download", "archiveSize", default: 4 << 30, client: client)) {
+                    ForEach([1, 2, 4, 8, 16], id: \.self) { Text("\($0) GB").tag($0 << 30) }
+                } label: { Label("Archive Size", systemImage: "archivebox") }
+                Toggle(isOn: prefs.binding("download", "includeEmbeddedVideos", default: false, client: client)) { Label("Include Live Photo Videos", systemImage: "livephoto") }
+            } footer: {
+                Text("Downloads of many items are split into zip files of this size.")
+            }
+        }
+    }
+}
+
+struct NetworkingSettings: View {
+    @AppStorage("proxyHeaders") private var headers = ""
+
+    var body: some View {
+        List {
+            Section {
+                TextField("Name: value", text: $headers, axis: .vertical)
+                    .font(.body.monospaced())
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Custom Proxy Headers")
+            } footer: {
+                Text("One header per line, like CF-Access-Client-Id: abc. Sent with every request, for servers behind a proxy that needs them.")
+            }
+        }
+        .navigationTitle("Networking")
+        .navigationBarTitleDisplayMode(.inline)
+    }
 }
 
 /// Chooses the photos for the Featured Photos widget and copies them into the shared folder.
@@ -127,6 +395,7 @@ struct WidgetSettings: View {
             }
         }
         .navigationTitle("Featured Photos")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func refresh() async {

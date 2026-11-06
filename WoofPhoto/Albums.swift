@@ -81,7 +81,7 @@ struct AlbumTile: View {
             .frame(width: size)
         }
         .buttonStyle(.plain)
-        .contextMenu {
+        .liftedMenu {
             Button("Rename", systemImage: "pencil") {
                 name = album.albumName
                 renaming = true

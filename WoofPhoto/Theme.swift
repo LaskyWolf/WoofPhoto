@@ -342,11 +342,12 @@ struct DetailHeader<Cover: View, Secondary: View, Buttons: View>: View {
 /// WoofMusic's player glyph: white, no background, a soft shadow, a 44-point target.
 struct GlyphLabelStyle: LabelStyle {
     var size: CGFloat = 19
+    var color = Color.white
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.icon
             .font(.system(size: size, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(color)
             .shadow(color: .black.opacity(0.4), radius: 3)
             .frame(width: max(44, size * 2), height: max(44, size * 2))
             .contentShape(.circle)

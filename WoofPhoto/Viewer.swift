@@ -205,9 +205,9 @@ struct Viewer: View {
                     Task { await toggleFavorite() }
                 } label: {
                     Label(favorite ? "Unfavorite" : "Favorite", systemImage: favorite ? "heart.fill" : "heart")
-                        .foregroundStyle(favorite ? AnyShapeStyle(.pink) : AnyShapeStyle(.white))
                         .contentTransition(.symbolEffect(.replace))
                 }
+                .labelStyle(GlyphLabelStyle(color: favorite ? .pink : .white))
                 .sensoryFeedback(.impact(weight: .light), trigger: favorite)
                 Spacer(minLength: 0)
                 editButton

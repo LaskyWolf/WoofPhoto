@@ -303,7 +303,7 @@ struct CollectionsView: View {
         case .mediaTypes:
             ShelfList(shelves: [.recentlySaved] + Shelf.mediaTypes)
         case .utilities:
-            ShelfList(shelves: Shelf.utilities)
+            ShelfGrid(shelves: Shelf.utilities)
         }
     }
 
@@ -378,7 +378,7 @@ struct TrailingIcon: LabelStyle {
     }
 }
 
-/// The Media Types and Utilities lists.
+/// Media Types: rows with a tinted icon badge, like Settings.
 struct ShelfList: View {
     let shelves: [Shelf]
     @Environment(\.shelfZoom) private var shelfZoom
@@ -387,22 +387,71 @@ struct ShelfList: View {
         VStack(spacing: 0) {
             ForEach(shelves, id: \.self) { shelf in
                 NavigationLink(value: shelf) {
-                    HStack {
-                        Label(shelf.title, systemImage: shelf.symbol)
+                    HStack(spacing: 12) {
+                        Image(systemName: shelf.symbol)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(Self.tint(shelf))
+                            .frame(width: 32, height: 32)
+                            .background(Self.tint(shelf).opacity(0.18), in: .rect(cornerRadius: 8, style: .continuous))
+                        Text(shelf.title)
                         Spacer()
-                        if shelf == .hidden { Image(systemName: "lock.fill").foregroundStyle(.secondary) }
                         Image(systemName: "chevron.right").font(.footnote.bold()).foregroundStyle(.tertiary)
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 12)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .zoomSource(shelf, in: shelfZoom)
-                if shelf != shelves.last { Divider().padding(.leading, 52) }
+                if shelf != shelves.last { Divider().padding(.leading, 56) }
             }
         }
         .background(Tokens.cardColor, in: .rect(cornerRadius: Tokens.cardRadius))
+        .padding(.horizontal, Tokens.screenPadding)
+    }
+
+    /// One colour per kind, so the list reads at a glance.
+    static func tint(_ shelf: Shelf) -> Color {
+        switch shelf {
+        case .recentlySaved: .blue
+        case .videos: .orange
+        case .livePhotos: .yellow
+        case .selfies: .purple
+        case .portraits: .mint
+        case .panoramas: .cyan
+        case .screenshots: .pink
+        case .raw: .brown
+        default: .gray
+        }
+    }
+}
+
+/// Utilities: a three-column grid of small icon tiles.
+struct ShelfGrid: View {
+    let shelves: [Shelf]
+    @Environment(\.shelfZoom) private var shelfZoom
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+            ForEach(shelves, id: \.self) { shelf in
+                NavigationLink(value: shelf) {
+                    VStack(spacing: 6) {
+                        Image(systemName: shelf.symbol)
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                        Text(shelf.title)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 76)
+                    .background(Tokens.cardColor, in: .rect(cornerRadius: Tokens.tileRadius, style: .continuous))
+                    .contentShape(.rect)
+                }
+                .buttonStyle(ZoomPressStyle())
+                .zoomSource(shelf, in: shelfZoom)
+            }
+        }
         .padding(.horizontal, Tokens.screenPadding)
     }
 }

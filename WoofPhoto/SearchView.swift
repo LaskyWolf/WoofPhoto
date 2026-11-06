@@ -94,31 +94,8 @@ struct SearchView: View {
                 }
                 if !cities.isEmpty {
                     sectionTitle("Places") { EmptyView() }
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())], spacing: 8) {
-                        ForEach(cities.prefix(30)) { asset in
-                            if let city = asset.exifInfo?.city {
-                                NavigationLink {
-                                    SearchedGrid(title: city) { try await $0.searchMetadata(["city": city]) }
-                                } label: {
-                                    Color.clear
-                                        .frame(height: 96)
-                                        .overlay { Thumbnail(asset: asset.ref, size: "preview") }
-                                        .overlay(alignment: .bottomLeading) {
-                                            Text(city)
-                                                .font(.subheadline.bold())
-                                                .foregroundStyle(.white)
-                                                .lineLimit(1)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                                .padding(10)
-                                                .background(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom))
-                                        }
-                                        .clipShape(.rect(cornerRadius: Tokens.tileRadius))
-                                }
-                                .buttonStyle(ZoomPressStyle())
-                            }
-                        }
-                    }
-                    .padding(.horizontal, Tokens.screenPadding)
+                    PlacesMosaic(cities: cities.filter { $0.exifInfo?.city != nil }.prefix(32).map { $0 })
+                        .padding(.horizontal, Tokens.screenPadding)
                 }
             }
             .padding(.bottom, Tokens.sectionGap)
@@ -349,5 +326,65 @@ struct FiltersSheet: View {
                 Text(title)
             }
         }
+    }
+}
+
+/// Search's places as a mosaic: blocks of eight tiles in big, wide, tall and square shapes on a four-column grid.
+private struct PlacesMosaic: View {
+    let cities: [Asset]
+    private static let gap: CGFloat = 6
+    @State private var column: CGFloat = 80
+
+    var body: some View {
+        let gap = Self.gap
+        let full = cities.count / 8 * 8
+        // the server sends one photo per city and no count, so the shapes follow a fixed pattern, not popularity
+        VStack(spacing: gap) {
+            ForEach(Array(stride(from: 0, to: full, by: 8)), id: \.self) { i in
+                let c = Array(cities[i..<i + 8])
+                HStack(spacing: gap) {
+                    tile(c[0], columns: 2, rows: 2)
+                    VStack(spacing: gap) {
+                        tile(c[1], columns: 2, rows: 1)
+                        HStack(spacing: gap) { tile(c[2], columns: 1, rows: 1); tile(c[3], columns: 1, rows: 1) }
+                    }
+                }
+                HStack(spacing: gap) {
+                    tile(c[4], columns: 1, rows: 2)
+                    VStack(spacing: gap) {
+                        tile(c[5], columns: 3, rows: 1)
+                        HStack(spacing: gap) { tile(c[6], columns: 2, rows: 1); tile(c[7], columns: 1, rows: 1) }
+                    }
+                }
+            }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: gap), GridItem(.flexible())], spacing: gap) {
+                ForEach(cities[full...]) { tile($0, columns: 2, rows: 1) }
+            }
+        }
+        // full width first, so the measure is the space offered, not the tiles' own size
+        .frame(maxWidth: .infinity)
+        .onGeometryChange(for: CGFloat.self) { ($0.size.width - gap * 3) / 4 } action: { column = max($0, 1) }
+    }
+
+    private func tile(_ asset: Asset, columns: CGFloat, rows: CGFloat) -> some View {
+        let city = asset.exifInfo?.city ?? ""
+        return NavigationLink {
+            SearchedGrid(title: city) { try await $0.searchMetadata(["city": city]) }
+        } label: {
+            Color.clear
+                .frame(width: column * columns + Self.gap * (columns - 1), height: column * rows + Self.gap * (rows - 1))
+                .overlay { Thumbnail(asset: asset.ref, size: "preview") }
+                .overlay(alignment: .bottomLeading) {
+                    Text(city)
+                        .font(columns * rows >= 4 ? .title3.bold() : .subheadline.bold())
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                }
+                .clipShape(.rect(cornerRadius: Tokens.tileRadius))
+        }
+        .buttonStyle(ZoomPressStyle())
     }
 }

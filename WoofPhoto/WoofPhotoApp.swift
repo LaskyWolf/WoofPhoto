@@ -1,4 +1,5 @@
 import AuthenticationServices
+import AVFoundation
 import BackgroundTasks
 import SwiftUI
 
@@ -11,6 +12,8 @@ struct WoofPhotoApp: App {
     init() {
         // Downloaded thumbnails stay on disk up to this size; iOS removes the oldest beyond it.
         URLCache.shared = URLCache(memoryCapacity: 32 << 20, diskCapacity: 512 << 20)
+        // videos play with sound when the iPhone's silent switch is on, like in Photos
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         Backup.shared.refreshPending()
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Backup.taskID, using: .main) { task in
             MainActor.assumeIsolated { Self.runBackup(task) }
@@ -59,7 +62,7 @@ struct WoofPhotoApp: App {
     }
 }
 
-/// The tabs, with the open photo full screen above them.
+/// The tabs, with the open photo full screen above them, or in WoofTube's floating card.
 struct MainTabs: View {
     @Environment(Session.self) private var session
     @Bindable private var open = OpenPhoto.shared
@@ -84,10 +87,11 @@ struct MainTabs: View {
         .tabBarMinimizeBehavior(.onScrollDown)
         .environment(\.photoZoom, zoom)
         .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
-        .fullScreenCover(isPresented: $open.isExpanded, onDismiss: open.dismissed) {
+        .overlay { MiniViewer(zoom: zoom) }
+        .fullScreenCover(isPresented: $open.isExpanded) {
             if let timeline = open.timeline, let asset = open.asset {
                 Viewer(timeline: timeline, start: asset)
-                    .navigationTransition(.zoom(sourceID: asset.id, in: zoom))
+                    .navigationTransition(.zoom(sourceID: open.zoomSource, in: zoom))
                     .environment(session)
             }
         }

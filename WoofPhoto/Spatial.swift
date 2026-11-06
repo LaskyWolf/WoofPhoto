@@ -11,9 +11,9 @@ import simd
 /// The photo full screen as a Spatial Scene, opened from the viewer's top bar.
 struct SpatialView: View {
     let asset: AssetRef
+    let onClose: () -> Void
 
     @Environment(Session.self) private var session
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scene = SpatialScene()
 
@@ -29,12 +29,18 @@ struct SpatialView: View {
             .accessibilityLabel("Spatial scene")
             .accessibilityValue(scene.status ?? "Ready")
             .overlay(alignment: .topLeading) {
-                Button("Close", systemImage: "xmark") { dismiss() }
-                    .labelStyle(.iconOnly)
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .padding()
+                // the whole circle takes the tap: a frame outside the label left only the glyph tappable,
+                // and taps around it went to the tilt drag underneath
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.title3.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(.circle)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("Close Spatial Scene")
+                .padding()
             }
             .overlay(alignment: .bottom) {
                 if let status = scene.status {
@@ -49,8 +55,6 @@ struct SpatialView: View {
                 }
             }
             .animation(.easeInOut, value: scene.status)
-            .preferredColorScheme(.dark)
-            .statusBarHidden()
             .task { await scene.build(asset, client: session.client) }
     }
 }

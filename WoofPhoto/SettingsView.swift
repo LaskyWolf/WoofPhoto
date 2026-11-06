@@ -16,6 +16,7 @@ struct SettingsView: View {
             Section("Library & Viewer") {
                 SettingsRow("Timeline", icon: "square.grid.3x3") { TimelineSettings() }
                 SettingsRow("Photo & Video Viewer", icon: "play.rectangle") { ViewerSettings() }
+                SettingsRow("History", icon: "clock.arrow.circlepath") { HistorySettings() }
             }
             Section("Backup & Storage") {
                 SettingsRow("Backup", icon: "icloud.and.arrow.up") { BackupView() }
@@ -221,6 +222,30 @@ struct ViewerSettings: View {
             }
         }
         .navigationTitle("Viewer")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct HistorySettings: View {
+    @AppStorage("history.paused") private var paused = false
+    @State private var confirmsClear = false
+
+    var body: some View {
+        List {
+            Section {
+                Toggle(isOn: Binding { !paused } set: { paused = !$0 }) { Label("Record History", systemImage: "clock.arrow.circlepath") }
+            } footer: {
+                Text("History lists the photos you view, edit, delete, favorite, hide, archive or move between albums. It stays on this iPhone.")
+            }
+            Section {
+                Button("Clear History", role: .destructive) { confirmsClear = true }
+                    .disabled(History.shared.entries.isEmpty)
+            }
+        }
+        .confirmationDialog("All of History is deleted. Your photos stay as they are.", isPresented: $confirmsClear, titleVisibility: .visible) {
+            Button("Clear History", role: .destructive) { History.shared.clear() }
+        }
+        .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -162,11 +162,22 @@ struct ImmichClient {
     /// Changes the same fields on several assets: isFavorite, visibility, description, dateTimeOriginal, latitude…
     func updateAssets(_ ids: [String], _ fields: [String: Any]) async throws {
         try await call("PUT", "/assets", body: fields.merging(["ids": ids]) { $1 })
+        let kind: HistoryEntry.Kind? = switch (fields["isFavorite"] as? Bool, fields["visibility"] as? String) {
+        case (true?, _): .favorited
+        case (false?, _): .unfavorited
+        case (_, "locked"?): .hidden
+        case (_, "archive"?): .archived
+        // Library's own visibility: back from Hidden or Archive
+        case (_, "timeline"?): .unhidden
+        default: nil
+        }
+        if let kind { await History.shared.record(kind, ids) }
     }
 
     /// Moves to Recently Deleted, or deletes for good with `force`.
     func deleteAssets(_ ids: [String], force: Bool = false) async throws {
         try await call("DELETE", "/assets", body: ["ids": ids, "force": force])
+        await History.shared.record(force ? .deletedForGood : .deleted, ids)
     }
 
     func stack(_ id: String) async throws -> Stack {

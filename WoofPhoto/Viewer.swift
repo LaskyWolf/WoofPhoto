@@ -17,8 +17,8 @@ struct Viewer: View {
     /// The stack member shown in place of a stack's top asset, after picking it in the strip.
     @State private var shownInStack: [String: String] = [:]
     @State private var chromeHidden = false
-    /// Height of the bottom bars, so a video's progress bar sits above them.
-    @State private var chromeInset: CGFloat = 0
+    /// The photo strip's scroll position, which starts on the open photo.
+    @State private var stripID: String?
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @State private var showsInfo = false
     @State private var confirmsDelete = false
@@ -33,49 +33,18 @@ struct Viewer: View {
     init(timeline: Timeline, start: AssetRef) {
         self.timeline = timeline
         _current = State(initialValue: start.id)
+        _stripID = State(initialValue: start.id)
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 0) {
-                    ForEach(timeline.assets) { asset in
-                        ViewerPage(asset: shown(asset), isCurrent: asset.id == current, chromeHidden: $chromeHidden) {
-                            if !voiceOver { withAnimation(.easeOut(duration: 0.2)) { chromeHidden.toggle() } }
-                        }
-                        .containerRelativeFrame([.horizontal, .vertical])
-                    }
-                }
-                .scrollTargetLayout()
+            VStack(spacing: 0) {
+                pages
+                toolCard
             }
-            .scrollTargetBehavior(.paging)
-            .scrollPosition(id: $current)
-            .scrollIndicators(.hidden)
-            .ignoresSafeArea()
-            // WoofTube's ambient mode: the photo itself, blurred, instead of black
-            .background { ambient }
-            // a swipe up pulls up the details, as in Photos
-            .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
-                let (x, y) = (value.translation.width, value.translation.height)
-                if y < -80, abs(y) > abs(x) * 2, shownAsset?.localID == nil { showsInfo = true }
-            })
+            .background(.black)
             .toolbar(.hidden, for: .navigationBar)
             .statusBarHidden(chromeHidden)
-            .overlay(alignment: .top) { if !chromeHidden { handle.transition(.opacity) } }
-            .safeAreaInset(edge: .bottom) {
-                if !chromeHidden {
-                    VStack(spacing: 10) {
-                        if let caption = dateLine { Text(caption).font(.footnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85)) }
-                        stackStrip
-                        filmstrip
-                        toolBar
-                    }
-                    .padding(.bottom, 4)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { chromeInset = $0 }
-                    .transition(.opacity)
-                }
-            }
-            .environment(\.viewerInset, chromeInset)
             .environment(\.colorScheme, .dark)
             .overlay { if busy { ProgressView().controlSize(.large) } }
             .task(id: current) {
@@ -95,7 +64,6 @@ struct Viewer: View {
             .fullScreenCover(isPresented: $playsSlideshow) {
                 Slideshow(assets: timeline.assets, start: timeline.assets.firstIndex { $0.id == current } ?? 0)
             }
-            .fullScreenCover(item: $spatial) { SpatialView(asset: $0).environment(session) }
             .fullScreenCover(item: $editing) { asset in
                 EditorView(asset: asset) { editSaved() }
             }
@@ -108,6 +76,63 @@ struct Viewer: View {
     }
 
     // MARK: Parts
+
+    /// The photos, paged sideways, with the date and WoofTube's Shorts rail over the bottom.
+    private var pages: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: 0) {
+                ForEach(timeline.assets) { asset in
+                    ViewerPage(asset: shown(asset), isCurrent: asset.id == current, chromeHidden: $chromeHidden) {
+                        if !voiceOver { withAnimation(.easeOut(duration: 0.2)) { chromeHidden.toggle() } }
+                    }
+                    .containerRelativeFrame([.horizontal, .vertical])
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $current)
+        .scrollIndicators(.hidden)
+        .scrollDisabled(spatial != nil)
+        .ignoresSafeArea(edges: .top)
+        // WoofTube's ambient mode: the photo itself, blurred, instead of black
+        .background { ambient }
+        // a swipe up pulls up the details, as in Photos
+        .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
+            let (x, y) = (value.translation.width, value.translation.height)
+            if y < -80, abs(y) > abs(x) * 2, spatial == nil, shownAsset?.localID == nil { showsInfo = true }
+        })
+        .overlay(alignment: .bottom) {
+            if !chromeHidden, spatial == nil {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .bottom, spacing: 12) {
+                        info
+                        rail
+                    }
+                    .padding(.horizontal, Tokens.screenPadding)
+                    stackStrip
+                    filmstrip
+                }
+                // a video's progress bar and times sit under it
+                .padding(.bottom, shownAsset?.isImage == false ? 72 : 10)
+                .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .top) { if !chromeHidden { handle.transition(.opacity) } }
+        .overlay {
+            if let spatial {
+                SpatialView(asset: spatial) { withAnimation(.easeOut(duration: 0.2)) { self.spatial = nil } }
+                    .environment(session)
+                    .transition(.opacity)
+            }
+        }
+        .overlay {
+            BottomCornersCover(radius: 16)
+                .fill(.black, style: FillStyle(eoFill: true))
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+        }
+    }
 
     private var ambient: some View {
         ZStack {
@@ -128,115 +153,151 @@ struct Viewer: View {
         .accessibilityHidden(true)
     }
 
-    /// The only thing on top: WoofMusic's player handle, which says the viewer pulls down to close.
+    /// The only thing on top: Shorts' handle, which sends the photo to the floating card.
     private var handle: some View {
-        Button { OpenPhoto.shared.close() } label: {
+        Button { OpenPhoto.shared.minimize() } label: {
             Capsule()
-                .fill(.white.opacity(0.4))
+                .fill(.white.opacity(0.3))
                 .frame(width: 36, height: 5)
-                .frame(width: 80, height: 44)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Close")
+        .accessibilityLabel("Send to Mini Player")
     }
 
-    private var dateLine: String? {
-        guard let date = (detail?.date ?? shownAsset?.date) else { return nil }
-        let day = date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.wide).year())
-        let time = date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute())
-        return [day, time, detail?.exifInfo?.city].compactMap { $0 }.joined(separator: " · ")
+    /// Where Shorts has the title and channel: the day and the place.
+    private var info: some View {
+        let date = detail?.date ?? shownAsset?.date
+        let exif = detail?.exifInfo
+        let place = [exif?.city, exif?.country].compactMap { $0 }.joined(separator: ", ")
+        return VStack(alignment: .leading, spacing: 2) {
+            if let date {
+                Text(date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.wide).year()) + " · "
+                     + date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()))
+                    .font(.subheadline.weight(.semibold))
+            }
+            Text(place.isEmpty ? (detail?.originalFileName ?? " ") : place)
+                .font(.footnote)
+                .opacity(0.8)
+                .lineLimit(1)
+        }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.5), radius: 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Shorts' rail: Favorite and Share as round glass buttons.
+    @ViewBuilder private var rail: some View {
+        if shownAsset?.localID == nil, timeline.query?.isTrash != true {
+            let favorite = shownAsset?.isFavorite == true
+            VStack(spacing: Tokens.screenPadding) {
+                Button { Task { await toggleFavorite() } } label: {
+                    RailLabel(icon: favorite ? "heart.fill" : "heart", text: "Favorite", activeColor: favorite ? .pink : nil)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .accessibilityAddTraits(favorite ? .isSelected : [])
+                .sensoryFeedback(.impact(weight: .light), trigger: favorite)
+                Button { Task { await share() } } label: {
+                    RailLabel(icon: "square.and.arrow.up", text: "Share")
+                }
+            }
+            .buttonStyle(GlyphPressStyle())
+        }
     }
 
     /// The photos before and after this one; tap one to jump to it.
     private var filmstrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 3) {
-                    ForEach(timeline.assets) { asset in
-                        let isCurrent = asset.id == current
-                        Thumbnail(asset: asset, square: false, cornerRadius: 6)
-                            .frame(width: isCurrent ? 46 : 30, height: 46)
-                            .overlay { if isCurrent { RoundedRectangle(cornerRadius: 6).stroke(.white, lineWidth: 2) } }
-                            .onTapGesture { withAnimation(.snappy) { current = asset.id } }
-                            .id(asset.id)
-                    }
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: 3) {
+                ForEach(timeline.assets) { asset in
+                    let isCurrent = asset.id == current
+                    Thumbnail(asset: asset, square: false, cornerRadius: 6)
+                        .frame(width: isCurrent ? 46 : 30, height: 46)
+                        .overlay { if isCurrent { RoundedRectangle(cornerRadius: 6).stroke(.white, lineWidth: 2) } }
+                        .onTapGesture { withAnimation(.snappy) { current = asset.id } }
+                        .id(asset.id)
                 }
-                .padding(.horizontal, Tokens.screenPadding)
             }
-            .scrollIndicators(.hidden)
-            .frame(height: 46)
-            .onChange(of: current, initial: true) { withAnimation(.snappy) { proxy.scrollTo(current, anchor: .center) } }
-            .sensoryFeedback(.selection, trigger: current)
+            .scrollTargetLayout()
+            .padding(.horizontal, Tokens.screenPadding)
         }
+        .scrollIndicators(.hidden)
+        // starts on the open photo instead of scrolling there from the first one
+        .scrollPosition(id: $stripID, anchor: .center)
+        .frame(height: 46)
+        .onChange(of: current) { withAnimation(.snappy) { stripID = current } }
+        .sensoryFeedback(.selection, trigger: current)
         .accessibilityHidden(true)
     }
 
-    /// Every tool, in one glass bar at the bottom, with WoofMusic's white player glyphs.
-    private var toolBar: some View {
-        HStack(spacing: 0) {
-            if timeline.query?.isTrash == true {
-                Button("Recover", systemImage: "arrow.uturn.backward") {
-                    Task { await perform {
-                        try await session.client?.restoreTrash([shownID ?? ""])
-                        removeCurrent()
-                    } }
+    /// Where Shorts has the comments: every tool, and a pull up for the map and the details.
+    private var toolCard: some View {
+        let isServer = shownAsset?.localID == nil && timeline.query?.isTrash != true
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if timeline.query?.isTrash == true {
+                    Button("Recover", systemImage: "arrow.uturn.backward") {
+                        Task { await perform {
+                            try await session.client?.restoreTrash([shownID ?? ""])
+                            removeCurrent()
+                        } }
+                    }
+                    Button("Delete", systemImage: "trash", role: .destructive) { confirmsDelete = true }
+                } else {
+                    Button("Edit", systemImage: "slider.horizontal.3") { editing = shownAsset }
+                    if let shownAsset, shownAsset.isImage {
+                        Button(spatial == nil ? "Spatial" : "Flat", systemImage: spatial == nil ? "cube" : "photo") {
+                            withAnimation(.easeOut(duration: 0.2)) { spatial = spatial == nil ? shownAsset : nil }
+                        }
+                    }
+                    if shownAsset?.localID != nil {
+                        Button("Back Up", systemImage: "icloud.and.arrow.up") {
+                            if let client = session.client { Backup.shared.start(with: client) }
+                        }
+                        .disabled(session.client == nil)
+                    } else {
+                        moreMenu
+                    }
                 }
-                Spacer()
-                Button("Delete", systemImage: "trash") { confirmsDelete = true }
-            } else if shownAsset?.localID != nil {
-                editButton
-                spatialButton
-                Spacer()
-                Button {
-                    if let client = session.client { Backup.shared.start(with: client) }
-                } label: {
-                    Label("Back Up Now", systemImage: "icloud.and.arrow.up").labelStyle(.titleAndIcon)
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 12)
-                        .frame(height: 44)
+                Spacer(minLength: 0)
+                if isServer {
+                    Button("Details", systemImage: "chevron.up.chevron.down") { showsInfo = true }
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 36)
                 }
-                .disabled(session.client == nil)
-            } else {
-                Button("Share", systemImage: "square.and.arrow.up") { Task { await share() } }
-                Spacer(minLength: 0)
-                let favorite = shownAsset?.isFavorite == true
-                Button {
-                    Task { await toggleFavorite() }
-                } label: {
-                    Label(favorite ? "Unfavorite" : "Favorite", systemImage: favorite ? "heart.fill" : "heart")
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .labelStyle(GlyphLabelStyle(color: favorite ? .pink : .white))
-                .sensoryFeedback(.impact(weight: .light), trigger: favorite)
-                Spacer(minLength: 0)
-                editButton
-                Spacer(minLength: 0)
-                spatialButton
-                Spacer(minLength: 0)
-                Button("Info", systemImage: "info.circle") { showsInfo = true }
-                Spacer(minLength: 0)
-                moreMenu
             }
+            .labelStyle(CardToolLabelStyle())
+            .buttonStyle(ZoomPressStyle())
+            Text(summary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
-        .labelStyle(GlyphLabelStyle())
-        .buttonStyle(GlyphPressStyle())
-        .padding(.horizontal, 10)
-        .frame(height: 56)
-        .glassEffect(.regular, in: .capsule)
-        .padding(.horizontal, Tokens.screenPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.regularMaterial, in: .rect(cornerRadius: 16, style: .continuous))
+        .contentShape(.rect)
+        .onTapGesture { if isServer { showsInfo = true } }
+        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+            if isServer, value.translation.height < -30 { showsInfo = true }
+        })
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
     }
 
-    @ViewBuilder private var editButton: some View {
-        if timeline.query?.isTrash != true {
-            Button("Edit", systemImage: "slider.horizontal.3") { editing = shownAsset }
-        }
-    }
-
-    @ViewBuilder private var spatialButton: some View {
-        if let shownAsset, shownAsset.isImage {
-            Button("Spatial Scene", systemImage: "cube") { spatial = shownAsset }
-        }
+    /// One line under the tools: camera and settings, or where the item is.
+    private var summary: String {
+        if timeline.query?.isTrash == true { return "In Recently Deleted" }
+        if shownAsset?.localID != nil { return "Only on this iPhone, not backed up yet" }
+        guard let exif = detail?.exifInfo else { return "Pull up for details" }
+        return [[exif.make, exif.model].compactMap { $0 }.joined(separator: " "),
+                exif.fNumber.map { "ƒ\($0.formatted(.number.precision(.fractionLength(0...1))))" },
+                exif.iso?.value.map { "ISO \($0)" },
+                exif.city]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     private var moreMenu: some View {
@@ -316,7 +377,13 @@ struct Viewer: View {
     }
 
     private func currentChanged() async {
-        guard let current, let client = session.client else { return }
+        guard let current else { return }
+        defer {
+            if !Task.isCancelled {
+                History.shared.record(HistoryEntry(kind: .viewed, assetID: current, localID: currentAsset?.localID, name: detail?.originalFileName))
+            }
+        }
+        guard let client = session.client, currentAsset?.localID == nil else { return }
         await timeline.loadNeighbours(of: current, with: client)
         detail = try? await client.asset(current)
         if let stackID = currentAsset?.stackID {
@@ -404,6 +471,59 @@ struct Viewer: View {
         } catch {
             message = error.explanation
         }
+    }
+}
+
+/// Shorts' rail button: a round glass button with a caption under it.
+private struct RailLabel: View {
+    let icon: String
+    var text: String?
+    var activeColor: Color?
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(activeColor ?? .white)
+                .frame(width: 44, height: 44)
+                .glassEffect(.regular.interactive(), in: .circle)
+            if let text {
+                Text(text)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+            }
+        }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.5), radius: 3)
+        .frame(minWidth: 52, minHeight: 44)
+        .contentShape(.rect)
+    }
+}
+
+/// A tool in the card: icon and name on a soft capsule.
+private struct CardToolLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon
+            configuration.title
+        }
+        .font(.subheadline.weight(.semibold))
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .background(.white.opacity(0.12), in: .capsule)
+        .contentShape(.capsule)
+    }
+}
+
+/// Black in the two bottom corners, drawn over the photos: WoofTube's Shorts page rounds them
+/// this way, because a mask turns a video layer black during the zoom.
+private struct BottomCornersCover: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path(rect)
+        path.addPath(UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous).path(in: rect))
+        return path
     }
 }
 
@@ -524,13 +644,15 @@ struct VideoPage: View {
         }
         .task(id: isCurrent) {
             if isCurrent, let client = session.client {
-                if player == nil { player = AVPlayer(playerItem: AVPlayerItem(asset: client.video(asset.id))) }
-                if autoplay { player?.play() }
+                // back from the floating card, the same player carries on
+                let player = player ?? OpenPhoto.shared.player(for: asset.id) ?? AVPlayer(playerItem: AVPlayerItem(asset: client.video(asset.id)))
+                self.player = player
+                if OpenPhoto.shared.player(for: asset.id) == nil, autoplay { player.play() }
+                OpenPhoto.shared.adopt(player, for: asset.id)
             } else {
                 player?.pause()
             }
         }
-        .onDisappear { player?.pause() }
     }
 }
 
@@ -560,18 +682,16 @@ struct DevicePage: View {
         .task(id: isCurrent) {
             guard !asset.isImage, let localID = asset.localID else { return }
             if isCurrent {
+                if player == nil { player = OpenPhoto.shared.player(for: asset.id) }
                 if player == nil, let item = await DeviceLibrary.playerItem(localID) { player = AVPlayer(playerItem: item) }
-                if autoplay { player?.play() }
+                guard let player else { return }
+                if OpenPhoto.shared.player(for: asset.id) == nil, autoplay { player.play() }
+                OpenPhoto.shared.adopt(player, for: asset.id)
             } else {
                 player?.pause()
             }
         }
-        .onDisappear { player?.pause() }
     }
-}
-
-extension EnvironmentValues {
-    @Entry var viewerInset: CGFloat = 0
 }
 
 /// WoofTube's player controls on a plain AVPlayer: play/pause in the middle, a thin accent progress bar,
@@ -581,7 +701,6 @@ struct VideoSurface: View {
     @Binding var chromeHidden: Bool
     let onTap: () -> Void
 
-    @Environment(\.viewerInset) private var inset
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @AppStorage("video.loop") private var loops = false
     @State private var time: Double = 0
@@ -630,7 +749,7 @@ struct VideoSurface: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if !chromeHidden { controls.padding(.bottom, inset + 6).transition(.opacity) }
+                if !chromeHidden { controls.padding(.bottom, 4).transition(.opacity) }
             }
         }
         .task {

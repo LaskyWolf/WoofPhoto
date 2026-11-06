@@ -30,10 +30,12 @@ extension ImmichClient {
 
     func addToAlbum(_ id: String, assets: [String]) async throws {
         try await call("PUT", "/albums/\(id)/assets", body: ["ids": assets])
+        await History.shared.record(.addedToAlbum, assets, albumID: id)
     }
 
     func removeFromAlbum(_ id: String, assets: [String]) async throws {
         try await call("DELETE", "/albums/\(id)/assets", body: ["ids": assets])
+        await History.shared.record(.removedFromAlbum, assets, albumID: id)
     }
 
     func activities(album: String) async throws -> [Activity] {
@@ -125,6 +127,7 @@ extension ImmichClient {
     func restoreTrash(_ ids: [String]? = nil) async throws {
         if let ids {
             try await call("POST", "/trash/restore/assets", body: ["ids": ids])
+            await History.shared.record(.recovered, ids)
         } else {
             try await call("POST", "/trash/restore")
         }

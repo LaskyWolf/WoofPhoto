@@ -271,9 +271,12 @@ struct EditorView: View {
     private func save() async {
         busy = true
         defer { busy = false }
+        // what History's undo removes: the new copy, the Immich edit, or the edit in Photos
+        var editID: String?
         do {
             if let input {
                 try await saveOnDevice(input)
+                editID = "device"
             } else if let client = session.client {
                 if let video {
                     let detail = try await client.asset(asset.id)
@@ -281,18 +284,20 @@ struct EditorView: View {
                     let file = FileManager.default.temporaryDirectory.appending(path: name)
                     defer { try? FileManager.default.removeItem(at: file) }
                     try await export(video, to: file)
-                    try await stackNew(file, detail: detail, client: client)
+                    editID = try await stackNew(file, detail: detail, client: client)
                 } else if edit.motionOff, edit.withoutMotion == PhotoEdit() {
                     try await client.call("PUT", "/assets/\(asset.id)", body: ["livePhotoVideoId": NSNull()])
                 } else if edit.isGeometryOnly, let detail = try? await client.asset(asset.id),
                           let width = detail.exifInfo?.exifImageWidth?.value ?? detail.width?.value,
                           let height = detail.exifInfo?.exifImageHeight?.value ?? detail.height?.value {
                     try await client.call("PUT", "/assets/\(asset.id)/edits", body: ["edits": edit.serverEdits(width: width, height: height)])
+                    editID = "edits"
                 } else if let source {
-                    try await bake(source, client: client)
+                    editID = try await bake(source, client: client)
                 }
                 ImageCache.forget(asset.id, client: client)
             }
+            History.shared.record(HistoryEntry(kind: .edited, assetID: asset.id, localID: asset.localID, editID: editID))
             onSaved()
             dismiss()
         } catch {
@@ -359,22 +364,23 @@ struct EditorView: View {
     }
 
     /// Renders the full photo and stacks it on top of the original.
-    private func bake(_ source: CIImage, client: ImmichClient) async throws {
+    private func bake(_ source: CIImage, client: ImmichClient) async throws -> String {
         let detail = try await client.asset(asset.id)
         let name = ((detail.originalFileName ?? "Photo") as NSString).deletingPathExtension + "_edited.jpg"
         let file = FileManager.default.temporaryDirectory.appending(path: name)
         try jpeg((edit.keyFrame ?? source).applying(edit, scale: 1)).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        try await stackNew(file, detail: detail, client: client, motion: edit.motionOff ? nil : asset.livePhotoVideoId)
+        let id = try await stackNew(file, detail: detail, client: client, motion: edit.motionOff ? nil : asset.livePhotoVideoId)
         if edit.keyFrame != nil {
             // a new key photo replaces the old still; the video now belongs to the new one
             try await client.deleteAssets([asset.id])
         }
+        return id
     }
 
     /// Uploads an edited file as a new item with the original's date, place, albums and favorite,
     /// stacked on top of the original.
-    private func stackNew(_ file: URL, detail: Asset, client: ImmichClient, motion: String? = nil) async throws {
+    private func stackNew(_ file: URL, detail: Asset, client: ImmichClient, motion: String? = nil) async throws -> String {
         var fields = ["fileCreatedAt": detail.fileCreatedAt ?? Date.now.formatted(.iso8601),
                       "fileModifiedAt": Date.now.formatted(.iso8601)]
         if let motion { fields["livePhotoVideoId"] = motion }
@@ -390,6 +396,7 @@ struct EditorView: View {
         try await client.call("PUT", "/assets/copy", body: ["sourceId": asset.id, "targetId": id, "albums": true, "favorite": true,
                                                             "sharedLinks": true, "stack": false, "sidecar": false])
         try await client.call("POST", "/stacks", body: ["assetIds": [id, asset.id]])
+        return id
     }
 
     private func revert() async {

@@ -33,6 +33,7 @@ struct AssetGrid: View {
     @GestureState private var pinch: CGFloat = 1
     /// The long-press menu's actions.
     @State private var actions = AssetActions()
+    @State private var showsHistory = false
 
     var body: some View {
         content
@@ -69,6 +70,7 @@ struct AssetGrid: View {
             }
             .toolbar(selection == nil ? .automatic : .hidden, for: .tabBar)
             .environment(timeline)
+            .navigationDestination(isPresented: $showsHistory) { HistoryView() }
             .assetActions(actions)
             .onAppear { actions.timeline = timeline }
             .task(id: ObjectIdentifier(timeline)) { await reload() }
@@ -85,6 +87,9 @@ struct AssetGrid: View {
     private func header(_ title: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             TabHeader(title: title, subtitle: timeline.months == nil ? nil : "\(timeline.count.formatted()) Items") {
+                if showsLevels {
+                    HeaderButton(label: "History", systemImage: "clock.arrow.circlepath") { showsHistory = true }
+                }
                 if canSelect {
                     HeaderButton(label: selection == nil ? "Select" : "Done Selecting",
                                  systemImage: "checkmark.circle", isOn: selection != nil) { toggleSelect() }
@@ -122,9 +127,9 @@ struct AssetGrid: View {
     }
 
     private func grid(_ months: [Timeline.Month], client: ImmichClient?) -> some View {
-        // rounded cells with small gaps, like WoofTube's thumbnails; tighter as the cells get smaller
-        let spacing: CGFloat = columns >= 9 ? 2 : 3
-        let radius: CGFloat = columns <= 3 ? 10 : columns <= 5 ? 6 : 3
+        // WoofMusic's Quick Picks cards: 8-point gaps and corners, tighter as the cells get smaller
+        let spacing: CGFloat = columns <= 3 ? 8 : columns <= 5 ? 6 : 3
+        let radius: CGFloat = columns <= 3 ? 8 : columns <= 5 ? 6 : 3
         return ScrollViewReader { proxy in
             ScrollView {
                 hero
@@ -174,7 +179,8 @@ struct AssetGrid: View {
                 }.onEnded { _ in
                     drag = nil
                 }, including: selection == nil ? .subviews : .all)
-                .padding(.horizontal, spacing)
+                // WoofMusic's side margins
+                .padding(.horizontal, Tokens.screenPadding)
                 .scaleEffect(pinch)
                 .animation(.snappy, value: columns)
             }

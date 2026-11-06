@@ -48,7 +48,7 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: WoofPhoto connects to your Immich server on the local network.
-        NSPhotoLibraryUsageDescription: WoofPhoto backs up the photos and videos you choose to your Immich server.
+        NSPhotoLibraryUsageDescription: WoofPhoto backs up the photos and videos you choose to your Immich server and saves the edits you make to them.
         NSPhotoLibraryAddUsageDescription: WoofPhoto saves photos and videos from your Immich server to this iPhone.
         NSFaceIDUsageDescription: WoofPhoto uses Face ID to open the Hidden album.
         NSAppleMusicUsageDescription: WoofPhoto plays a song you choose under a memory movie.

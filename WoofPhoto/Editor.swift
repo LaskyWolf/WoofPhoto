@@ -2,15 +2,16 @@ import AVFoundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import ImageIO
+import Photos
 import SwiftUI
 
-/// The photo editor: Adjust, Filters, Crop, and Live for Live Photos.
-/// Crop, rotate and mirror alone are saved as Immich edits, which the server can undo.
-/// Light, color and filters change pixels, so the result uploads as a new photo stacked on top of the original,
-/// which stays in the stack.
+/// The editor for photos and videos: Trim (videos), Adjust, Filters, Crop, and Live for Live Photos.
+/// On the server, crop, rotate and mirror alone on a photo are saved as Immich edits, which the server can undo;
+/// anything else uploads as a new item stacked on top of the original, which stays in the stack.
+/// On this iPhone the edit is saved into the Photos library, which keeps the original and can revert.
 struct EditorView: View {
-    enum Tool: String, CaseIterable {
-        case adjust = "Adjust", filters = "Filters", crop = "Crop", live = "Live"
+    enum Tool: String {
+        case trim = "Trim", adjust = "Adjust", filters = "Filters", crop = "Crop", live = "Live"
     }
 
     let asset: AssetRef
@@ -21,6 +22,7 @@ struct EditorView: View {
     @State private var tool = Tool.adjust
     @State private var edit = PhotoEdit()
     @State private var slider = PhotoEdit.Slider.exposure
+    /// The photo, or the video frame being looked at.
     @State private var source: CIImage?
     @State private var preview: UIImage?
     @State private var hasServerEdits = false
@@ -28,6 +30,14 @@ struct EditorView: View {
     @State private var error: String?
     @State private var keyFrame = 0.0
     @State private var motion: AVURLAsset?
+    /// Set for an item only on this iPhone.
+    @State private var input: PHContentEditingInput?
+    @State private var video: AVAsset?
+    @State private var duration = 0.0
+    @State private var frames: [UIImage] = []
+    @State private var trim = 0.0...1.0
+    @State private var framePosition = 0.0
+    @State private var muted = false
 
     var body: some View {
         NavigationStack {
@@ -67,19 +77,38 @@ struct EditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done", role: .confirm) { Task { await save() } }
-                        .disabled(edit == PhotoEdit() || busy)
+                        .disabled(!changed || busy)
                 }
             }
             .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
         }
         .task { await load() }
         .task(id: edit) { await render(original: false) }
+        .task(id: framePosition) { await showFrame(at: framePosition) }
     }
 
-    private var tools: [Tool] { asset.livePhotoVideoId == nil ? [.adjust, .filters, .crop] : Tool.allCases }
+    private var changed: Bool { edit != PhotoEdit() || trim != 0...1 || muted }
+
+    private var tools: [Tool] {
+        if !asset.isImage { return [.trim, .adjust, .filters, .crop] }
+        return asset.livePhotoVideoId == nil || asset.localID != nil ? [.adjust, .filters, .crop] : [.adjust, .filters, .crop, .live]
+    }
 
     @ViewBuilder private var controls: some View {
         switch tool {
+        case .trim:
+            VStack(spacing: 12) {
+                TrimBar(frames: frames, range: $trim) { framePosition = $0 }
+                HStack {
+                    Text("\(VideoSurface.format(trim.lowerBound * duration)) – \(VideoSurface.format(trim.upperBound * duration))")
+                        .font(.subheadline.monospacedDigit())
+                    Spacer()
+                    Toggle("Sound", isOn: Binding { !muted } set: { muted = !$0 })
+                        .fixedSize()
+                        .font(.subheadline)
+                }
+            }
+            .padding(.horizontal)
         case .adjust:
             VStack {
                 ScrollView(.horizontal) {
@@ -155,19 +184,70 @@ struct EditorView: View {
     // MARK: Loading and rendering
 
     private func load() async {
-        guard let client = session.client else { return }
         do {
-            let data = try await client.image(asset.id, size: "fullsize")
-            source = CIImage(data: data, options: [.applyOrientationProperty: true])
-            let edits: ServerEdits? = try? await client.get("/assets/\(asset.id)/edits")
-            hasServerEdits = edits?.edits.isEmpty == false
-            if let video = asset.livePhotoVideoId {
-                motion = AVURLAsset(url: try await client.downloadOriginal(video))
+            if let localID = asset.localID {
+                guard let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject,
+                      let input = await Self.editingInput(phAsset) else { throw EditError.load }
+                self.input = input
+                if asset.isImage {
+                    source = input.fullSizeImageURL.flatMap { CIImage(contentsOf: $0, options: [.applyOrientationProperty: true]) }
+                } else {
+                    video = input.audiovisualAsset
+                }
+            } else if let client = session.client {
+                if asset.isImage {
+                    let data = try await client.image(asset.id, size: "fullsize")
+                    source = CIImage(data: data, options: [.applyOrientationProperty: true])
+                    let edits: ServerEdits? = try? await client.get("/assets/\(asset.id)/edits")
+                    hasServerEdits = edits?.edits.isEmpty == false
+                    if let video = asset.livePhotoVideoId {
+                        motion = AVURLAsset(url: try await client.downloadOriginal(video))
+                    }
+                } else {
+                    video = AVURLAsset(url: try await client.downloadOriginal(asset.id))
+                }
             }
+            if let video {
+                tool = .trim
+                duration = try await video.load(.duration).seconds
+                await showFrame(at: 0)
+                var frames: [UIImage] = []
+                for index in 0..<8 {
+                    if let frame = await Self.frame(video, at: (Double(index) + 0.5) / 8, side: 160) { frames.append(UIImage(cgImage: frame)) }
+                }
+                self.frames = frames
+            }
+            if source == nil, video == nil { throw EditError.load }
             await render(original: false)
         } catch {
             self.error = error.explanation
         }
+    }
+
+    private static func editingInput(_ asset: PHAsset) async -> PHContentEditingInput? {
+        let options = PHContentEditingInputRequestOptions()
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { continuation in
+            asset.requestContentEditingInput(with: options) { input, _ in continuation.resume(returning: input) }
+        }
+    }
+
+    /// One frame of a video, already turned upright; `side` nil keeps the full size.
+    private static func frame(_ video: AVAsset, at fraction: Double, side: CGFloat?) async -> CGImage? {
+        guard let duration = try? await video.load(.duration) else { return nil }
+        let generator = AVAssetImageGenerator(asset: video)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        if let side { generator.maximumSize = CGSize(width: side, height: side) }
+        // the very last instant has no frame
+        return try? await generator.image(at: CMTimeMultiplyByFloat64(duration, multiplier: min(fraction, 0.995))).image
+    }
+
+    private func showFrame(at fraction: Double) async {
+        guard let video, let frame = await Self.frame(video, at: fraction, side: 1600), !Task.isCancelled else { return }
+        source = CIImage(cgImage: frame)
+        await render(original: false)
     }
 
     /// Renders a screen-sized preview of the edit.
@@ -182,33 +262,37 @@ struct EditorView: View {
     }
 
     private func chooseKeyFrame(_ motion: AVURLAsset) async {
-        guard let duration = try? await motion.load(.duration) else { return }
-        let generator = AVAssetImageGenerator(asset: motion)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-        let time = CMTimeMultiplyByFloat64(duration, multiplier: keyFrame)
-        guard let frame = try? await generator.image(at: time).image else { return }
+        guard let frame = await Self.frame(motion, at: keyFrame, side: nil) else { return }
         edit.keyFrame = CIImage(cgImage: frame)
     }
 
     // MARK: Saving
 
     private func save() async {
-        guard let client = session.client, let source else { return }
         busy = true
         defer { busy = false }
         do {
-            if edit.motionOff, edit.withoutMotion == PhotoEdit() {
-                try await client.call("PUT", "/assets/\(asset.id)", body: ["livePhotoVideoId": NSNull()])
-            } else if edit.isGeometryOnly, let detail = try? await client.asset(asset.id),
-                      let width = detail.exifInfo?.exifImageWidth?.value ?? detail.width?.value,
-                      let height = detail.exifInfo?.exifImageHeight?.value ?? detail.height?.value {
-                try await client.call("PUT", "/assets/\(asset.id)/edits", body: ["edits": edit.serverEdits(width: width, height: height)])
-            } else {
-                try await bake(source, client: client)
+            if let input {
+                try await saveOnDevice(input)
+            } else if let client = session.client {
+                if let video {
+                    let detail = try await client.asset(asset.id)
+                    let name = ((detail.originalFileName ?? "Video") as NSString).deletingPathExtension + "_edited.mov"
+                    let file = FileManager.default.temporaryDirectory.appending(path: name)
+                    defer { try? FileManager.default.removeItem(at: file) }
+                    try await export(video, to: file)
+                    try await stackNew(file, detail: detail, client: client)
+                } else if edit.motionOff, edit.withoutMotion == PhotoEdit() {
+                    try await client.call("PUT", "/assets/\(asset.id)", body: ["livePhotoVideoId": NSNull()])
+                } else if edit.isGeometryOnly, let detail = try? await client.asset(asset.id),
+                          let width = detail.exifInfo?.exifImageWidth?.value ?? detail.width?.value,
+                          let height = detail.exifInfo?.exifImageHeight?.value ?? detail.height?.value {
+                    try await client.call("PUT", "/assets/\(asset.id)/edits", body: ["edits": edit.serverEdits(width: width, height: height)])
+                } else if let source {
+                    try await bake(source, client: client)
+                }
+                ImageCache.forget(asset.id, client: client)
             }
-            ImageCache.forget(asset.id, client: client)
             onSaved()
             dismiss()
         } catch {
@@ -216,22 +300,84 @@ struct EditorView: View {
         }
     }
 
-    /// Renders the full image, uploads it as a new photo with the original's date, place, albums and favorite,
-    /// and stacks it on top of the original.
-    private func bake(_ source: CIImage, client: ImmichClient) async throws {
-        let detail = try await client.asset(asset.id)
-        let image = (edit.keyFrame ?? source).applying(edit, scale: 1)
-        let name = ((detail.originalFileName ?? "Photo") as NSString).deletingPathExtension + "_edited.jpg"
-        let file = FileManager.default.temporaryDirectory.appending(path: name)
+    /// Saves the edit into the Photos library, which keeps the original so Photos can revert it.
+    private func saveOnDevice(_ input: PHContentEditingInput) async throws {
+        guard let localID = asset.localID,
+              let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject else { throw EditError.load }
+        let output = PHContentEditingOutput(contentEditingInput: input)
+        output.adjustmentData = PHAdjustmentData(formatIdentifier: "app.woofphoto.edit", formatVersion: "1", data: Data("1".utf8))
+        if let video {
+            try await export(video, to: output.renderedContentURL)
+        } else if let source {
+            try jpeg(source.applying(edit, scale: 1)).write(to: output.renderedContentURL)
+        }
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest(for: phAsset).contentEditingOutput = output
+        }
+    }
+
+    /// Writes the trimmed part of the video, without sound if muted, with the edit applied to every frame.
+    private func export(_ video: AVAsset, to file: URL) async throws {
+        let length = try await video.load(.duration)
+        let range = CMTimeRange(start: CMTimeMultiplyByFloat64(length, multiplier: trim.lowerBound),
+                                end: CMTimeMultiplyByFloat64(length, multiplier: trim.upperBound))
+        let composition = AVMutableComposition()
+        guard let source = try await video.loadTracks(withMediaType: .video).first,
+              let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw EditError.render
+        }
+        try track.insertTimeRange(range, of: source, at: .zero)
+        track.preferredTransform = try await source.load(.preferredTransform)
+        if !muted {
+            for audio in try await video.loadTracks(withMediaType: .audio) {
+                try composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)?
+                    .insertTimeRange(range, of: audio, at: .zero)
+            }
+        }
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else { throw EditError.render }
+        if edit != PhotoEdit() {
+            let edit = edit
+            // each frame arrives upright, so the photo pipeline applies as is
+            let frames = try await AVMutableVideoComposition.videoComposition(with: composition) { request in
+                request.finish(with: request.sourceImage.applying(edit, scale: 1), context: nil)
+            }
+            let size = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: frames.renderSize)).applying(edit, scale: 1).extent.size
+            // video encoders want even sides
+            frames.renderSize = CGSize(width: (size.width / 2).rounded(.down) * 2, height: (size.height / 2).rounded(.down) * 2)
+            exporter.videoComposition = frames
+        }
+        try? FileManager.default.removeItem(at: file)
+        try await exporter.export(to: file, as: .mov)
+    }
+
+    private func jpeg(_ image: CIImage) throws -> Data {
         guard let data = PhotoEdit.context.jpegRepresentation(of: image, colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
                                                                options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.92]) else {
             throw EditError.render
         }
-        try data.write(to: file)
+        return data
+    }
+
+    /// Renders the full photo and stacks it on top of the original.
+    private func bake(_ source: CIImage, client: ImmichClient) async throws {
+        let detail = try await client.asset(asset.id)
+        let name = ((detail.originalFileName ?? "Photo") as NSString).deletingPathExtension + "_edited.jpg"
+        let file = FileManager.default.temporaryDirectory.appending(path: name)
+        try jpeg((edit.keyFrame ?? source).applying(edit, scale: 1)).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
+        try await stackNew(file, detail: detail, client: client, motion: edit.motionOff ? nil : asset.livePhotoVideoId)
+        if edit.keyFrame != nil {
+            // a new key photo replaces the old still; the video now belongs to the new one
+            try await client.deleteAssets([asset.id])
+        }
+    }
+
+    /// Uploads an edited file as a new item with the original's date, place, albums and favorite,
+    /// stacked on top of the original.
+    private func stackNew(_ file: URL, detail: Asset, client: ImmichClient, motion: String? = nil) async throws {
         var fields = ["fileCreatedAt": detail.fileCreatedAt ?? Date.now.formatted(.iso8601),
                       "fileModifiedAt": Date.now.formatted(.iso8601)]
-        if let motion = asset.livePhotoVideoId, !edit.motionOff { fields["livePhotoVideoId"] = motion }
+        if let motion { fields["livePhotoVideoId"] = motion }
         let id = try await client.upload(file, fields: fields)
 
         var place: [String: Any] = [:]
@@ -244,10 +390,6 @@ struct EditorView: View {
         try await client.call("PUT", "/assets/copy", body: ["sourceId": asset.id, "targetId": id, "albums": true, "favorite": true,
                                                             "sharedLinks": true, "stack": false, "sidecar": false])
         try await client.call("POST", "/stacks", body: ["assetIds": [id, asset.id]])
-        if edit.keyFrame != nil {
-            // a new key photo replaces the old still; the video now belongs to the new one
-            try await client.deleteAssets([asset.id])
-        }
     }
 
     private func revert() async {
@@ -265,8 +407,13 @@ struct EditorView: View {
     }
 
     enum EditError: LocalizedError {
-        case render
-        var errorDescription: String? { "The edited photo couldn't be created." }
+        case load, render
+        var errorDescription: String? {
+            switch self {
+            case .load: "This item couldn't be opened for editing."
+            case .render: "The edited copy couldn't be created."
+            }
+        }
     }
 }
 
@@ -449,33 +596,51 @@ extension CIImage {
     }
 }
 
-/// The system video trimmer on the downloaded original; the trimmed video uploads as a new item stacked on the original.
-struct VideoTrimmer: UIViewControllerRepresentable {
-    let file: URL
-    let onTrimmed: (URL?) -> Void
+/// A strip of video frames with a yellow frame around the part that is kept. Drag near an end to move it.
+struct TrimBar: View {
+    let frames: [UIImage]
+    @Binding var range: ClosedRange<Double>
+    /// Where the finger is, 0…1, to preview that frame.
+    var onScrub: (Double) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onTrimmed: onTrimmed) }
-
-    func makeUIViewController(context: Context) -> UIVideoEditorController {
-        let controller = UIVideoEditorController()
-        controller.videoPath = file.path
-        controller.videoQuality = .typeHigh
-        controller.delegate = context.coordinator
-        return controller
-    }
-
-    func updateUIViewController(_ controller: UIVideoEditorController, context: Context) {}
-
-    final class Coordinator: NSObject, UIVideoEditorControllerDelegate, UINavigationControllerDelegate {
-        let onTrimmed: (URL?) -> Void
-        init(onTrimmed: @escaping (URL?) -> Void) { self.onTrimmed = onTrimmed }
-
-        func videoEditorController(_ editor: UIVideoEditorController, didSaveEditedVideoToPath editedVideoPath: String) {
-            onTrimmed(URL(fileURLWithPath: editedVideoPath))
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    ForEach(frames.indices, id: \.self) { index in
+                        Image(uiImage: frames[index])
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: width / CGFloat(frames.count), height: 48)
+                            .clipped()
+                    }
+                }
+                Rectangle().fill(.black.opacity(0.6)).frame(width: width * range.lowerBound)
+                Rectangle().fill(.black.opacity(0.6)).frame(width: width * (1 - range.upperBound)).offset(x: width * range.upperBound)
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(.yellow, lineWidth: 3)
+                    .frame(width: width * (range.upperBound - range.lowerBound))
+                    .offset(x: width * range.lowerBound)
+            }
+            .frame(height: 48)
+            .background(.white.opacity(0.1))
+            .clipShape(.rect(cornerRadius: 6))
+            .contentShape(.rect)
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                let x = min(max(value.location.x / width, 0), 1)
+                let start = value.startLocation.x / width
+                if abs(start - range.lowerBound) < abs(start - range.upperBound) {
+                    range = min(x, range.upperBound - 0.02)...range.upperBound
+                } else {
+                    range = range.lowerBound...max(x, range.lowerBound + 0.02)
+                }
+                onScrub(x)
+            })
         }
-
-        func videoEditorControllerDidCancel(_ editor: UIVideoEditorController) { onTrimmed(nil) }
-
-        func videoEditorController(_ editor: UIVideoEditorController, didFailWithError error: Error) { onTrimmed(nil) }
+        .frame(height: 48)
+        .accessibilityElement()
+        .accessibilityLabel("Trim")
+        .accessibilityValue("\(Int(range.lowerBound * 100))% to \(Int(range.upperBound * 100))%")
     }
 }

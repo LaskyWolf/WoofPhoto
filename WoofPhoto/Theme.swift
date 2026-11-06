@@ -339,6 +339,28 @@ struct DetailHeader<Cover: View, Secondary: View, Buttons: View>: View {
     }
 }
 
+/// WoofMusic's player glyph: white, no background, a soft shadow, a 44-point target.
+struct GlyphLabelStyle: LabelStyle {
+    var size: CGFloat = 19
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.icon
+            .font(.system(size: size, weight: .semibold))
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.4), radius: 3)
+            .frame(width: max(44, size * 2), height: max(44, size * 2))
+            .contentShape(.circle)
+    }
+}
+
+/// WoofMusic's PlayerSkipButtonStyle: a soft disc shows only under the finger.
+struct GlyphPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(.white.opacity(configuration.isPressed ? 0.15 : 0), in: .circle)
+    }
+}
+
 /// A round header button face; `filled` paints it in the accent with a white glyph, like WoofMusic's Play.
 struct RoundIcon: View {
     let systemImage: String

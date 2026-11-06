@@ -35,13 +35,16 @@ struct AccentPreset: Identifiable, Hashable {
     static func named(_ name: String) -> AccentPreset { all.first { $0.name == name } ?? all[0] }
 }
 
-/// A tab's large title with round icon buttons and the account button, as in WoofMusic.
+/// WoofMusic's TabHeaderView: a large title, the tab's own buttons, then History and the account button.
 struct TabHeader<Buttons: View>: View {
     let title: String
     var subtitle: String?
+    /// Off while selecting, when the tab's buttons are all about the selection, as in WoofMusic's playlists.
+    var showsCommon = true
     @ViewBuilder var buttons: Buttons
     @Environment(Session.self) private var session
     @State private var showsAccount = false
+    @State private var showsHistory = false
 
     var body: some View {
         HStack(alignment: .center) {
@@ -50,6 +53,7 @@ struct TabHeader<Buttons: View>: View {
                     .font(.largeTitle.bold())
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
+                    .contentTransition(.numericText())
                 if let subtitle {
                     Text(subtitle).font(.footnote).foregroundStyle(.secondary)
                 }
@@ -57,9 +61,13 @@ struct TabHeader<Buttons: View>: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
             Spacer()
+            // 36-point icons with 12 points between them, so they don't crowd. Each takes taps on 44 points.
             HStack(spacing: 12) {
                 buttons
-                AccountButton { showsAccount = true }
+                if showsCommon {
+                    HeaderButton(label: "History", systemImage: "clock.arrow.circlepath") { showsHistory = true }
+                    AccountButton { showsAccount = true }
+                }
             }
         }
         .padding(.horizontal, Tokens.screenPadding)
@@ -68,6 +76,7 @@ struct TabHeader<Buttons: View>: View {
         .navigationDestination(isPresented: Binding { showsAccount && session.client != nil } set: { showsAccount = $0 }) {
             SettingsView()
         }
+        .navigationDestination(isPresented: $showsHistory) { HistoryView() }
     }
 }
 
@@ -89,17 +98,20 @@ extension View {
         }
     }
 
-    /// A tab's title and chips, pinned above the content over a fade, so what scrolls under them stays out of the way.
+    /// WoofMusic's tabHeader: a tab's title, then its chips, pinned over the top edge.
+    /// The content scrolls under it, faded out by a gradient of the page colour.
     func stickyHeader<Header: View>(@ViewBuilder _ header: () -> Header) -> some View {
         safeAreaInset(edge: .top, spacing: 0) {
-            header()
-                .padding(.bottom, 10)
+            VStack(alignment: .leading, spacing: 0, content: header)
                 .background {
-                    LinearGradient(stops: [.init(color: Color(.systemBackground), location: 0),
-                                           .init(color: Color(.systemBackground).opacity(0.8), location: 0.6),
+                    LinearGradient(stops: [.init(color: Color(.systemBackground).opacity(0.92), location: 0),
+                                           .init(color: Color(.systemBackground).opacity(0.7), location: 0.6),
                                            .init(color: Color(.systemBackground).opacity(0), location: 1)],
                                    startPoint: .top, endPoint: .bottom)
-                        .ignoresSafeArea()
+                        // past the chips, so the fade ends below them, not on them
+                        .padding(.bottom, -24)
+                        .ignoresSafeArea(edges: .top)
+                        .allowsHitTesting(false)
                 }
         }
     }
@@ -107,7 +119,7 @@ extension View {
 
 extension TabHeader where Buttons == EmptyView {
     init(title: String, subtitle: String? = nil) {
-        self.init(title: title, subtitle: subtitle) { EmptyView() }
+        self.init(title: title, subtitle: subtitle, buttons: { EmptyView() })
     }
 }
 
@@ -162,35 +174,53 @@ struct AccountButton: View {
     }
 }
 
-/// A row of capsule chips; the selected one is filled with the accent.
+/// WoofMusic's FilterChipBar: a row of capsule chips; a selected one is filled with the accent.
+/// It only scrolls sideways and never bounces or pulls to refresh with the page under it.
 struct FilterChips<Item: Hashable>: View {
     let items: [Item]
-    @Binding var selection: Item
     let title: (Item) -> String
+    let isSelected: (Item) -> Bool
+    let onTap: (Item) -> Void
 
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(items, id: \.self) { item in
-                    let selected = item == selection
+                    let selected = isSelected(item)
                     Button {
-                        withAnimation(.snappy) { selection = item }
+                        withAnimation(.snappy) { onTap(item) }
                     } label: {
                         Text(title(item))
                             .font(.subheadline.weight(.medium))
                             .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
                             .frame(minHeight: Tokens.controlHeight)
                             .background(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.systemGray5)), in: .capsule)
                             .foregroundStyle(selected ? .white : .primary)
                     }
                     .buttonStyle(ZoomPressStyle())
                     .accessibilityAddTraits(selected ? .isSelected : [])
+                    .sensoryFeedback(.selection, trigger: selected) { _, isOn in isOn }
                 }
             }
             .padding(.horizontal, Tokens.screenPadding)
+            .padding(.vertical, 8)
         }
         .scrollIndicators(.hidden)
-        .sensoryFeedback(.selection, trigger: selection)
+        .scrollBounceBehavior(.basedOnSize)
+    }
+}
+
+extension FilterChips {
+    /// One chip is always on, like a segmented control.
+    init(items: [Item], selection: Binding<Item>, title: @escaping (Item) -> String) {
+        self.init(items: items, title: title, isSelected: { $0 == selection.wrappedValue }, onTap: { selection.wrappedValue = $0 })
+    }
+
+    /// WoofMusic's library filters: tapping the selected chip again turns it off.
+    init(items: [Item], selection: Binding<Item?>, title: @escaping (Item) -> String) {
+        self.init(items: items, title: title, isSelected: { $0 == selection.wrappedValue },
+                  onTap: { selection.wrappedValue = selection.wrappedValue == $0 ? nil : $0 })
     }
 }
 

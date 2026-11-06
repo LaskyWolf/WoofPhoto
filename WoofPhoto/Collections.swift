@@ -12,7 +12,8 @@ enum Shelf: Hashable, Codable {
     case partner(id: String, name: String)
 
     static let mediaTypes: [Shelf] = [.videos, .livePhotos, .selfies, .portraits, .panoramas, .screenshots, .raw]
-    static let utilities: [Shelf] = [.recentlyDeleted, .hidden, .duplicates, .archive, .receipts, .handwriting, .illustrations, .qrCodes]
+    /// Hidden and Duplicates are the shortcut tiles at the top of Collections.
+    static let utilities: [Shelf] = [.recentlyDeleted, .archive, .receipts, .handwriting, .illustrations, .qrCodes]
 
     var title: String {
         switch self {
@@ -117,12 +118,17 @@ struct CollectionsView: View {
     @State private var markers: [MapMarker] = []
     @State private var editing = false
     @State private var error: String?
-    @State private var chip = "All"
+    /// WoofMusic's library filter: one section, or every section when off.
+    @State private var chip: Section?
+    @State private var favoriteCovers: [String] = []
+    @State private var favoriteCount: Int?
+    @State private var duplicates: [DuplicateGroup] = []
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    shortcuts
                     if let error {
                         Label(error, systemImage: "wifi.exclamationmark")
                             .font(.footnote)
@@ -130,28 +136,27 @@ struct CollectionsView: View {
                             .padding(.horizontal, Tokens.screenPadding)
                             .padding(.top, 12)
                     }
-                    ForEach(sections.filter { chip == "All" || $0.rawValue == chip }) { section in
+                    ForEach(sections.filter { chip == nil || $0 == chip }) { section in
                         sectionView(section)
                     }
                 }
-                .padding(.bottom, Tokens.sectionGap)
+                .animation(.smooth(duration: 0.4), value: chip)
             }
+            // on the list only: on the whole page the chips above would pull to refresh too
+            .refreshable { await load() }
             .stickyHeader {
-                VStack(alignment: .leading, spacing: 4) {
-                    TabHeader(title: "Collections") {
-                        HeaderButton(label: "Edit Sections", systemImage: "slider.horizontal.3") { editing = true }
-                    }
-                    FilterChips(items: ["All"] + sections.map(\.rawValue), selection: $chip) { $0 }
+                TabHeader(title: "Collections") {
+                    HeaderButton(label: "Edit Sections", systemImage: "slider.horizontal.3") { editing = true }
                 }
+                FilterChips(items: sections, selection: $chip) { $0.rawValue }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .onChange(of: sections) { if !sections.map(\.rawValue).contains(chip) { chip = "All" } }
+            .onChange(of: sections) { if let chip, !sections.contains(chip) { self.chip = nil } }
             .sheet(isPresented: $editing) {
                 SectionEditor(order: $order, hidden: $hiddenSections)
             }
             .navigationDestination(for: Shelf.self) { $0.destination }
             .task { await load() }
-            .refreshable { await load() }
         }
         .environment(pins)
     }
@@ -161,30 +166,73 @@ struct CollectionsView: View {
             .filter { !hiddenSections.split(separator: ",").contains(Substring($0.rawValue)) }
     }
 
+    /// WoofMusic's library section: a bold title with its count, See All, and the content under it.
     @ViewBuilder private func sectionView(_ section: Section) -> some View {
-        let isCollapsed = chip == "All" && collapsed.split(separator: ",").contains(Substring(section.rawValue))
-        VStack(alignment: .leading, spacing: 8) {
+        let isCollapsed = chip == nil && collapsed.split(separator: ",").contains(Substring(section.rawValue))
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(section.rawValue).font(.title3.bold()).accessibilityAddTraits(.isHeader)
-                Spacer()
-                seeAll(section).font(.subheadline.weight(.semibold))
-                if chip == "All" {
-                    Button(isCollapsed ? "Expand" : "Collapse", systemImage: "chevron.down") {
-                        withAnimation(.snappy) { collapsed = toggled(section.rawValue, in: collapsed) }
+                Button {
+                    withAnimation(.snappy) { collapsed = toggled(section.rawValue, in: collapsed) }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(section.rawValue).font(.title3.bold())
+                        Image(systemName: "chevron.down")
+                            .font(.footnote.bold())
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isCollapsed ? -90 : 0))
                     }
-                    .labelStyle(.iconOnly)
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(isCollapsed ? 0 : 180))
-                    .frame(width: 44, height: 44)
                     .contentShape(.rect)
                 }
+                .buttonStyle(.plain)
+                .disabled(chip != nil)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityHint(isCollapsed ? "Shows the section" : "Hides the section")
+                Spacer()
+                if let count = count(section) {
+                    Text("\(count)").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                }
+                seeAll(section).font(.subheadline.weight(.semibold))
             }
-            .padding(.leading, Tokens.screenPadding)
-            .padding(.trailing, chip == "All" ? 4 : Tokens.screenPadding)
-            .padding(.top, Tokens.sectionGap - 12)
+            .padding(.horizontal, Tokens.screenPadding)
+            .padding(.vertical, 8)
             if !isCollapsed { content(section) }
         }
+        .padding(.bottom, Tokens.sectionGap)
+    }
+
+    private func count(_ section: Section) -> Int? {
+        switch section {
+        case .albums: albums.filter { $0.shared != true }.count
+        case .shared: albums.filter { $0.shared == true }.count
+        case .people: people.filter { $0.isHidden != true && !$0.name.isEmpty }.count
+        case .pinned: pins.items.count
+        default: nil
+        }
+    }
+
+    // MARK: Shortcuts
+
+    /// WoofMusic's and WoofTube's shortcut tiles, right under the filters.
+    private var shortcuts: some View {
+        HStack(spacing: 10) {
+            NavigationLink(value: Shelf.favorites) {
+                ShortcutTile(title: "Favorites", subtitle: favoriteCount.map { "\($0.formatted()) items" }, icon: "heart.fill",
+                             tint: .pink, covers: favoriteCovers)
+            }
+            NavigationLink(value: Shelf.duplicates) {
+                ShortcutTile(title: "Duplicates", subtitle: duplicates.isEmpty ? "None found" : "\(duplicates.count) groups",
+                             icon: "square.fill.on.square.fill", tint: .orange,
+                             covers: duplicates.prefix(2).compactMap { $0.assets.first?.id })
+            }
+            // locked, so no covers give it away
+            NavigationLink(value: Shelf.hidden) {
+                ShortcutTile(title: "Hidden", subtitle: "Locked", icon: "eye.slash.fill", tint: .indigo, covers: [])
+            }
+        }
+        .buttonStyle(ZoomPressStyle())
+        .padding(.horizontal, Tokens.screenPadding)
+        .padding(.top, 8)
+        .padding(.bottom, Tokens.sectionGap)
     }
 
     /// The See All link a section header shows, if it has a full list.
@@ -240,7 +288,7 @@ struct CollectionsView: View {
             .buttonStyle(ZoomPressStyle(scale: 0.97))
             .padding(.horizontal, Tokens.screenPadding)
         case .mediaTypes:
-            ShelfList(shelves: [.favorites, .recentlySaved] + Shelf.mediaTypes)
+            ShelfList(shelves: [.recentlySaved] + Shelf.mediaTypes)
         case .utilities:
             ShelfList(shelves: Shelf.utilities)
         }
@@ -270,6 +318,9 @@ struct CollectionsView: View {
             self.partners = (try? await partners) ?? []
             self.memories = (try? await memories) ?? []
             self.markers = (try? await markers) ?? []
+            favoriteCovers = ((try? await client.firstAssets(["isFavorite": true], count: 2)) ?? []).map(\.id)
+            favoriteCount = try? await client.favoriteCount()
+            duplicates = (try? await client.duplicates()) ?? []
         } catch ImmichError.http(401, _) {
             session.signOut()
         } catch {
@@ -600,5 +651,83 @@ struct SearchedGrid: View {
                 self.error = error.explanation
             }
         }
+    }
+}
+
+/// WoofMusic's shortcut tile: a card in its colour, two photos fanned at the top, over a big white symbol the corner crops.
+struct ShortcutTile: View {
+    let title: String
+    let subtitle: String?
+    let icon: String
+    let tint: Color
+    let covers: [String]
+
+    private static let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+    private static let coverSide: CGFloat = 42
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            fannedCovers
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption2.weight(.semibold))
+                        .opacity(0.85)
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity)
+        .frame(height: 116)
+        .background {
+            ZStack {
+                // a colour gradient and light from above
+                LinearGradient(colors: [tint, tint.mix(with: .black, by: 0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                LinearGradient(colors: [.white.opacity(0.16), .clear], startPoint: .top, endPoint: .center)
+                // larger than the corner and tilted left, so the card's edge crops it
+                Image(systemName: icon)
+                    .font(.system(size: 66, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.3))
+                    .rotationEffect(.degrees(-18))
+                    .offset(x: 19, y: 9)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            }
+            .clipShape(Self.shape)
+            .shadow(color: tint.opacity(0.4), radius: 6, y: 4)
+            .accessibilityHidden(true)
+        }
+        .contentShape(Self.shape)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var fannedCovers: some View {
+        if let first = covers.first {
+            ZStack(alignment: .topLeading) {
+                if covers.count > 1 {
+                    cover(covers[1])
+                        .rotationEffect(.degrees(-8))
+                        .offset(x: 2, y: 6)
+                }
+                cover(first)
+                    .rotationEffect(.degrees(covers.count > 1 ? 6 : 0))
+                    .offset(x: covers.count > 1 ? 24 : 2, y: 2)
+            }
+        }
+    }
+
+    private func cover(_ id: String) -> some View {
+        Thumbnail(asset: AssetRef(id: id), cornerRadius: 7)
+            .frame(width: Self.coverSide, height: Self.coverSide)
+            .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
     }
 }

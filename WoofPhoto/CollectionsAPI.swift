@@ -154,6 +154,18 @@ extension ImmichClient {
         try await call("POST", "/auth/session/lock")
     }
 
+    /// The first few assets matching exact filters, for a cover.
+    func firstAssets(_ filters: [String: Any], count: Int) async throws -> [Asset] {
+        let response: SearchResponse = try await fetch("POST", "/search/metadata", body: filters.merging(["size": count, "withExif": false]) { $1 })
+        return response.assets.items
+    }
+
+    func favoriteCount() async throws -> Int {
+        struct Statistics: Decodable { var total: Int }
+        let statistics: Statistics = try await get("/assets/statistics", query: ["isFavorite": "true"])
+        return statistics.total
+    }
+
     func duplicates() async throws -> [DuplicateGroup] {
         try await get("/duplicates")
     }

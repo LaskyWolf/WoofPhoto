@@ -33,7 +33,6 @@ struct AssetGrid: View {
     @GestureState private var pinch: CGFloat = 1
     /// The long-press menu's actions.
     @State private var actions = AssetActions()
-    @State private var showsHistory = false
 
     var body: some View {
         content
@@ -47,9 +46,7 @@ struct AssetGrid: View {
                             .background(.regularMaterial)
                             .onTapGesture { timeline.problem = nil }
                     }
-                    if selection != nil {
-                        SelectionBar(timeline: timeline, selection: $selection)
-                    } else if title == nil, showsLevels, timeline.months?.isEmpty == false {
+                    if selection == nil, title == nil, showsLevels, timeline.months?.isEmpty == false {
                         Picker("Show", selection: $level) {
                             ForEach(Level.allCases, id: \.self) { Text($0.rawValue) }
                         }
@@ -61,38 +58,77 @@ struct AssetGrid: View {
             }
             .stickyHeader { if let title { header(title) } }
             .toolbar(title == nil ? .automatic : .hidden, for: .navigationBar)
-            .toolbar {
-                if title == nil, canSelect {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(selection == nil ? "Select" : "Cancel") { toggleSelect() }
-                    }
-                }
-            }
-            .toolbar(selection == nil ? .automatic : .hidden, for: .tabBar)
+            .toolbar { if title == nil { selectionToolbar } }
+            .sensoryFeedback(.selection, trigger: selection ?? [])
             .environment(timeline)
-            .navigationDestination(isPresented: $showsHistory) { HistoryView() }
             .assetActions(actions)
-            .onAppear { actions.timeline = timeline }
+            .onAppear {
+                actions.timeline = timeline
+                // an action on the selection ends Select mode, as in WoofMusic's playlists
+                actions.done = { selection = nil }
+            }
             .task(id: ObjectIdentifier(timeline)) { await reload() }
     }
 
     /// Selecting acts on the server, so it needs one.
     private var canSelect: Bool { session.client != nil && level == .all && timeline.months?.isEmpty == false }
 
+    /// What Select All picks: the server's items that have loaded.
+    private var selectable: Set<String> { Set(timeline.assets.filter { $0.localID == nil }.map(\.id)) }
+    private var allSelected: Bool { !selectable.isEmpty && selection == selectable }
+
     private func toggleSelect() {
         withAnimation(.snappy) { selection = selection == nil ? [] : nil }
     }
 
-    /// WoofMusic's title row and chips, over a fade so the photos scrolling under it stay out of the way.
-    private func header(_ title: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TabHeader(title: title, subtitle: timeline.months == nil ? nil : "\(timeline.count.formatted()) Items") {
-                if showsLevels {
-                    HeaderButton(label: "History", systemImage: "clock.arrow.circlepath") { showsHistory = true }
+    /// WoofMusic's playlist toolbar: Select, then Select All, the actions menu and Done while selecting.
+    @ToolbarContentBuilder private var selectionToolbar: some ToolbarContent {
+        if let selection {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button(allSelected ? "Deselect All" : "Select All", systemImage: allSelected ? "checklist.unchecked" : "checklist.checked") {
+                    self.selection = allSelected ? [] : selectable
                 }
-                if canSelect {
-                    HeaderButton(label: selection == nil ? "Select" : "Done Selecting",
-                                 systemImage: "checkmark.circle", isOn: selection != nil) { toggleSelect() }
+                Menu {
+                    AssetMenuItems(actions: actions, ids: Array(selection))
+                } label: {
+                    Image(systemName: "ellipsis.circle").accessibilityLabel("Actions for \(selection.count) selected")
+                }
+                .disabled(selection.isEmpty)
+                Button("Done") { toggleSelect() }
+            }
+        } else if canSelect {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Select", systemImage: "checkmark.circle") { toggleSelect() }
+            }
+        }
+    }
+
+    /// WoofMusic's title row and chips. While selecting, the title counts the selection and the buttons act on it.
+    private func header(_ title: String) -> some View {
+        Group {
+            TabHeader(title: selection.map { "\($0.count) Selected" } ?? title, showsCommon: selection == nil) {
+                if let selection {
+                    HeaderButton(label: allSelected ? "Deselect All" : "Select All",
+                                 systemImage: allSelected ? "checklist.unchecked" : "checklist.checked") {
+                        self.selection = allSelected ? [] : selectable
+                    }
+                    Menu {
+                        AssetMenuItems(actions: actions, ids: Array(selection))
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 36, height: 36)
+                            .tapArea(outset: 4)
+                    }
+                    .disabled(selection.isEmpty)
+                    .accessibilityLabel("Actions for \(selection.count) selected")
+                    Button("Done") { toggleSelect() }
+                        .font(.headline)
+                        .frame(height: 36)
+                        .tapArea(outset: 4)
+                } else if canSelect {
+                    HeaderButton(label: "Select", systemImage: "checkmark.circle") { toggleSelect() }
                 }
             }
             if showsLevels, selection == nil, timeline.months?.isEmpty == false {
@@ -109,8 +145,8 @@ struct AssetGrid: View {
             } else {
                 switch level {
                 case .all: grid(months, client: client)
-                case .months: cards(months.map { CardGroup(key: $0.key, title: Self.monthTitle($0.key), months: [$0]) }, client: client)
-                case .years: cards(Self.years(months), client: client)
+                case .months: monthsView(months, client: client)
+                case .years: yearsView(Self.years(months), client: client)
                 }
             }
         } else if let error {
@@ -234,49 +270,98 @@ struct AssetGrid: View {
         self.selection = drag.adds ? drag.base.union(ids) : drag.base.subtracting(ids)
     }
 
-    /// A Years or Months card: the group's first photo, large, with its title.
+    /// A year in the Years view.
     struct CardGroup {
         var key: String
         var title: String
         var months: [Timeline.Month]
     }
 
-    private func cards(_ groups: [CardGroup], client: ImmichClient?) -> some View {
+    /// Photos' Years: one large card per year, the year on its top corner. A tap opens that year in Months.
+    private func yearsView(_ groups: [CardGroup], client: ImmichClient?) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 12) {
+                LazyVStack(spacing: 24) {
                     ForEach(groups, id: \.key) { group in
                         let month = group.months.last!
                         Button {
                             target = month.key
-                            withAnimation(.snappy) { level = level == .years ? .months : .all }
+                            withAnimation(.snappy) { level = .months }
                         } label: {
-                            Thumbnail(asset: month.assets?.first, size: "preview", square: false)
+                            Thumbnail(asset: month.assets?.first, size: "preview", square: false, cornerRadius: 12)
                                 .aspectRatio(4 / 3, contentMode: .fit)
-                                .overlay(alignment: .bottomLeading) {
+                                .overlay(alignment: .topLeading) {
                                     Text(group.title)
-                                        .font(.title2.bold())
+                                        .font(.title.bold())
                                         .foregroundStyle(.white)
-                                        .shadow(color: .black.opacity(0.6), radius: 6)
-                                        .padding()
+                                        .shadow(color: .black.opacity(0.5), radius: 6)
+                                        .padding(16)
                                 }
-                                .clipShape(.rect(cornerRadius: 16))
                         }
-                        .buttonStyle(.plain)
-                        .id(month.key)
+                        .buttonStyle(ZoomPressStyle(scale: 0.97))
+                        .id(group.key)
                         .task { if let client { await timeline.loadMonth(month.key, with: client) } }
                     }
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, Tokens.screenPadding)
+                .padding(.vertical, 8)
             }
             .defaultScrollAnchor(.bottom)
+            .onChange(of: reselects) { scrollToNewest(groups.last?.key, proxy) }
             .task {
                 guard let target else { return }
                 await Task.yield()
-                proxy.scrollTo(target, anchor: .center)
+                proxy.scrollTo(String(target.prefix(4)), anchor: .center)
                 self.target = nil
             }
         }
+    }
+
+    /// Photos' Months: under each month's title, a mosaic of its days, each with the day's number.
+    /// A tap opens the grid at that month.
+    private func monthsView(_ months: [Timeline.Month], client: ImmichClient?) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 20, pinnedViews: .sectionHeaders) {
+                    ForEach(months) { month in
+                        Section {
+                            DayMosaic(tiles: DayMosaic.tiles(month.assets ?? [])) {
+                                target = month.key
+                                withAnimation(.snappy) { level = .all }
+                            }
+                            .frame(minHeight: month.assets == nil ? 240 : 0, alignment: .top)
+                            .task { if let client { await timeline.loadMonth(month.key, with: client) } }
+                        } header: {
+                            Text(Self.shortMonthTitle(month.key))
+                                .font(.title2.bold())
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 6)
+                                .background {
+                                    LinearGradient(colors: [Color(.systemBackground).opacity(0.85), .clear], startPoint: .top, endPoint: .bottom)
+                                        .padding(.horizontal, -Tokens.screenPadding)
+                                }
+                        }
+                        .id(month.key)
+                    }
+                }
+                .padding(.horizontal, Tokens.screenPadding)
+                .padding(.bottom, 8)
+            }
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: reselects) { scrollToNewest(months.last?.key, proxy) }
+            .task {
+                guard let target else { return }
+                await Task.yield()
+                proxy.scrollTo(target, anchor: .top)
+                self.target = nil
+            }
+        }
+    }
+
+    /// Tapping the Library tab again goes down to the newest, as in the All grid.
+    private func scrollToNewest(_ key: String?, _ proxy: ScrollViewProxy) {
+        guard title != nil, let key else { return }
+        withAnimation(.smooth) { proxy.scrollTo(key, anchor: .bottom) }
     }
 
     private func reload() async {
@@ -289,6 +374,12 @@ struct AssetGrid: View {
         } catch {
             self.error = error.explanation
         }
+    }
+
+    /// "Nov 2024", as in Photos' Months.
+    static func shortMonthTitle(_ key: String) -> String {
+        guard let date = TimeBucket(timeBucket: key, count: 0).date else { return key }
+        return date.formatted(Date.FormatStyle(timeZone: .gmt).month(.abbreviated).year())
     }
 
     static func monthTitle(_ key: String) -> String {
@@ -483,5 +574,99 @@ enum ImageCache {
         guard let image = ThumbHash.image(base64: hash) else { return nil }
         images.setObject(image, forKey: key)
         return image
+    }
+}
+
+/// One month in Photos' Months view: a tile per day with photos, its number on the top corner.
+/// The tiles alternate between one wide day, three square days, and a big day beside two small ones.
+struct DayMosaic: View {
+    struct Tile: Identifiable {
+        let day: Int
+        let asset: AssetRef
+        var id: Int { day }
+    }
+
+    private enum Row {
+        case wide(Tile), three([Tile]), big([Tile]), two([Tile])
+    }
+
+    let tiles: [Tile]
+    let onTap: () -> Void
+    @State private var width: CGFloat = 0
+    private static let gap: CGFloat = 6
+
+    /// The first photo of each day, in day order.
+    static func tiles(_ assets: [AssetRef]) -> [Tile] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        var seen = Set<Int>()
+        let tiles = assets.compactMap { asset -> Tile? in
+            guard let date = asset.date else { return nil }
+            let day = calendar.component(.day, from: date)
+            return seen.insert(day).inserted ? Tile(day: day, asset: asset) : nil
+        }
+        return tiles.sorted { $0.day < $1.day }
+    }
+
+    /// A count that leaves one over starts with a wide day, then threes take turns, and two left over share a row.
+    private var rows: [Row] {
+        var rows: [Row] = []
+        var index = 0
+        if tiles.count % 3 == 1 {
+            rows.append(.wide(tiles[0]))
+            index = 1
+        }
+        var big = rows.isEmpty
+        while index < tiles.count {
+            let rest = Array(tiles[index..<min(index + 3, tiles.count)])
+            switch rest.count {
+            case 3: rows.append(big ? .big(rest) : .three(rest))
+            case 2: rows.append(.two(rest))
+            default: rows.append(.wide(rest[0]))
+            }
+            big.toggle()
+            index += rest.count
+        }
+        return rows
+    }
+
+    var body: some View {
+        let small = max((width - Self.gap * 2) / 3, 0)
+        VStack(spacing: Self.gap) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                switch row {
+                case let .wide(tile):
+                    tileView(tile, width: width, height: (width * 2 / 3).rounded(), size: "preview")
+                case let .three(tiles):
+                    HStack(spacing: Self.gap) { ForEach(tiles) { tileView($0, width: small, height: small) } }
+                case let .big(tiles):
+                    HStack(spacing: Self.gap) {
+                        tileView(tiles[0], width: small * 2 + Self.gap, height: small * 2 + Self.gap, size: "preview")
+                        VStack(spacing: Self.gap) { ForEach(tiles.dropFirst()) { tileView($0, width: small, height: small) } }
+                    }
+                case let .two(tiles):
+                    let half = (width - Self.gap) / 2
+                    HStack(spacing: Self.gap) { ForEach(tiles) { tileView($0, width: half, height: half) } }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
+
+    private func tileView(_ tile: Tile, width: CGFloat, height: CGFloat, size: String = "thumbnail") -> some View {
+        Button(action: onTap) {
+            Thumbnail(asset: tile.asset, size: size, square: false, cornerRadius: 10)
+                .frame(width: width, height: height)
+                .overlay(alignment: .topLeading) {
+                    Text("\(tile.day)")
+                        .font(.title3.bold())
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 4)
+                        .padding(10)
+                }
+        }
+        .buttonStyle(ZoomPressStyle(scale: 0.97))
+        .accessibilityLabel("Day \(tile.day)")
     }
 }

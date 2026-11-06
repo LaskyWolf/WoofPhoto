@@ -2,39 +2,7 @@ import AVKit
 import Photos
 import SwiftUI
 
-/// The bar under a grid in Select mode: share, add to album, favorite, save, archive, hide and delete the selection.
-struct SelectionBar: View {
-    let timeline: Timeline
-    @Binding var selection: Set<String>?
-
-    @Environment(Session.self) private var session
-    @State private var actions = AssetActions()
-
-    private var ids: [String] { Array(selection ?? []) }
-
-    var body: some View {
-        HStack {
-            Button("Share", systemImage: "square.and.arrow.up") { actions.ids = ids; Task { await actions.share(session.client) } }
-                .disabled(actions.isTrash)
-            Spacer()
-            Text(ids.isEmpty ? "Select Items" : "\(ids.count) Selected").font(.headline)
-            Spacer()
-            Menu("Actions", systemImage: "ellipsis.circle") { AssetMenuItems(actions: actions, ids: ids) }
-            Button("Delete", systemImage: "trash") { actions.ids = ids; actions.confirmsDelete = true }
-        }
-        .labelStyle(.iconOnly)
-        .font(.title3)
-        .padding()
-        .background(.bar)
-        .assetActions(actions)
-        .onAppear {
-            actions.timeline = timeline
-            actions.done = { selection = nil }
-        }
-    }
-}
-
-/// Actions on some assets of a timeline, shared by the Select bar and the long-press menu.
+/// Actions on some assets of a timeline, shared by the Select menu and the long-press menu.
 @MainActor @Observable
 final class AssetActions {
     var timeline: Timeline?
@@ -102,7 +70,7 @@ final class AssetActions {
     }
 }
 
-/// The actions as menu items, for the Select bar's menu and a cell's long press.
+/// The actions as menu items, for the Select menu and a cell's long press.
 struct AssetMenuItems: View {
     let actions: AssetActions
     let ids: [String]

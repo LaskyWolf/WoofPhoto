@@ -257,7 +257,7 @@ enum SpatialCache {
     static func write(_ layers: SceneLayers, id: String) {
         let url = file(id)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? (Data(layers.background + layers.data) as NSData).compressed(using: .lzfse).write(to: url)
+        try? (Data(layers.background + layers.data) as NSData).compressed(using: .lzfse).write(to: url, options: .completeFileProtection)
     }
 }
 

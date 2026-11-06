@@ -312,7 +312,7 @@ final class ServerPreferences {
 struct ImmichSettings: View {
     @Environment(Session.self) private var session
     @State private var prefs = ServerPreferences()
-    @AppStorage("proxyHeaders") private var headers = ""
+    @State private var headers = ImmichClient.proxyHeaders
 
     var body: some View {
         let client = session.client
@@ -369,6 +369,7 @@ struct ImmichSettings: View {
         }
         .navigationTitle("Immich")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: headers) { ImmichClient.proxyHeaders = headers }
         .task { await prefs.load(client) }
     }
 }

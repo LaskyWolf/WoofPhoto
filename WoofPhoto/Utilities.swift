@@ -1,4 +1,3 @@
-import LocalAuthentication
 import MapKit
 import SwiftUI
 
@@ -169,7 +168,10 @@ struct HiddenView: View {
         .navigationTitle("Hidden")
         .task { await open() }
         .onDisappear {
-            if stage == .unlocked { Task { try? await session.client?.lockSession() } }
+            guard stage == .unlocked, let client = session.client else { return }
+            // the saved thumbnails go too, or History and other screens could show them without Face ID
+            for asset in timeline.assets { ImageCache.forget(asset.id, client: client) }
+            Task { try? await client.lockSession() }
         }
     }
 
@@ -181,8 +183,10 @@ struct HiddenView: View {
                 stage = .createPIN
                 return
             }
-            if let saved = Keychain.read("hidden.pin"), await faceID() {
+            if let saved = await Keychain.readProtected("hidden.pin", reason: "Open the Hidden album") {
                 try await client.unlockSession(pin: saved)
+                // a PIN saved by an older version moves behind iOS's own Face ID check
+                Keychain.write("hidden.pin", saved, protected: true)
                 stage = .unlocked
             } else {
                 stage = .enterPIN
@@ -199,7 +203,7 @@ struct HiddenView: View {
         do {
             if stage == .createPIN { try await client.setUpPIN(pin) }
             try await client.unlockSession(pin: pin)
-            Keychain.write("hidden.pin", pin)
+            Keychain.write("hidden.pin", pin, protected: true)
             pin = ""
             stage = .unlocked
         } catch ImmichError.http(let code, _) where code == 400 || code == 401 {
@@ -209,10 +213,6 @@ struct HiddenView: View {
         }
     }
 
-    private func faceID() async -> Bool {
-        let context = LAContext()
-        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Open the Hidden album")) ?? false
-    }
 }
 
 /// Groups of photos Immich thinks are the same. Keep the suggested one or pick by tapping.

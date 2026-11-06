@@ -36,14 +36,22 @@ struct ImmichClient {
     }
     #endif
 
+    /// Settings > Immich: "Name: value" lines for a proxy in front of the server. In the Keychain, since they can be secrets.
+    // ponytail: a plain static, read on every request; written only from Settings
+    nonisolated(unsafe) static var proxyHeaders = Keychain.read("proxyHeaders") ?? UserDefaults.standard.string(forKey: "proxyHeaders") ?? "" {
+        didSet {
+            Keychain.write("proxyHeaders", proxyHeaders)
+            UserDefaults.standard.removeObject(forKey: "proxyHeaders")
+        }
+    }
+
     func request(_ path: String, query: [String: String] = [:]) -> URLRequest {
         var components = URLComponents(url: server.appending(path: "api" + path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 30
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        // Settings > Networking: "Name: value" lines for a proxy in front of the server
-        for line in (UserDefaults.standard.string(forKey: "proxyHeaders") ?? "").split(whereSeparator: \.isNewline) {
+        for line in Self.proxyHeaders.split(whereSeparator: \.isNewline) {
             let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
             if parts.count == 2, !parts[0].isEmpty { request.setValue(parts[1], forHTTPHeaderField: parts[0]) }
         }
@@ -80,7 +88,7 @@ struct ImmichClient {
             let (fresh, response) = try await URLSession.shared.data(for: request)
             try Self.check(response, fresh)
             data = fresh
-            try? fresh.write(to: file)
+            try? fresh.write(to: file, options: .completeFileProtection)
         } catch let error as URLError {
             guard let saved = try? Data(contentsOf: file) else { throw error }
             data = saved
@@ -235,6 +243,7 @@ struct ImmichClient {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let file = folder.appending(path: name)
         try FileManager.default.moveItem(at: temp, to: file)
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: file.path)
         return file
     }
 }

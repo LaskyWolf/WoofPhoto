@@ -111,7 +111,7 @@ final class History {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             try? FileManager.default.createDirectory(at: .applicationSupportDirectory, withIntermediateDirectories: true)
-            try? JSONEncoder().encode(entries).write(to: Self.file, options: .atomic)
+            try? JSONEncoder().encode(entries).write(to: Self.file, options: [.atomic, .completeFileProtection])
         }
     }
 

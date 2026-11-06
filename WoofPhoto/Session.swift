@@ -1,5 +1,6 @@
 import WidgetKit
 import Foundation
+import LocalAuthentication
 import Security
 
 /// The signed-in server. The address lives in UserDefaults, the token in the Keychain.
@@ -74,13 +75,32 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ key: String, _ value: String) {
+    /// `protected`: iOS itself asks for Face ID or the passcode before handing the value back.
+    static func write(_ key: String, _ value: String, protected: Bool = false) {
         delete(key)
         var q = query(key)
         q[kSecValueData as String] = Data(value.utf8)
-        // never copied to backups or a new iPhone; still readable by the background backup
-        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        if protected, let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .userPresence, nil) {
+            q[kSecAttrAccessControl as String] = access
+        } else {
+            // never copied to backups or a new iPhone; still readable by the background backup
+            q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        }
         SecItemAdd(q as CFDictionary, nil)
+    }
+
+    /// Reads a protected value; iOS shows Face ID with this reason. Off the main thread, since the read waits for it.
+    static func readProtected(_ key: String, reason: String) async -> String? {
+        await Task.detached {
+            let context = LAContext()
+            context.localizedReason = reason
+            var item: CFTypeRef?
+            var q = query(key)
+            q[kSecReturnData as String] = true
+            q[kSecUseAuthenticationContext as String] = context
+            guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
+            return String(data: data, encoding: .utf8)
+        }.value
     }
 
     static func delete(_ key: String) {

@@ -890,16 +890,19 @@ private struct AmbientBackground: View {
     var body: some View {
         let index = min(max(Int(progress.value.rounded(.down)), 0), max(assets.count - 1, 0))
         let fraction = min(max(progress.value - CGFloat(index), 0), 1)
-        ZStack {
-            Color.black
-            if index < assets.count {
-                layer(assets[index])
-                if index + 1 < assets.count, fraction > 0 {
-                    layer(assets[index + 1]).opacity(fraction)
+        // Color.black sets the size; the filled images overflow it and are cut at its edge.
+        // In a ZStack the overflowing image made the stack itself grow, so .clipped() cut nothing and the blur ran under the bars.
+        Color.black
+            .overlay {
+                if index < assets.count {
+                    layer(assets[index])
+                    if index + 1 < assets.count, fraction > 0 {
+                        layer(assets[index + 1]).opacity(fraction)
+                    }
                 }
             }
-        }
-        .opacity(0.55)
+            .clipped()
+            .opacity(0.55)
     }
 
     @ViewBuilder private func layer(_ asset: AssetRef) -> some View {

@@ -39,9 +39,10 @@ final class SharpBackgrounds {
         defer { progress = nil }
         do {
             // ponytail: a foreground download, so WoofPhoto has to stay open; a background URLSession if that's a bother
-            let (zip, _) = try await URLSession.shared.download(from: Self.url, delegate: DownloadProgress { value in
+            let zip = URL.temporaryDirectory.appending(path: "sharp-backgrounds.zip")
+            try await Download.run(Self.url, to: zip) { value in
                 Task { @MainActor in SharpBackgrounds.shared.progress = value * 0.9 }
-            })
+            }
             defer { try? FileManager.default.removeItem(at: zip) }
             try await Task.detached {
                 try FileManager.default.createDirectory(at: Self.parent, withIntermediateDirectories: true)
@@ -66,10 +67,28 @@ final class SharpBackgrounds {
         isReady = false
     }
 
-    /// Reports how much of the download arrived.
-    private final class DownloadProgress: NSObject, URLSessionDownloadDelegate {
-        let report: @Sendable (Double) -> Void
-        init(_ report: @escaping @Sendable (Double) -> Void) { self.report = report }
+    /// A download task on its own session: the async `download(from:delegate:)` never reports progress,
+    /// so the bar sat at the start for the whole 2 GB.
+    private final class Download: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        private let destination: URL
+        private let report: @Sendable (Double) -> Void
+        private let finished: (Result<Void, Error>) -> Void
+
+        private init(destination: URL, report: @escaping @Sendable (Double) -> Void, finished: @escaping (Result<Void, Error>) -> Void) {
+            self.destination = destination
+            self.report = report
+            self.finished = finished
+        }
+
+        static func run(_ url: URL, to destination: URL, report: @escaping @Sendable (Double) -> Void) async throws {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let delegate = Download(destination: destination, report: report) { continuation.resume(with: $0) }
+                // the session keeps its delegate until it's invalidated, so it lives as long as the download
+                let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+                session.downloadTask(with: url).resume()
+                session.finishTasksAndInvalidate()
+            }
+        }
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                         totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -77,7 +96,24 @@ final class SharpBackgrounds {
             report(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
         }
 
-        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
+        // the file is deleted when this returns, so it moves here
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+            do {
+                if let status = (downloadTask.response as? HTTPURLResponse)?.statusCode, status != 200 {
+                    throw URLError(.badServerResponse)
+                }
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: location, to: destination)
+                finished(.success(()))
+            } catch {
+                finished(.failure(error))
+            }
+        }
+
+        // errors only: a finished download already resumed above
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            if let error { finished(.failure(error)) }
+        }
     }
 }
 

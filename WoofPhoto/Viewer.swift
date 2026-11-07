@@ -60,8 +60,7 @@ struct Viewer: View {
                     .frame(maxHeight: .infinity)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                // Spatial is full screen with only its close button, as in Photos
-                if spatial == nil { bottomBar.transition(.opacity) }
+                bottomBar
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
             .background(.black)
@@ -153,12 +152,11 @@ struct Viewer: View {
         // over the spatial scene too, where it's only the close button
         .overlay(alignment: .top) { if !chromeHidden || spatial != nil { topBar.transition(.opacity) } }
         .overlay {
-            if spatial == nil { BottomCornersCover(radius: 16)
+            BottomCornersCover(radius: 16)
                 .fill(.black, style: FillStyle(eoFill: true))
                 .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false) }
+                .allowsHitTesting(false)
         }
-        .ignoresSafeArea(edges: spatial == nil ? [] : .bottom)
     }
 
     private static let stripHeight: CGFloat = 46

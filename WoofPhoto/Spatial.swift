@@ -684,11 +684,10 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         }
         tilt += (simd_clamp(target, SIMD2(repeating: -1), SIMD2(repeating: 1)) - tilt) * 0.08
 
-        // the photo fills the screen and the frame stays still, as in Photos: no camera turn, each point slides
-        // by its depth instead (near = more), so the subject moves over a background that barely moves.
-        // 5% larger than the screen, so the background's small slide never shows an edge.
-        let viewAspect = Float(view.drawableSize.width / view.drawableSize.height), overscan: Float = 1.05
-        let fx = overscan * max(1, aspect / viewAspect), fy = overscan * max(1, viewAspect / aspect)
+        // the whole photo, the same size as the flat one, and the frame stays still, as in Photos: no camera turn,
+        // each point slides by its depth instead (near = more), so the subject moves over a background that barely moves
+        let viewAspect = Float(view.drawableSize.width / view.drawableSize.height)
+        let fx = min(1, aspect / viewAspect), fy = min(1, viewAspect / aspect)
         // ponytail: 0.4 = how far a full tilt slides the nearest point (0.1 of the screen at strength 0.25)
         let slide = -tilt * 0.4
         // z: nearer is smaller, so the subject wins the depth test over the back layer

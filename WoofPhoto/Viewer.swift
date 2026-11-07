@@ -124,10 +124,11 @@ struct Viewer: View {
         }
         .scrollIndicators(.hidden)
         .scrollDisabled(spatial != nil)
-        // picking another photo in the strip while Spatial is open shows that photo in Spatial; videos close it
+        // picking another photo in the strip while Spatial is open shows that photo in Spatial;
+        // videos and photos only on this iPhone close it, like the button they don't have
         .onChange(of: current) {
             guard spatial != nil else { return }
-            spatial = shownAsset?.isImage == true ? shownAsset : nil
+            spatial = shownAsset?.isImage == true && shownAsset?.localID == nil ? shownAsset : nil
         }
         .environment(\.liveTextInset, 8)
         .environment(\.videoControlsLift, 10)

@@ -231,7 +231,7 @@ struct AIModel: Sendable {
         try autoreleasepool {
             let env = try ORTEnv(loggingLevel: .warning)
             // Core ML runs the model on the Neural Engine and GPU; the CPU is the fallback when Core ML can't load it
-            func session(coreML: Bool) throws -> ORTSession {
+            func makeSession(coreML: Bool) throws -> ORTSession {
                 let options = try ORTSessionOptions()
                 try options.setIntraOpNumThreads(Int32(ProcessInfo.processInfo.activeProcessorCount))
                 if coreML {
@@ -241,7 +241,7 @@ struct AIModel: Sendable {
                 }
                 return try ORTSession(env: env, modelPath: file.path, sessionOptions: options)
             }
-            let session = (try? session(coreML: true)) ?? (try session(coreML: false))
+            let session = try (try? makeSession(coreML: true)) ?? makeSession(coreML: false)
             var feeds: [String: ORTValue] = [:]
             for (name, input) in inputs {
                 let data = input.values.withUnsafeBufferPointer { NSMutableData(bytes: $0.baseAddress, length: $0.count * 4) }

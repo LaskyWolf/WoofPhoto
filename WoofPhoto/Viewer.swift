@@ -124,6 +124,11 @@ struct Viewer: View {
         }
         .scrollIndicators(.hidden)
         .scrollDisabled(spatial != nil)
+        // picking another photo in the strip while Spatial is open shows that photo in Spatial; videos close it
+        .onChange(of: current) {
+            guard spatial != nil else { return }
+            spatial = shownAsset?.isImage == true ? shownAsset : nil
+        }
         .environment(\.liveTextInset, 8)
         .environment(\.videoControlsLift, 10)
         .ignoresSafeArea(edges: .top)
@@ -141,6 +146,8 @@ struct Viewer: View {
             if let spatial {
                 SpatialView(asset: spatial) { withAnimation(.easeOut(duration: 0.2)) { self.spatial = nil } }
                     .environment(session)
+                    // a new photo gets a new scene; without the id SwiftUI kept the old one
+                    .id(spatial.id)
                     .transition(.opacity)
             }
         }

@@ -162,48 +162,30 @@ struct Viewer: View {
             .accessibilityHidden(true)
     }
 
-    /// Photos' top bar: back, the place and time in a capsule, and the More menu; Spatial sits under it on the right.
+    /// Photos' top bar: back, the place and time in a capsule, and the More menu.
     private var topBar: some View {
         let date = detail?.date ?? shownAsset?.date
         let exif = detail?.exifInfo
         let place = exif?.city ?? exif?.country ?? detail?.originalFileName
-        return VStack(alignment: .trailing, spacing: 10) {
-            HStack(spacing: 12) {
-                Button("Back", systemImage: "chevron.left") { OpenPhoto.shared.minimize() }
-                    .accessibilityHint("Keeps the photo in the floating card")
-                Spacer(minLength: 0)
-                VStack(spacing: 0) {
-                    if let place { Text(place).font(.subheadline.weight(.semibold)) }
-                    if let date {
-                        Text(date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()) + "  "
-                             + date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()))
-                            .font(.caption)
-                    }
+        return HStack(spacing: 12) {
+            Button("Back", systemImage: "chevron.left") { OpenPhoto.shared.minimize() }
+                .accessibilityHint("Keeps the photo in the floating card")
+            Spacer(minLength: 0)
+            VStack(spacing: 0) {
+                if let place { Text(place).font(.subheadline.weight(.semibold)) }
+                if let date {
+                    Text(date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()) + "  "
+                         + date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()))
+                        .font(.caption)
                 }
-                .lineLimit(1)
-                .padding(.horizontal, 18)
-                .frame(minHeight: 44)
-                .glassEffect(.regular, in: .capsule)
-                .accessibilityElement(children: .combine)
-                Spacer(minLength: 0)
-                if shownAsset?.localID == nil, timeline.query?.isTrash != true { moreMenu } else { Color.clear.frame(width: 44, height: 44) }
             }
-            if let shownAsset, shownAsset.isImage, timeline.query?.isTrash != true {
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) { spatial = spatial == nil ? shownAsset : nil }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: spatial == nil ? "cube" : "photo")
-                        Image(systemName: "chevron.right").font(.caption2.weight(.bold))
-                    }
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .glassEffect(.regular.interactive(), in: .capsule)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(spatial == nil ? "Spatial Scene" : "Flat Photo")
-            }
+            .lineLimit(1)
+            .padding(.horizontal, 18)
+            .frame(minHeight: 44)
+            .glassEffect(.regular, in: .capsule)
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            if shownAsset?.localID == nil, timeline.query?.isTrash != true { moreMenu } else { Color.clear.frame(width: 44, height: 44) }
         }
         .labelStyle(.iconOnly)
         .buttonBorderShape(.circle)
@@ -243,7 +225,7 @@ struct Viewer: View {
         if let current { strip.scrollTo(id: current, anchor: .center) }
     }
 
-    /// Photos' bottom: the strip, then Share on the left, Favorite and Edit together, and Delete on the right.
+    /// Photos' bottom: the strip, then Share on the left, Spatial, Favorite and Edit together, and Delete on the right.
     private var bottomBar: some View {
         VStack(spacing: 10) {
             if !detailsShown {
@@ -268,7 +250,13 @@ struct Viewer: View {
                         Button("Share", systemImage: "square.and.arrow.up") { Task { await share() } }
                             .disabled(shownAsset?.localID != nil)
                         Spacer()
-                        HStack(spacing: 4) {
+                        HStack(spacing: 0) {
+                            if let shownAsset, shownAsset.isImage, shownAsset.localID == nil {
+                                Button(spatial == nil ? "Spatial Scene" : "Flat Photo", systemImage: spatial == nil ? "cube" : "photo") {
+                                    withAnimation(.easeOut(duration: 0.2)) { spatial = spatial == nil ? shownAsset : nil }
+                                }
+                                .contentTransition(.symbolEffect(.replace))
+                            }
                             if shownAsset?.localID != nil {
                                 Button("Back Up", systemImage: "icloud.and.arrow.up") {
                                     if let client = session.client { Backup.shared.start(with: client) }
@@ -285,12 +273,11 @@ struct Viewer: View {
                             }
                             Button("Edit", systemImage: "slider.horizontal.3") { editing = shownAsset }
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(CapsuleIconStyle())
                         .labelStyle(.iconOnly)
                         .font(.title3)
                         .foregroundStyle(.white)
-                        .frame(height: 50)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 6)
                         .glassEffect(.regular.interactive(), in: .capsule)
                         Spacer()
                         Button("Delete", systemImage: "trash") { confirmsDelete = true }
@@ -1279,4 +1266,15 @@ struct ActivityView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// An icon in the viewer's bottom capsule. The whole 44 × 50 cell takes the tap: with the plain style only the glyph did,
+/// and taps beside it went to the photo underneath.
+private struct CapsuleIconStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(width: 44, height: 50)
+            .contentShape(.rect)
+            .opacity(configuration.isPressed ? 0.5 : 1)
+    }
 }

@@ -230,18 +230,10 @@ struct AIModel: Sendable {
     static func run(_ file: URL, inputs: [String: (values: [Float], shape: [Int])], output: String) throws -> (values: [Float], shape: [Int]) {
         try autoreleasepool {
             let env = try ORTEnv(loggingLevel: .warning)
-            // Core ML runs the model on the Neural Engine and GPU; the CPU is the fallback when Core ML can't load it
-            func makeSession(coreML: Bool) throws -> ORTSession {
-                let options = try ORTSessionOptions()
-                try options.setIntraOpNumThreads(Int32(ProcessInfo.processInfo.activeProcessorCount))
-                if coreML {
-                    let coreMLOptions = ORTCoreMLExecutionProviderOptions()
-                    coreMLOptions.createMLProgram = true
-                    try options.appendCoreMLExecutionProvider(with: coreMLOptions)
-                }
-                return try ORTSession(env: env, modelPath: file.path, sessionOptions: options)
-            }
-            let session = try (try? makeSession(coreML: true)) ?? makeSession(coreML: false)
+            // ponytail: CPU only; onnxruntime 1.20's Core ML recompiles on every run and lacks LaMa's FFT, try again on a newer onnxruntime
+            let options = try ORTSessionOptions()
+            try options.setIntraOpNumThreads(Int32(ProcessInfo.processInfo.activeProcessorCount))
+            let session = try ORTSession(env: env, modelPath: file.path, sessionOptions: options)
             var feeds: [String: ORTValue] = [:]
             for (name, input) in inputs {
                 let data = input.values.withUnsafeBufferPointer { NSMutableData(bytes: $0.baseAddress, length: $0.count * 4) }
@@ -302,13 +294,15 @@ enum Spatial {
         var holeBox: (x0: Int, y0: Int, x1: Int, y1: Int)?
     }
 
-    /// Depth Anything V2, prepared as Transformers.js does: both sides at least 518 and a multiple of 14,
-    /// ImageNet mean and deviation. Returns 0…1 per pixel at the photo's size, 1 = near.
+    /// Depth Anything V2: the short side 518 and both sides a multiple of 14, ImageNet mean and deviation.
+    /// The long side stops at 728: attention memory grows with the square of the 14-pixel patches, and a tall
+    /// screenshot at 518 wide needed several hundred MB more, enough for iOS to close the app.
+    /// Returns 0…1 per pixel at the photo's size, 1 = near.
     static func depth(_ photo: Photo, model: URL) throws -> [Float] {
         let (W, H) = (photo.width, photo.height)
-        let scale = 518 / Float(min(W, H))
-        let w = max(518, Int((Float(W) * scale / 14).rounded()) * 14)
-        let h = max(518, Int((Float(H) * scale / 14).rounded()) * 14)
+        let scale = min(518 / Float(min(W, H)), 728 / Float(max(W, H)))
+        let w = max(14, Int((Float(W) * scale / 14).rounded()) * 14)
+        let h = max(14, Int((Float(H) * scale / 14).rounded()) * 14)
         let small = resize(photo.rgb, W, 3, region: (0, 0, W, H), to: w, h)
         let mean: [Float] = [0.485, 0.456, 0.406], deviation: [Float] = [0.229, 0.224, 0.225]
         var input = [Float](repeating: 0, count: 3 * w * h)
@@ -619,7 +613,8 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
     private var version = -1
     private var aspect: Float = 1
     private let motion = CMMotionManager()
-    private var neutral: (roll: Double, pitch: Double)?
+    /// The iPhone's pose when the scene opened; tilt is measured from it.
+    private var neutral: CMAttitude?
     private var tilt = SIMD2<Float>.zero
     private var scan: Float = 0
     private var build: Float = 0
@@ -707,10 +702,11 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
 
         // the first reading is the neutral pose; ±20° is a full swing
         var target = scene.drag
+        // roll and pitch measured from the floor break down when the iPhone is held upright (gimbal lock),
+        // so take the rotation since the scene opened: it stays small, and small angles are always stable
         if let attitude = motion.deviceMotion?.attitude {
-            let neutral = self.neutral ?? (attitude.roll, attitude.pitch)
-            self.neutral = neutral
-            target += SIMD2(Float(attitude.roll - neutral.roll), Float(attitude.pitch - neutral.pitch)) / (20 * .pi / 180)
+            if let neutral { attitude.multiply(byInverseOf: neutral) } else { neutral = attitude.copy() as? CMAttitude }
+            target += SIMD2(Float(attitude.roll), Float(attitude.pitch)) / (20 * .pi / 180)
         }
         tilt += (simd_clamp(target, SIMD2(repeating: -1), SIMD2(repeating: 1)) - tilt) * 0.08
         // while rebuilding, the camera sways on its own so the 3D shows without touching anything

@@ -72,6 +72,7 @@ struct AlbumTile: View {
     @State private var renaming = false
     @State private var name = ""
     @State private var confirmsDelete = false
+    @State private var sharesLink = false
     @State private var error: String?
 
     var body: some View {
@@ -110,8 +111,10 @@ struct AlbumTile: View {
                 name = album.albumName
                 renaming = true
             }
+            Button("Share Link…", systemImage: "link") { sharesLink = true }
             Button("Delete Album", systemImage: "trash", role: .destructive) { confirmsDelete = true }
         }
+        .sheet(isPresented: $sharesLink) { SharedLinkEditor(albumID: album.id) }
         .alert("Rename Album", isPresented: $renaming) {
             TextField("Title", text: $name)
             Button("Cancel", role: .cancel) {}
@@ -134,7 +137,7 @@ struct AlbumTile: View {
     }
 }
 
-/// One album's photos, with rename, delete and the activity of a shared album.
+/// One album's photos, with rename, delete, sharing and the activity of a shared album.
 struct AlbumView: View {
     let id: String
 
@@ -146,6 +149,8 @@ struct AlbumView: View {
     @State private var renaming = false
     @State private var newName = ""
     @State private var showsActivity = false
+    @State private var sharesLink = false
+    @State private var showsMembers = false
     @State private var confirmsDelete = false
     @State private var playsSlideshow = false
     @State private var slideshow: [AssetRef] = []
@@ -187,6 +192,11 @@ struct AlbumView: View {
                 }
             }
             .sheet(isPresented: $showsActivity) { ActivitySheet(album: id) }
+            .sheet(isPresented: $sharesLink) { SharedLinkEditor(albumID: id) }
+            // the header says Shared Album once someone is added
+            .sheet(isPresented: $showsMembers, onDismiss: { Task { album = try? await session.client?.album(id) } }) {
+                AlbumMembersView(album: id)
+            }
             .messageAlert($error)
             .fullScreenCover(isPresented: $playsSlideshow) { Slideshow(assets: slideshow, start: 0) }
             .task { album = try? await session.client?.album(id) }
@@ -205,6 +215,10 @@ struct AlbumView: View {
                 Button("Rename", systemImage: "pencil") {
                     newName = name
                     renaming = true
+                }
+                Section {
+                    Button("Share Link…", systemImage: "link") { sharesLink = true }
+                    Button("Shared With…", systemImage: "person.2") { showsMembers = true }
                 }
                 if album?.shared == true || album?.isActivityEnabled == true {
                     Button("Activity", systemImage: "bubble.left.and.bubble.right") { showsActivity = true }

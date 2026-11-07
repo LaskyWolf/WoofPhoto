@@ -206,12 +206,14 @@ struct AIModel: Sendable {
     static let depth = AIModel(url: URL(string: "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx")!)
     static let lama = AIModel(url: URL(string: "https://huggingface.co/opencv/inpainting_lama/resolve/main/inpainting_lama_2025jan.onnx")!)
 
+    /// Where the download lives; it exists once the model was downloaded.
+    var file: URL { URL.cachesDirectory.appending(path: "models").appending(path: url.lastPathComponent) }
+
     func download() async throws -> URL {
-        let folder = URL.cachesDirectory.appending(path: "models")
-        let file = folder.appending(path: url.lastPathComponent)
+        let file = file
         if FileManager.default.fileExists(atPath: file.path) { return file }
         let (temp, _) = try await URLSession.shared.download(from: url)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: file)
         try FileManager.default.moveItem(at: temp, to: file)
         return file
@@ -385,21 +387,11 @@ enum Spatial {
     static func inpaint(_ photo: Photo, _ split: Split, model: URL) throws -> SceneLayers {
         guard let box = split.holeBox else { return split.layers }
         let (x0, y0, x1, y1) = box
-        let (W, P, size) = (photo.width, lamaSize * lamaSize, lamaSize)
+        let (W, size) = (photo.width, lamaSize)
         let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1)
         let crop = resize(photo.rgb, W, 3, region: (x0, y0, cw, ch), to: size, size)
         let maskCrop = resize(split.glow, W, 1, region: (x0, y0, cw, ch), to: size, size)
-        var image = [Float](repeating: 0, count: 3 * P), mask = [Float](repeating: 0, count: P)
-        for i in 0..<P {
-            for c in 0..<3 { image[c * P + i] = crop[i * 3 + c] / 255 }
-            mask[i] = maskCrop[i] > 0 ? 1 : 0
-        }
-        let out = try AIModel.run(model, inputs: ["image": (image, [1, 3, size, size]), "mask": (mask, [1, 1, size, size])],
-                                  output: "output").values
-        var painted = [Float](repeating: 0, count: 3 * P)
-        for i in 0..<P {
-            for c in 0..<3 { painted[i * 3 + c] = out[c * P + i] }
-        }
+        let painted = try lama(crop, mask: maskCrop.map { $0 > 0 ? Float(1) : 0 }, model: model)
         let back = resize(painted, size, 3, region: (0, 0, size, size), to: cw, ch)
         // paste LaMa's result back, only inside the hole
         var layers = split.layers
@@ -413,7 +405,24 @@ enum Spatial {
         return layers
     }
 
-    private static func byte(_ value: Float) -> UInt8 { UInt8(min(max(value.rounded(), 0), 255)) }
+    /// LaMa on one `lamaSize` square, shared with Clean Up. `rgb` is 0…255, three per pixel, row by row from the top;
+    /// `mask` is 1 where to repaint. Returns the painted square in the same layout.
+    static func lama(_ rgb: [Float], mask: [Float], model: URL) throws -> [Float] {
+        let (P, size) = (lamaSize * lamaSize, lamaSize)
+        var image = [Float](repeating: 0, count: 3 * P)
+        for i in 0..<P {
+            for c in 0..<3 { image[c * P + i] = rgb[i * 3 + c] / 255 }
+        }
+        let out = try AIModel.run(model, inputs: ["image": (image, [1, 3, size, size]), "mask": (mask, [1, 1, size, size])],
+                                  output: "output").values
+        var painted = [Float](repeating: 0, count: 3 * P)
+        for i in 0..<P {
+            for c in 0..<3 { painted[i * 3 + c] = out[c * P + i] }
+        }
+        return painted
+    }
+
+    static func byte(_ value: Float) -> UInt8 { UInt8(min(max(value.rounded(), 0), 255)) }
 
     private static func clamped(_ value: Int, _ count: Int) -> Int { min(count - 1, max(0, value)) }
 

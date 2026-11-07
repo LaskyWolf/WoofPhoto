@@ -21,10 +21,12 @@ struct LibraryView: View {
                     }
                     .overlay(alignment: .top) {
                         if unreachable {
-                            OfflinePill(checking: checking) { Task { await check() } }
-                                // ponytail: fixed drop below the header; measure TabHeader if its height changes
-                                .padding(.top, 58)
-                                .transition(reduceMotion ? .opacity : .scale(scale: 0.6, anchor: .top).combined(with: .offset(y: -60)).combined(with: .opacity))
+                            OfflinePill(checking: checking, tailscale: ImmichClient.isTailscale(session.client?.server.host() ?? "")) {
+                                Task { await check() }
+                            }
+                            // ponytail: fixed drop below the header; measure TabHeader if its height changes
+                            .padding(.top, 58)
+                            .transition(reduceMotion ? .opacity : .scale(scale: 0.6, anchor: .top).combined(with: .offset(y: -60)).combined(with: .opacity))
                         }
                     }
                     .task(id: scenePhase) { if scenePhase == .active { await check() } }
@@ -59,6 +61,8 @@ struct LibraryView: View {
     private func check() async {
         guard let client = session.client else { return }
         checking = true
+        // the local address first, so the check below asks the address requests will use
+        await ImmichClient.chooseAddress()
         let reachable = await client.isReachable()
         checking = false
         withAnimation(reduceMotion ? .default : .spring(duration: 0.6, bounce: 0.45)) { unreachable = !reachable }
@@ -67,10 +71,15 @@ struct LibraryView: View {
 }
 
 /// Floats under the Library title while the server doesn't answer: a plug that keeps missing its socket, and Retry.
+/// For a server on Tailscale, it says the VPN may be off and opens the Tailscale app.
 private struct OfflinePill: View {
     let checking: Bool
+    let tailscale: Bool
     let onRetry: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openURL) private var openURL
+
+    private var title: String { tailscale ? "Tailscale may be off" : "Immich is unreachable" }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -78,9 +87,14 @@ private struct OfflinePill: View {
                 .frame(width: 22, height: 22)
                 .frame(width: 32, height: 32)
                 .background(Color(red: 0.89, green: 0.29, blue: 0.29), in: .circle)
-            Text("Immich is unreachable")
+            Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color(red: 0.99, green: 0.92, blue: 0.92))
+            if tailscale {
+                Button(action: openTailscale) { pillLabel("Open") }
+                    .buttonStyle(ZoomPressStyle())
+                    .accessibilityLabel("Open Tailscale")
+            }
             Button(action: onRetry) {
                 ZStack {
                     Text("Retry").opacity(checking ? 0 : 1)
@@ -99,8 +113,26 @@ private struct OfflinePill: View {
         .padding(6)
         .glassEffect(.regular.tint(Color(red: 0.47, green: 0.12, blue: 0.12).opacity(0.85)), in: .capsule)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Immich is unreachable")
+        .accessibilityLabel(title)
         .accessibilityAction(named: "Retry", onRetry)
+        .accessibilityActions { if tailscale { Button("Open Tailscale", action: openTailscale) } }
+    }
+
+    /// Same look as Retry.
+    private func pillLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(Color(red: 0.31, green: 0.07, blue: 0.07))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(Color(red: 0.97, green: 0.76, blue: 0.76), in: .capsule)
+            .contentShape(Rectangle().inset(by: -8))
+    }
+
+    /// The app if it's installed, else its App Store page. No canOpenURL, so no URL scheme to declare.
+    private func openTailscale() {
+        guard let app = URL(string: "tailscale://"), let store = URL(string: "https://apps.apple.com/app/tailscale/id1470499037") else { return }
+        openURL(app) { opened in if !opened { openURL(store) } }
     }
 }
 

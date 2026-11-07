@@ -13,6 +13,9 @@ final class AssetActions {
     var sharing: SharedFiles?
     var addsToAlbum = false
     var confirmsDelete = false
+    var makesCollage = false
+    var sharesLink = false
+    var picksTags = false
     /// Runs after an action succeeded, like leaving Select mode.
     var done: () -> Void = {}
 
@@ -102,6 +105,11 @@ struct AssetMenuItems: View {
                     Button("Unfavorite", systemImage: "heart.slash") { act { actions.setFavorite(false, client) } }
                 }
                 Button("Save to iPhone", systemImage: "square.and.arrow.down") { act { Task { await actions.save(client) } } }
+                Button("Share Link…", systemImage: "link") { act { actions.sharesLink = true } }
+                Button("Tag…", systemImage: "tag") { act { actions.picksTags = true } }
+                if (2...9).contains(ids.count) {
+                    Button("Make Collage", systemImage: "rectangle.3.group") { act { actions.makesCollage = true } }
+                }
                 if let album = timeline?.query?.albumID {
                     Button("Remove from Album", systemImage: "minus.circle") { act { actions.run(client, removes: true) { try await $0.removeFromAlbum(album, assets: self.ids) } } }
                 }
@@ -148,10 +156,22 @@ private struct AssetActionsHost: ViewModifier {
             .disabled(actions.busy)
             .overlay { if actions.busy { ProgressView() } }
             .sheet(item: $actions.sharing) { ActivityView(items: $0.urls).ignoresSafeArea() }
+            .sheet(isPresented: $actions.picksTags) { TagPicker(assetIDs: actions.ids) }
+            .sheet(isPresented: $actions.sharesLink) { SharedLinkEditor(assets: actions.ids) { actions.done() } }
             .sheet(isPresented: $actions.addsToAlbum) {
                 AlbumPicker(assets: actions.ids) { name in
                     actions.message = "Added to \(name)."
                     actions.done()
+                }
+            }
+            .sheet(isPresented: $actions.makesCollage) {
+                CollageEditor(ids: actions.ids) { message in
+                    actions.message = message
+                    actions.done()
+                    // the collage is dated now, so it shows at the top of the library
+                    if let client = session.client, let timeline = actions.timeline {
+                        Task { try? await timeline.reload(with: client) }
+                    }
                 }
             }
             .confirmationDialog(actions.isTrash ? "These items will be deleted for good. This can't be undone." : "These items move to Recently Deleted.",

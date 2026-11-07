@@ -133,6 +133,8 @@ struct TripsView: View {
         var title: String
         var start: Date
         var assets: [AssetRef]
+        /// Every place in the trip, the one with most photos first.
+        var places: [String] = []
         var id: String { assets.first?.id ?? title }
     }
 
@@ -222,8 +224,8 @@ struct TripsView: View {
             // a trip needs at least 10 photos; its title is the place that appears most
             if current.count >= 10, let start = current.first?.ref.date {
                 let names = current.compactMap { $0.city ?? $0.country }
-                let title = Dictionary(names.map { ($0, 1) }, uniquingKeysWith: +).max { $0.value < $1.value }?.key ?? "Trip"
-                trips.append(Trip(title: title, start: start, assets: current.map(\.ref)))
+                let places = Dictionary(names.map { ($0, 1) }, uniquingKeysWith: +).sorted { $0.value > $1.value }.map(\.key)
+                trips.append(Trip(title: places.first ?? "Trip", start: start, assets: current.map(\.ref), places: places))
             }
             current = []
         }
@@ -242,10 +244,13 @@ struct TripsView: View {
 struct TripCard: View {
     let trip: TripsView.Trip
     var width: CGFloat?
+    /// Apple Intelligence's name for the trip, like Photos' memories; the main place until it's ready.
+    @State private var title: String?
 
     var body: some View {
+        let title = title ?? trip.title
         NavigationLink {
-            FixedGridScreen(title: trip.title, assets: trip.assets)
+            FixedGridScreen(title: title, assets: trip.assets)
         } label: {
             Color.clear
                 .aspectRatio(16 / 10, contentMode: .fit)
@@ -254,7 +259,7 @@ struct TripCard: View {
                 .overlay(alignment: .bottomLeading) {
                     VStack(alignment: .leading, spacing: 0) {
                         Text("\(trip.start.formatted(.dateTime.month(.wide).year())) · \(trip.assets.count) items").font(.caption)
-                        Text(trip.title).font(.title3.bold()).lineLimit(1)
+                        Text(title).font(.title3.bold()).lineLimit(1).contentTransition(.opacity)
                     }
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -264,6 +269,11 @@ struct TripCard: View {
                 .clipShape(.rect(cornerRadius: Tokens.cardRadius))
         }
         .buttonStyle(ZoomPressStyle(scale: 0.97))
+        .task {
+            let generated = await Intelligence.title(key: "trip:\(trip.id)", kind: "trip away from home", places: trip.places,
+                                                     start: trip.start, end: trip.assets.last?.date)
+            withAnimation { self.title = generated }
+        }
     }
 }
 

@@ -7,6 +7,7 @@ enum Shelf: Hashable, Codable {
     case videos, livePhotos, selfies, portraits, panoramas, screenshots, raw
     case receipts, handwriting, illustrations, qrCodes
     case recentlyDeleted, hidden, duplicates, archive
+    case tags, folders
     case album(id: String, name: String)
     case person(id: String, name: String)
     case partner(id: String, name: String)
@@ -35,6 +36,8 @@ enum Shelf: Hashable, Codable {
         case .hidden: "Hidden"
         case .duplicates: "Duplicates"
         case .archive: "Archive"
+        case .tags: "Tags"
+        case .folders: "Folders"
         case let .album(_, name), let .person(_, name), let .partner(_, name): name.isEmpty ? "Unnamed" : name
         }
     }
@@ -59,6 +62,8 @@ enum Shelf: Hashable, Codable {
         case .hidden: "eye.slash"
         case .duplicates: "square.on.square"
         case .archive: "archivebox"
+        case .tags: "tag"
+        case .folders: "folder"
         case .album: "rectangle.stack"
         case .person: "person.crop.circle"
         case .partner: "person.2"
@@ -90,6 +95,8 @@ enum Shelf: Hashable, Codable {
         case .hidden: HiddenView()
         case .duplicates: DuplicatesView()
         case .archive: TimelineScreen(title: title, query: .archive)
+        case .tags: TagsView()
+        case .folders: FoldersView()
         case let .album(id, name): AlbumView(id: id, name: name)
         case let .person(id, name): PersonView(id: id, name: name)
         case let .partner(id, name): TimelineScreen(title: name, query: .partner(id))
@@ -125,6 +132,8 @@ struct CollectionsView: View {
     @State private var favoriteCovers: [String] = []
     @State private var favoriteCount: Int?
     @State private var duplicates: [DuplicateGroup] = []
+    /// Settings > Immich turns Tags and Folders on and off.
+    @State private var prefs = ServerPreferences()
 
     var body: some View {
         NavigationStack {
@@ -302,7 +311,7 @@ struct CollectionsView: View {
         case .mediaTypes:
             ShelfList(shelves: [.recentlySaved] + Shelf.mediaTypes)
         case .utilities:
-            ShelfGrid(shelves: Shelf.utilities)
+            ShelfGrid(shelves: Shelf.utilities + [Shelf.tags, .folders].filter { prefs.value($0 == .tags ? "tags" : "folders", "enabled", default: false) })
         }
     }
 
@@ -353,6 +362,7 @@ struct CollectionsView: View {
             favoriteCovers = ((try? await client.firstAssets(["isFavorite": true], count: 2)) ?? []).map(\.id)
             favoriteCount = try? await client.favoriteCount()
             duplicates = (try? await client.duplicates()) ?? []
+            await prefs.load(client)
         } catch ImmichError.http(401, _) {
             session.signOut()
         } catch {
@@ -448,6 +458,8 @@ struct ShelfGrid: View {
 
 struct MemoryTile: View {
     let memory: Memory
+    /// Apple Intelligence's title; "3 Years Ago" until it's ready.
+    @State private var title: String?
 
     var body: some View {
         NavigationLink {
@@ -457,7 +469,7 @@ struct MemoryTile: View {
                 .aspectRatio(1, contentMode: .fit)
                 .overlay { Thumbnail(asset: memory.assets.first?.ref, size: "preview") }
                 .overlay(alignment: .bottomLeading) {
-                    Text(memory.title)
+                    Text(title ?? memory.title)
                         .font(.caption.bold())
                         .foregroundStyle(.white)
                         .lineLimit(2)
@@ -469,7 +481,14 @@ struct MemoryTile: View {
                 .clipShape(.rect(cornerRadius: Tokens.tileRadius))
         }
         .buttonStyle(ZoomPressStyle())
-        .accessibilityLabel(memory.title)
+        .accessibilityLabel(title ?? memory.title)
+        .task(id: memory.id) {
+            let places = memory.assets.compactMap { $0.exifInfo?.city ?? $0.exifInfo?.country }
+            let ranked = Dictionary(places.map { ($0, 1) }, uniquingKeysWith: +).sorted { $0.value > $1.value }.map(\.key)
+            let dates = memory.assets.compactMap(\.date)
+            title = await Intelligence.title(key: "memory:\(memory.id)", kind: "memory, \(memory.title)", places: ranked,
+                                             start: dates.min(), end: dates.max())
+        }
     }
 }
 

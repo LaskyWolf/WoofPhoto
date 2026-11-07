@@ -26,12 +26,13 @@ jobs:
             build
 
       # An unsigned build carries no entitlements. An ad-hoc signature stores the App Group
-      # in the binaries, so the signing tool can see that the app and the widget ask for it.
+      # in the binaries, so the signing tool can see that the app and its extensions ask for it.
       - name: Add entitlements
         run: |
           APP=build/Build/Products/Release-iphoneos/WoofPhoto.app
           for f in "$APP"/Frameworks/*; do [ -e "$f" ] && codesign --force --sign - "$f"; done
           codesign --force --sign - --entitlements WoofPhotoWidget/WoofPhotoWidget.entitlements "$APP/PlugIns/WoofPhotoWidget.appex"
+          codesign --force --sign - --entitlements ShareExtension/WoofPhotoShare.entitlements "$APP/PlugIns/WoofPhotoShare.appex"
           codesign --force --sign - --entitlements WoofPhoto/WoofPhoto.entitlements "$APP"
           codesign -d --entitlements - "$APP"
 

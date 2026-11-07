@@ -1,93 +1,16 @@
 import AVFoundation
 import CryptoKit
 import Foundation
-import os
 
-/// The few Immich endpoints the app uses. Every field the server might drop is optional,
-/// so a newer server version shows less data instead of failing to decode.
-struct ImmichClient {
-    let server: URL
-    var token: String?
-
-    /// Accepts "photos.example.com", "192.168.1.5:2283" or any URL copied from the web app,
-    /// such as ".../auth/login": Immich always serves its API from the root, so the path is dropped.
-    /// Without a scheme, an address with a port is Immich's own HTTP port; one without is a proxy on HTTPS.
-    static func serverURL(from text: String) -> URL? {
-        var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.contains("://") {
-            let hasPort = text.split(separator: "/").first?.contains(":") == true
-            text = (hasPort ? "http://" : "https://") + text
-        }
-        guard var components = URLComponents(string: text),
-              ["http", "https"].contains(components.scheme?.lowercased()),
-              let host = components.host, !host.isEmpty else { return nil }
-        components.path = ""
-        components.query = nil
-        components.fragment = nil
-        return components.url
-    }
-
-    #if DEBUG
-    static func selfCheck() {
-        assert(serverURL(from: "http://server.ts.net:2283/auth/login?continue=%2F")?.absoluteString == "http://server.ts.net:2283")
-        assert(serverURL(from: " https://photos.example.com/api/ ")?.absoluteString == "https://photos.example.com")
-        assert(serverURL(from: "photos.example.com")?.absoluteString == "https://photos.example.com")
-        assert(serverURL(from: "192.168.1.5:2283")?.absoluteString == "http://192.168.1.5:2283")
-        assert(serverURL(from: "not a url") == nil)
-    }
-    #endif
-
-    /// Settings > Immich: "Name: value" lines for a proxy in front of the server. In the Keychain, since they can be secrets.
-    /// Read by every request on any thread and written by Settings, so a lock guards it.
-    static var proxyHeaders: String {
-        get { headers.withLock { $0 } }
-        set {
-            headers.withLock { $0 = newValue }
-            Keychain.write("proxyHeaders", newValue)
-            UserDefaults.standard.removeObject(forKey: "proxyHeaders")
-        }
-    }
-    private static let headers = OSAllocatedUnfairLock(
-        initialState: Keychain.read("proxyHeaders") ?? UserDefaults.standard.string(forKey: "proxyHeaders") ?? "")
-
-    func request(_ path: String, query: [String: String] = [:]) -> URLRequest {
-        var components = URLComponents(url: server.appending(path: "api" + path), resolvingAgainstBaseURL: false)!
-        if !query.isEmpty { components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
-        var request = URLRequest(url: components.url!)
-        request.timeoutInterval = 30
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        for line in Self.proxyHeaders.split(whereSeparator: \.isNewline) {
-            let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            if parts.count == 2, !parts[0].isEmpty { request.setValue(parts[1], forHTTPHeaderField: parts[0]) }
-        }
-        return request
-    }
-
+/// The app's endpoints. The struct, the request and the upload are in Shared/ImmichCore.swift, shared with the share extension.
+extension ImmichClient {
     func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
         try await send(request(path, query: query))
     }
 
-    /// Any method with an optional JSON body. Returns the raw response for callers that ignore it.
-    @discardableResult
-    func call(_ method: String, _ path: String, query: [String: String] = [:], body: [String: Any]? = nil) async throws -> Data {
-        var request = request(path, query: query)
-        request.httpMethod = method
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try Self.check(response, data)
-        return data
-    }
-
-    func fetch<T: Decodable>(_ method: String, _ path: String, query: [String: String] = [:], body: [String: Any]? = nil) async throws -> T {
-        try JSONDecoder().decode(T.self, from: await call(method, path, query: query, body: body))
-    }
-
     /// Saves every answer; without a connection, returns the last saved one so the library still opens offline.
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let file = Self.offlineFile(request)
+        let file = offlineFile(request)
         let data: Data
         do {
             let (fresh, response) = try await URLSession.shared.data(for: request)
@@ -103,16 +26,12 @@ struct ImmichClient {
 
     static let offlineFolder = URL.cachesDirectory.appending(path: "api")
 
-    private static func offlineFile(_ request: URLRequest) -> URL {
-        try? FileManager.default.createDirectory(at: offlineFolder, withIntermediateDirectories: true)
-        let name = SHA256.hash(data: Data(request.url!.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
-        return offlineFolder.appending(path: name + ".json")
-    }
-
-    static func check(_ response: URLResponse, _ data: Data) throws {
-        guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return }
-        let message = (try? JSONDecoder().decode(ServerError.self, from: data))?.message
-        throw ImmichError.http(http.statusCode, message)
+    /// Named after the main address even when the local one answered, so either finds the same saved copy.
+    private func offlineFile(_ request: URLRequest) -> URL {
+        try? FileManager.default.createDirectory(at: Self.offlineFolder, withIntermediateDirectories: true)
+        let key = request.url!.absoluteString.replacingOccurrences(of: address.absoluteString, with: server.absoluteString)
+        let name = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return Self.offlineFolder.appending(path: name + ".json")
     }
 
     // MARK: Endpoints
@@ -213,39 +132,6 @@ struct ImmichClient {
         return AVURLAsset(url: request.url!, options: ["AVURLAssetHTTPHeaderFieldsKey": request.allHTTPHeaderFields ?? [:]])
     }
 
-    /// Uploads a file as a new asset and returns its id. The form is written to disk first and streamed,
-    /// so a large video doesn't fill memory. `fields` needs at least fileCreatedAt and fileModifiedAt.
-    func upload(_ file: URL, fields: [String: String], cellular: Bool = true) async throws -> String {
-        let boundary = "WoofPhoto-\(UUID().uuidString)"
-        let body = FileManager.default.temporaryDirectory.appending(path: "upload-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: body) }
-        FileManager.default.createFile(atPath: body.path, contents: nil)
-        let out = try FileHandle(forWritingTo: body)
-        let all = [
-            "deviceAssetId": "woofphoto-\(UUID().uuidString)",
-            "deviceId": "WoofPhoto",
-            "filename": file.lastPathComponent,
-        ].merging(fields) { $1 }
-        for (name, value) in all {
-            try out.write(contentsOf: Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
-        }
-        try out.write(contentsOf: Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"assetData\"; filename=\"\(file.lastPathComponent)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8))
-        let input = try FileHandle(forReadingFrom: file)
-        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { try out.write(contentsOf: chunk) }
-        try input.close()
-        try out.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
-        try out.close()
-
-        var request = request("/assets")
-        request.httpMethod = "POST"
-        request.timeoutInterval = 300
-        request.allowsCellularAccess = cellular
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: body)
-        try Self.check(response, data)
-        return try JSONDecoder().decode(Uploaded.self, from: data).id
-    }
-
     /// Downloads the original file once and keeps the server's file name, so its extension says what it is.
     func downloadOriginal(_ id: String) async throws -> URL {
         let folder = FileManager.default.temporaryDirectory.appending(path: "originals/\(id)")
@@ -311,7 +197,6 @@ struct BucketAssets: Decodable {
 }
 
 private struct Pong: Decodable { var res: String }
-private struct Uploaded: Decodable { var id: String }
 private struct LoginResponse: Decodable { var accessToken: String }
 private struct SSOStart: Decodable { var url: String }
 
@@ -319,42 +204,5 @@ private extension Data {
     var base64URL: String {
         base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-    }
-}
-private struct ServerError: Decodable { var message: String? }
-
-enum ImmichError: LocalizedError {
-    case http(Int, String?)
-
-    var errorDescription: String? {
-        switch self {
-        case .http(401, _): "Wrong email or password, or the session expired."
-        case .http(404, _): "No Immich server at this address. Check the URL and the port."
-        case let .http(code, message): "The server answered \(code)\(message.map { ": \($0)" } ?? ".")"
-        }
-    }
-}
-
-extension Error {
-    /// A message that says what went wrong and what to try, for the errors a home server usually causes.
-    var explanation: String {
-        if self is DecodingError {
-            return "The server answered with data WoofPhoto can't read. When signing in, enter only the address, for example http://192.168.1.5:2283."
-        }
-        guard let error = self as? URLError else { return localizedDescription }
-        switch error.code {
-        case .appTransportSecurityRequiresSecureConnection:
-            return "iOS blocked the plain HTTP connection. Update WoofPhoto: this build is missing the HTTP permission."
-        case .cannotFindHost, .dnsLookupFailed:
-            return "The server name was not found. Check the spelling, or use the IP address."
-        case .cannotConnectToHost:
-            return "Nothing answers at this address. Check the port (Immich uses 2283) and that the server is running."
-        case .timedOut, .notConnectedToInternet, .networkConnectionLost:
-            return "The server didn't answer in time. If you reach it through a VPN such as Tailscale, check that the VPN is on."
-        case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed:
-            return "The server's HTTPS certificate is not trusted. Try its http:// address on the local network."
-        default:
-            return error.localizedDescription
-        }
     }
 }

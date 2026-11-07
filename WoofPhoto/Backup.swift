@@ -97,12 +97,16 @@ final class Backup {
 
     private func run(_ client: ImmichClient) async {
         guard await authorize() else {
-            state = .failed("WoofPhoto can't see your photos. Allow access in Settings > Privacy & Security > Photos.")
+            let reason = "WoofPhoto can't see your photos. Allow access in Settings > Privacy & Security > Photos."
+            state = .failed(reason)
+            await Gotify.backupEnded(uploaded: 0, errors: [], failure: reason)
             return
         }
         state = .scanning
         errors = []
+        await ImmichClient.chooseAddress()
         refreshPending()
+        var sent = 0
         let total = pending.count
         UIDevice.current.isBatteryMonitoringEnabled = true
         for (done, asset) in pending.reversed().enumerated() {
@@ -114,7 +118,7 @@ final class Backup {
             state = .uploading(done: done, total: total)
             current = asset.localIdentifier
             do {
-                try await upload(asset, client: client)
+                if try await upload(asset, client: client) { sent += 1 }
             } catch let error as URLError where error.code == .notConnectedToInternet || error.code == .dataNotAllowed {
                 state = .waiting(wifiOnly ? "Waiting for Wi-Fi." : "Waiting for a connection.")
                 return
@@ -125,11 +129,13 @@ final class Backup {
         current = nil
         refreshPending()
         state = Task.isCancelled ? .idle : .finished
+        if !Task.isCancelled { await Gotify.backupEnded(uploaded: sent, errors: errors) }
     }
 
-    private func upload(_ asset: PHAsset, client: ImmichClient) async throws {
+    /// False when there was nothing to send: the file isn't readable, or the server already has it.
+    private func upload(_ asset: PHAsset, client: ImmichClient) async throws -> Bool {
         let resources = PHAssetResource.assetResources(for: asset)
-        guard let main = resources.first(where: { [.photo, .video].contains($0.type) }) ?? resources.first else { return }
+        guard let main = resources.first(where: { [.photo, .video].contains($0.type) }) ?? resources.first else { return false }
         let folder = FileManager.default.temporaryDirectory.appending(path: "backup/\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -140,7 +146,7 @@ final class Backup {
                                                         body: ["assets": [["id": asset.localIdentifier, "checksum": checksum]]])
         if let result = check.results.first, result.action == "reject" {
             remember(asset, server: result.assetId ?? "")
-            return
+            return false
         }
         var videoID: String?
         if let paired = resources.first(where: { $0.type == .pairedVideo }) {
@@ -149,6 +155,7 @@ final class Backup {
         }
         let id = try await send(file, of: asset, client: client, extra: videoID.map { ["livePhotoVideoId": $0] } ?? [:])
         remember(asset, server: id)
+        return true
     }
 
     private func remember(_ asset: PHAsset, server id: String) {
@@ -236,6 +243,9 @@ struct BackupView: View {
     @State private var backup = Backup.shared
     @State private var albums: [PHAssetCollection] = []
     @State private var message: String?
+    @State private var gotifyServer = Gotify.server
+    @State private var gotifyToken = Gotify.token
+    @State private var testing = false
 
     var body: some View {
         @Bindable var backup = backup
@@ -298,6 +308,22 @@ struct BackupView: View {
             } footer: {
                 Text("Deletes from this iPhone the \(backup.backedUpOnDevice().count.formatted()) items your server already has. iOS asks before deleting.")
             }
+            Section {
+                TextField("Server", text: $gotifyServer, prompt: Text("https://gotify.example.com"))
+                    .textContentType(.URL)
+                    .keyboardType(.URL)
+                SecureField("App Token", text: $gotifyToken)
+                Button("Send Test") { Task { await sendTest() } }
+                    .disabled(testing || gotifyServer.isEmpty || gotifyToken.isEmpty)
+            } header: {
+                Text("Gotify")
+            } footer: {
+                Text("Sends a message to your Gotify server when a backup uploads something or fails. Create an app in Gotify and paste its token.")
+            }
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .onChange(of: gotifyServer) { Gotify.server = gotifyServer }
+            .onChange(of: gotifyToken) { Gotify.token = gotifyToken }
             if !backup.errors.isEmpty {
                 Section("Errors") {
                     ForEach(backup.errors, id: \.self) { Text($0).font(.footnote) }
@@ -317,6 +343,17 @@ struct BackupView: View {
                 }
             }
             albums = list
+        }
+    }
+
+    private func sendTest() async {
+        testing = true
+        defer { testing = false }
+        do {
+            try await Gotify.send(title: "WoofPhoto", message: "Backup messages will arrive here.")
+            message = "Test message sent."
+        } catch {
+            message = error.explanation
         }
     }
 }

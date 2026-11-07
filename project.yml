@@ -26,6 +26,7 @@ targets:
       - package: onnxruntime
         product: onnxruntime
       - target: WoofPhotoWidget
+      - target: WoofPhotoShare
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.woofphoto
@@ -87,3 +88,35 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  # "Upload to Immich" in the share sheet. Reads the server, token and proxy headers through the App Group.
+  WoofPhotoShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.woofphoto.share
+    entitlements:
+      path: ShareExtension/WoofPhotoShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.laskywolf.woofphoto
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Upload to Immich
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # plain HTTP and the local network, as in the app
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSLocalNetworkUsageDescription: WoofPhoto connects to your Immich server on the local network.
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 50
+              NSExtensionActivationSupportsMovieWithMaxCount: 50

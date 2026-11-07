@@ -34,6 +34,9 @@ struct Viewer: View {
     @State private var busy = false
     @State private var message: String?
     @State private var addsToAlbum = false
+    @State private var editsFaces = false
+    @State private var sharesLink = false
+    @State private var picksTags = false
     @State private var playsSlideshow = false
     @State private var spatial: AssetRef?
     @State private var editing: AssetRef?
@@ -85,6 +88,11 @@ struct Viewer: View {
             .sheet(isPresented: $addsToAlbum) {
                 AlbumPicker(assets: [shownID].compactMap { $0 }) { message = "Added to \($0)." }
             }
+            .sheet(isPresented: $editsFaces) {
+                if let shownID { FacesView(assetID: shownID) }
+            }
+            .sheet(isPresented: $sharesLink) { SharedLinkEditor(assets: [shownID].compactMap { $0 }) }
+            .sheet(isPresented: $picksTags) { if let id = shownID { TagPicker(assetIDs: [id]) } }
             .messageAlert($message)
         }
         .preferredColorScheme(.dark)
@@ -305,7 +313,12 @@ struct Viewer: View {
             Button("Copy", systemImage: "doc.on.doc") { Task { await copy() } }
             Button("Save to iPhone", systemImage: "square.and.arrow.down") { Task { await save() } }
             Button("Add to Album…", systemImage: "rectangle.stack.badge.plus") { addsToAlbum = true }
+            Button("Share Link…", systemImage: "link") { sharesLink = true }
+            Button("Tag…", systemImage: "tag") { picksTags = true }
             Button("Slideshow", systemImage: "play.rectangle") { playsSlideshow = true }
+            if shownAsset?.isImage == true {
+                Button("Faces…", systemImage: "person.crop.square") { editsFaces = true }
+            }
             if let album = timeline.query?.albumID {
                 Section {
                     Button("Make Key Photo", systemImage: "photo") {
@@ -1057,6 +1070,9 @@ struct InfoSheet: View {
     @State private var asset: Asset?
     @State private var caption = ""
     @State private var error: String?
+    @State private var suggesting = false
+    @State private var note: String?
+    @State private var editsFaces = false
 
     var body: some View {
         ScrollView {
@@ -1072,20 +1088,35 @@ struct InfoSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    TextField("Add a Caption", text: $caption, axis: .vertical)
-                        .onSubmit { Task { await saveCaption() } }
-                        .card()
+                    HStack(alignment: .firstTextBaseline) {
+                        TextField("Add a Caption", text: $caption, axis: .vertical)
+                            .onSubmit { Task { await saveCaption() } }
+                        if caption.isEmpty, Intelligence.isAvailable {
+                            Button("Suggest a Caption", systemImage: "apple.intelligence") { Task { await suggestCaption(asset) } }
+                                .labelStyle(.iconOnly)
+                                .symbolEffect(.pulse, isActive: suggesting)
+                                .disabled(suggesting)
+                        }
+                    }
+                    .card()
                     if let exif = asset.exifInfo, let latitude = exif.latitude, let longitude = exif.longitude {
                         place(exif, CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
                     }
                     if let exif = asset.exifInfo { camera(exif) }
-                    if let people = asset.people, !people.isEmpty {
+                    AssetTagsCard(assetID: id)
+                    // always shown, so a face the server missed can be added from here
+                    Button { editsFaces = true } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             Label("People", systemImage: "person.2").font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
-                            Text(people.map { $0.name.isEmpty ? "Unnamed" : $0.name }.joined(separator: ", "))
+                            let people = asset.people ?? []
+                            Text(people.isEmpty ? "Add a face" : people.map { $0.name.isEmpty ? "Unnamed" : $0.name }.joined(separator: ", "))
+                                .foregroundStyle(people.isEmpty ? .secondary : .primary)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .card()
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Edit faces")
                 } else if let error {
                     Text(error).foregroundStyle(.secondary)
                 } else {
@@ -1095,8 +1126,8 @@ struct InfoSheet: View {
             .padding(Tokens.screenPadding)
             .padding(.top, 8)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .messageAlert($note)
+        .sheet(isPresented: $editsFaces) { FacesView(assetID: id) }
         .onDisappear { Task { await saveCaption() } }
         .task {
             do {
@@ -1147,6 +1178,20 @@ struct InfoSheet: View {
         }
         .background(Tokens.cardColor)
         .clipShape(.rect(cornerRadius: Tokens.cardRadius))
+    }
+
+    /// Apple Intelligence writes a caption from what's in the photo; it's saved like a typed one, on submit or close.
+    private func suggestCaption(_ asset: Asset) async {
+        suggesting = true
+        defer { suggesting = false }
+        guard let image = await Still.load(asset.id, size: "preview", client: session.client) else { return }
+        let place = [asset.exifInfo?.city, asset.exifInfo?.country].compactMap { $0 }.joined(separator: ", ")
+        let people = asset.people?.map(\.name).filter { !$0.isEmpty } ?? []
+        if let text = await Intelligence.caption(for: image, place: place.isEmpty ? nil : place, date: asset.date, people: people) {
+            caption = text
+        } else {
+            note = "Apple Intelligence couldn't write a caption for this photo."
+        }
     }
 
     private func saveCaption() async {

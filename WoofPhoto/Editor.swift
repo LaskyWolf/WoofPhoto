@@ -5,13 +5,13 @@ import ImageIO
 import Photos
 import SwiftUI
 
-/// The editor for photos and videos: Trim (videos), Adjust, Filters, Crop, and Live for Live Photos.
+/// The editor for photos and videos: Trim (videos), Adjust, Filters, Crop, Clean Up and Markup (photos), and Live for Live Photos.
 /// On the server, crop, rotate and mirror alone on a photo are saved as Immich edits, which the server can undo;
 /// anything else uploads as a new item stacked on top of the original, which stays in the stack.
 /// On this iPhone the edit is saved into the Photos library, which keeps the original and can revert.
 struct EditorView: View {
     enum Tool: String {
-        case trim = "Trim", adjust = "Adjust", filters = "Filters", crop = "Crop", live = "Live"
+        case trim = "Trim", adjust = "Adjust", filters = "Filters", crop = "Crop", cleanUp = "Clean Up", markup = "Markup", live = "Live"
     }
 
     let asset: AssetRef
@@ -38,22 +38,33 @@ struct EditorView: View {
     @State private var trim = 0.0...1.0
     @State private var framePosition = 0.0
     @State private var muted = false
+    /// Clean Up's brush width in points.
+    @State private var brush: CGFloat = 40
+    /// The photo's pixels before each Clean Up stroke or Markup, for Undo.
+    @State private var undo: [CIImage?] = []
+    @State private var markingUp = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                ZStack {
-                    if let preview {
-                        Image(uiImage: preview).resizable().scaledToFit()
-                    } else {
-                        ProgressView()
+                if tool == .cleanUp, let source {
+                    // the photo without the other edits, so a stroke lands on the pixels it covers
+                    CleanUpCanvas(image: edit.base(source), brush: brush) { retouch($0) }
+                        .frame(maxHeight: .infinity)
+                } else {
+                    ZStack {
+                        if let preview {
+                            Image(uiImage: preview).resizable().scaledToFit()
+                        } else {
+                            ProgressView()
+                        }
                     }
-                }
-                .frame(maxHeight: .infinity)
-                .onLongPressGesture(minimumDuration: 0.1, maximumDistance: 50) {
-                } onPressingChanged: { pressing in
-                    // touch and hold shows the original, as in Photos
-                    Task { await render(original: pressing) }
+                    .frame(maxHeight: .infinity)
+                    .onLongPressGesture(minimumDuration: 0.1, maximumDistance: 50) {
+                    } onPressingChanged: { pressing in
+                        // touch and hold shows the original, as in Photos
+                        Task { await render(original: pressing) }
+                    }
                 }
                 controls
                 Picker("Tool", selection: $tool) {
@@ -81,6 +92,10 @@ struct EditorView: View {
                 }
             }
             .messageAlert($error)
+            .fullScreenCover(isPresented: $markingUp) {
+                if let source { MarkupView(image: edit.base(source)) { retouch($0) } }
+            }
+            .onChange(of: tool) { if tool == .markup { markingUp = true } }
         }
         .task { await load() }
         .task(id: edit) { await render(original: false) }
@@ -91,7 +106,8 @@ struct EditorView: View {
 
     private var tools: [Tool] {
         if !asset.isImage { return [.trim, .adjust, .filters, .crop] }
-        return asset.livePhotoVideoId == nil || asset.localID != nil ? [.adjust, .filters, .crop] : [.adjust, .filters, .crop, .live]
+        let photo: [Tool] = [.adjust, .filters, .crop, .cleanUp, .markup]
+        return asset.livePhotoVideoId == nil || asset.localID != nil ? photo : photo + [.live]
     }
 
     @ViewBuilder private var controls: some View {
@@ -167,6 +183,25 @@ struct EditorView: View {
                 }
                 .padding(.horizontal)
             }
+        case .cleanUp:
+            VStack {
+                Text("Brush over something to remove it.").font(.footnote).foregroundStyle(.secondary)
+                HStack {
+                    Image(systemName: "circle.fill").font(.caption2)
+                    Slider(value: $brush, in: 16...100)
+                        .accessibilityLabel("Brush Size")
+                    Image(systemName: "circle.fill").font(.title3)
+                    undoButton
+                }
+            }
+            .padding(.horizontal)
+        case .markup:
+            HStack(spacing: 20) {
+                Button("Draw on Photo", systemImage: "pencil.tip.crop.circle") { markingUp = true }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                undoButton
+            }
         case .live:
             VStack {
                 Toggle("Live", isOn: Binding { !edit.motionOff } set: { edit.motionOff = !$0 })
@@ -179,6 +214,24 @@ struct EditorView: View {
             }
             .padding(.horizontal)
         }
+    }
+
+    private var undoButton: some View {
+        Button("Undo", systemImage: "arrow.uturn.backward") { setPixels(undo.removeLast()) }
+            .labelStyle(.iconOnly)
+            .font(.title3)
+            .disabled(undo.isEmpty)
+    }
+
+    /// A Clean Up stroke or a Markup drawing replaces the photo's pixels; Undo steps back one.
+    private func retouch(_ image: CIImage) {
+        undo.append(edit.keyFrame ?? edit.retouched)
+        setPixels(image)
+    }
+
+    /// A picked key photo stays the key photo, so saving still replaces the Live Photo's still.
+    private func setPixels(_ image: CIImage?) {
+        if edit.keyFrame != nil { edit.keyFrame = image } else { edit.retouched = image }
     }
 
     // MARK: Loading and rendering
@@ -253,7 +306,7 @@ struct EditorView: View {
     /// Renders a screen-sized preview of the edit.
     private func render(original: Bool) async {
         guard let source else { return }
-        let base = original ? source : edit.keyFrame ?? source
+        let base = original ? source : edit.base(source)
         let scale = min(1, 1600 / max(base.extent.width, base.extent.height))
         let small = base.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let image = original ? small : small.applying(edit, scale: scale)
@@ -264,6 +317,8 @@ struct EditorView: View {
     private func chooseKeyFrame(_ motion: AVURLAsset) async {
         guard let frame = await Self.frame(motion, at: keyFrame, side: nil) else { return }
         edit.keyFrame = CIImage(cgImage: frame)
+        // the strokes were on the old still
+        undo = []
     }
 
     // MARK: Saving
@@ -314,7 +369,7 @@ struct EditorView: View {
         if let video {
             try await export(video, to: output.renderedContentURL)
         } else if let source {
-            try jpeg(source.applying(edit, scale: 1)).write(to: output.renderedContentURL)
+            try jpeg(edit.base(source).applying(edit, scale: 1)).write(to: output.renderedContentURL)
         }
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest(for: phAsset).contentEditingOutput = output
@@ -368,7 +423,7 @@ struct EditorView: View {
         let detail = try await client.asset(asset.id)
         let name = ((detail.originalFileName ?? "Photo") as NSString).deletingPathExtension + "_edited.jpg"
         let file = FileManager.default.temporaryDirectory.appending(path: name)
-        try jpeg((edit.keyFrame ?? source).applying(edit, scale: 1)).write(to: file)
+        try jpeg(edit.base(source).applying(edit, scale: 1)).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         let id = try await stackNew(file, detail: detail, client: client, motion: edit.motionOff ? nil : asset.livePhotoVideoId)
         if edit.keyFrame != nil {
@@ -501,6 +556,8 @@ struct PhotoEdit: Equatable {
     var aspect = Aspect.original
     var motionOff = false
     var keyFrame: CIImage?
+    /// The photo after Clean Up and Markup, in place of the original's pixels.
+    var retouched: CIImage?
 
     subscript(slider: Slider) -> Double {
         get { values[slider] ?? slider.neutral }
@@ -510,7 +567,11 @@ struct PhotoEdit: Equatable {
     static func == (a: PhotoEdit, b: PhotoEdit) -> Bool {
         a.values == b.values && a.filter == b.filter && a.quarterTurns == b.quarterTurns && a.mirrored == b.mirrored
             && a.straighten == b.straighten && a.aspect == b.aspect && a.motionOff == b.motionOff && a.keyFrame === b.keyFrame
+            && a.retouched === b.retouched
     }
+
+    /// The pixels the other settings apply to: a new key photo, else the retouched photo, else the original.
+    func base(_ source: CIImage) -> CIImage { keyFrame ?? retouched ?? source }
 
     var withoutMotion: PhotoEdit {
         var copy = self
@@ -519,7 +580,7 @@ struct PhotoEdit: Equatable {
     }
 
     /// Only crop, rotate and mirror: Immich can store these without new pixels.
-    var isGeometryOnly: Bool { values.isEmpty && filter == nil && straighten == 0 && keyFrame == nil && !motionOff }
+    var isGeometryOnly: Bool { values.isEmpty && filter == nil && straighten == 0 && keyFrame == nil && retouched == nil && !motionOff }
 
     /// Immich edits, applied by the server in this order: crop on the original pixels, then rotate, then mirror.
     func serverEdits(width: Int, height: Int) -> [[String: Any]] {

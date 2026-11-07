@@ -17,6 +17,9 @@ struct SettingsView: View {
             Section("Library") {
                 SettingsRow("Library & Viewer", icon: "photo.on.rectangle") { LibrarySettings() }
             }
+            Section("Sharing") {
+                SettingsRow("Shared Links", icon: "link") { SharedLinksView() }
+            }
             Section("Backup & Storage") {
                 SettingsRow("Backup", icon: "icloud.and.arrow.up") { BackupView() }
                 SettingsRow("Storage", icon: "internaldrive") { StorageSettings() }
@@ -123,6 +126,8 @@ struct AccountSettings: View {
                     }
                 }
             }
+            DevicesSection()
+            PasskeysSection()
             Section {
                 Button("Sign Out", role: .destructive) { session.signOut() }
             }
@@ -324,11 +329,14 @@ final class ServerPreferences {
     }
 }
 
-/// Everything about the server on one page: its shared preferences, then this iPhone's proxy headers.
+/// Everything about the server on one page: its shared preferences, then this iPhone's local address and proxy headers.
 struct ImmichSettings: View {
     @Environment(Session.self) private var session
     @State private var prefs = ServerPreferences()
     @State private var headers = ImmichClient.proxyHeaders
+    @State private var local = ImmichClient.localAddress?.absoluteString ?? ""
+    /// Whether requests go to the local address after the last check; nil before it.
+    @State private var usingLocal: Bool?
 
     var body: some View {
         let client = session.client
@@ -371,6 +379,17 @@ struct ImmichSettings: View {
             if let error = prefs.error {
                 Section { Text(error).foregroundStyle(.secondary) }
             }
+            Section {
+                TextField("Local Address", text: $local, prompt: Text("http://192.168.1.5:2283"))
+                    .textContentType(.URL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Local Network")
+            } footer: {
+                Text(localFooter)
+            }
             // outside the server's preferences: a proxy may need these before anything loads
             Section {
                 TextField("Name: value", text: $headers, axis: .vertical)
@@ -387,6 +406,24 @@ struct ImmichSettings: View {
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: headers) { ImmichClient.proxyHeaders = headers }
         .task { await prefs.load(client) }
+        .task(id: local) {
+            // waits for typing to pause before saving and trying the address
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            let url = ImmichClient.serverURL(from: local)
+            if url != ImmichClient.localAddress { ImmichClient.localAddress = url }
+            guard let url else { usingLocal = nil; return }
+            await ImmichClient.chooseAddress()
+            usingLocal = client.map { $0.address == url }
+        }
+    }
+
+    private var localFooter: String {
+        let base = "When WoofPhoto opens or comes back, it tries this address for 2 seconds and uses it if your server answers, else the main address."
+        switch usingLocal {
+        case true?: return base + " In use now."
+        case false?: return base + " Not answering now: using the main address."
+        case nil: return base
+        }
     }
 }
 

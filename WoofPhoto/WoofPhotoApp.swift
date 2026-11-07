@@ -56,7 +56,7 @@ struct WoofPhotoApp: App {
                 if phase == .background { backup.scheduleBackground() }
             }
             #if DEBUG
-            .task { ImmichClient.selfCheck() }
+            .task { ImmichClient.selfCheck(); FoldersView.selfCheck() }
             #endif
         }
     }

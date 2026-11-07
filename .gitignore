@@ -8,6 +8,8 @@ WoofPhoto/Info.plist
 WoofPhoto/WoofPhoto.entitlements
 WoofPhotoWidget/Info.plist
 WoofPhotoWidget/WoofPhotoWidget.entitlements
+ShareExtension/Info.plist
+ShareExtension/WoofPhotoShare.entitlements
 
 # local tool settings
 .claude/

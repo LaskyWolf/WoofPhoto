@@ -1,18 +1,18 @@
 import WidgetKit
 import Foundation
-import LocalAuthentication
-import Security
 
-/// The signed-in server. The address lives in UserDefaults, the token in the Keychain.
+/// The signed-in server. The address lives in UserDefaults and the App Group's settings, the token in the Keychain's shared group,
+/// so the share extension can upload too.
 @MainActor @Observable
 final class Session {
     private(set) var client: ImmichClient?
 
     init() {
-        if let text = UserDefaults.standard.string(forKey: "server"), let url = URL(string: text),
-           let token = Keychain.read("token") {
-            client = ImmichClient(server: url, token: token)
-        }
+        // versions before the share extension kept these in the app's own settings and keychain group
+        if let server = UserDefaults.standard.string(forKey: "server") { AppGroup.defaults?.set(server, forKey: "server") }
+        Keychain.share("token")
+        Keychain.share("proxyHeaders")
+        client = ImmichClient.saved()
     }
 
     func signIn(server text: String, email: String, password: String) async throws {
@@ -35,7 +35,9 @@ final class Session {
     }
 
     private func save(_ client: ImmichClient) {
+        // also in the app's own settings, which the sign-in page and the background backup read
         UserDefaults.standard.set(client.server.absoluteString, forKey: "server")
+        AppGroup.defaults?.set(client.server.absoluteString, forKey: "server")
         Keychain.write("token", client.token!)
         self.client = client
     }
@@ -67,50 +69,4 @@ final class Session {
 enum SignInError: LocalizedError {
     case badAddress
     var errorDescription: String? { "This is not a server address. Example: photos.example.com or 192.168.1.5:2283" }
-}
-
-enum Keychain {
-    private static func query(_ key: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "WoofPhoto", kSecAttrAccount as String: key]
-    }
-
-    static func read(_ key: String) -> String? {
-        var item: CFTypeRef?
-        var q = query(key)
-        q[kSecReturnData as String] = true
-        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    /// `protected`: iOS itself asks for Face ID or the passcode before handing the value back.
-    static func write(_ key: String, _ value: String, protected: Bool = false) {
-        delete(key)
-        var q = query(key)
-        q[kSecValueData as String] = Data(value.utf8)
-        if protected, let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .userPresence, nil) {
-            q[kSecAttrAccessControl as String] = access
-        } else {
-            // never copied to backups or a new iPhone; still readable by the background backup
-            q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        }
-        SecItemAdd(q as CFDictionary, nil)
-    }
-
-    /// Reads a protected value; iOS shows Face ID with this reason. Off the main thread, since the read waits for it.
-    static func readProtected(_ key: String, reason: String) async -> String? {
-        await Task.detached {
-            let context = LAContext()
-            context.localizedReason = reason
-            var item: CFTypeRef?
-            var q = query(key)
-            q[kSecReturnData as String] = true
-            q[kSecUseAuthenticationContext as String] = context
-            guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-            return String(data: data, encoding: .utf8)
-        }.value
-    }
-
-    static func delete(_ key: String) {
-        SecItemDelete(query(key) as CFDictionary)
-    }
 }

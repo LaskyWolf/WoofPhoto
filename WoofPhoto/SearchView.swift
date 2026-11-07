@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Search tab: smart search as you type, text found in photos, dates, people, places and albums,
-/// with filters for media type, dates, camera and favorites.
+/// with filters for media type, dates, places, camera, albums, tags, text and favorites, shown as removable chips.
 struct SearchView: View {
     enum Scope: String, CaseIterable {
         case everything = "Everything", text = "Text in Photo", fileName = "File Name"
@@ -118,9 +118,18 @@ struct SearchView: View {
         let matches = query.count < 2 ? [] : people.filter { $0.name.localizedCaseInsensitiveContains(query) }
         let albumMatches = query.count < 2 ? [] : albums.filter { $0.albumName.localizedCaseInsensitiveContains(query) }
         VStack(spacing: 0) {
-            if !matches.isEmpty || !albumMatches.isEmpty || dateRange != nil {
+            if !matches.isEmpty || !albumMatches.isEmpty || dateRange != nil || filters.isActive {
                 ScrollView(.horizontal) {
                     HStack {
+                        ForEach(filters.chips) { active in
+                            Button {
+                                withAnimation(.snappy) { active.clear(&filters) }
+                            } label: {
+                                chip(active.title, symbol: active.symbol, removes: true)
+                            }
+                            .buttonStyle(ZoomPressStyle())
+                            .accessibilityLabel("Remove filter \(active.title)")
+                        }
                         if let dateRange {
                             NavigationLink {
                                 SearchedGrid(title: dateRange.title) {
@@ -158,9 +167,13 @@ struct SearchView: View {
         }
     }
 
-    private func chip(_ title: String, symbol: String) -> some View {
+    /// `removes`: an active filter, with an x that says tapping takes it off.
+    private func chip(_ title: String, symbol: String, removes: Bool = false) -> some View {
         Label {
-            Text(title).foregroundStyle(.primary)
+            HStack(spacing: 6) {
+                Text(title).foregroundStyle(.primary)
+                if removes { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+            }
         } icon: {
             Image(systemName: symbol).foregroundStyle(.secondary)
         }
@@ -185,32 +198,54 @@ struct SearchView: View {
         return nil
     }
 
+    /// Waits for a pause in typing, then searches with what the field and the Filters sheet hold.
     private func search() async {
         let text = query.trimmingCharacters(in: .whitespaces)
-        guard let client = session.client, !text.isEmpty || filters.isActive else {
+        guard session.client != nil, !text.isEmpty || filters.isActive else {
             results = nil
             return
         }
-        // wait for a pause in typing, so each keystroke doesn't start a search
+        // so each keystroke doesn't start a search
         try? await Task.sleep(for: .milliseconds(400))
         guard !Task.isCancelled else { return }
+        // ponytail: 3+ words means a sentence; shorter text goes straight to smart search
+        if scope == .everything, text.split(separator: " ").count >= 3, let parsed = await Intelligence.searchQuery(text) {
+            guard !Task.isCancelled else { return }
+            var combined = filters
+            let day = DateFormatter()
+            day.dateFormat = "yyyy-MM-dd"
+            if combined.city.isEmpty { combined.city = parsed.city }
+            if combined.country.isEmpty { combined.country = parsed.country }
+            if combined.after == nil { combined.after = day.date(from: parsed.after) }
+            if combined.before == nil { combined.before = day.date(from: parsed.before) }
+            if combined.media == .all { combined.media = parsed.media == "photos" ? .photos : parsed.media == "videos" ? .videos : .all }
+            await performSearch(text: parsed.subject, scope: scope, filters: combined)
+            return
+        }
+        await performSearch(text: text, scope: scope, filters: filters)
+    }
+
+    /// Runs one search and shows its results. Without text the filters alone pick the photos; with text,
+    /// `scope` sends it to smart search, the text Immich read in photos, or file names, narrowed by the same filters.
+    private func performSearch(text: String, scope: Scope, filters: SearchFilters) async {
+        guard let client = session.client else { return }
         searching = true
         defer { searching = false }
         error = nil
         do {
-            var body = filters.body
+            var filter = filters.filter
             let assets: [Asset]
             switch scope {
             case .everything where !text.isEmpty:
-                assets = try await client.searchSmart(text, filters: body)
+                assets = try await client.searchAssets(matching: text, filter: filter)
             case .text where !text.isEmpty:
-                body["ocr"] = text
-                assets = try await client.searchMetadata(body, limit: 1000)
+                filter["ocr"] = ["matches": text]
+                assets = try await client.searchAssets(filter: filter, limit: 1000)
             case .fileName where !text.isEmpty:
-                body["originalFileName"] = text
-                assets = try await client.searchMetadata(body, limit: 1000)
+                filter["originalFileName"] = ["like": text]
+                assets = try await client.searchAssets(filter: filter, limit: 1000)
             default:
-                assets = try await client.searchMetadata(body, limit: 2000)
+                assets = try await client.searchAssets(filter: filter)
             }
             guard !Task.isCancelled else { return }
             results = Timeline(assets: assets.reversed().map(\.ref))
@@ -245,6 +280,7 @@ private struct SearchKey: Equatable {
     var filters: SearchFilters
 }
 
+/// Everything the Filters sheet can narrow a search by. Sent as Immich's structured search filter (3.2+).
 struct SearchFilters: Equatable {
     enum Media: String, CaseIterable {
         case all = "All", photos = "Photos", videos = "Videos"
@@ -253,22 +289,82 @@ struct SearchFilters: Equatable {
     var media = Media.all
     var after: Date?
     var before: Date?
+    var country = ""
+    var state = ""
+    var city = ""
     var make = ""
     var model = ""
+    var lens = ""
+    var tags: [AssetTag] = []
+    var album: Album?
+    var notInAlbum = false
     var favoritesOnly = false
+    var fileName = ""
+    var details = ""
 
     var isActive: Bool { self != SearchFilters() }
 
-    /// The filters as Immich search fields.
-    var body: [String: Any] {
-        var body: [String: Any] = [:]
-        if media != .all { body["type"] = media == .photos ? "IMAGE" : "VIDEO" }
-        if let after { body["takenAfter"] = after.formatted(.iso8601) }
-        if let before { body["takenBefore"] = before.formatted(.iso8601) }
-        if !make.isEmpty { body["make"] = make }
-        if !model.isEmpty { body["model"] = model }
-        if favoritesOnly { body["isFavorite"] = true }
-        return body
+    /// The text filters: search field, chip symbol, and whether the server matches part of the text.
+    private static let texts: [(field: String, path: WritableKeyPath<SearchFilters, String>, symbol: String, partial: Bool)] = [
+        ("country", \.country, "globe", false), ("state", \.state, "map", false), ("city", \.city, "mappin.and.ellipse", false),
+        ("make", \.make, "camera", false), ("model", \.model, "camera", false), ("lensModel", \.lens, "camera.aperture", false),
+        ("originalFileName", \.fileName, "doc", true), ("description", \.details, "text.alignleft", true),
+    ]
+
+    /// The filters as Immich's `filter` object. Leaves out trashed items and the hidden halves of Live Photos.
+    var filter: [String: Any] {
+        var filter: [String: Any] = ["trashedAt": ["eq": NSNull()], "visibility": ["in": ["timeline", "archive"]]]
+        if media != .all { filter["type"] = ["eq": media == .photos ? "IMAGE" : "VIDEO"] }
+        // whole days: from the start of the first to the end of the last
+        let calendar = Calendar.current
+        var taken: [String: String] = [:]
+        if let after { taken["gte"] = calendar.startOfDay(for: after).formatted(.iso8601) }
+        if let before, let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: before)) {
+            taken["lt"] = end.formatted(.iso8601)
+        }
+        if !taken.isEmpty { filter["takenAt"] = taken }
+        for text in Self.texts where !self[keyPath: text.path].isEmpty {
+            filter[text.field] = [(text.partial ? "like" : "eq"): self[keyPath: text.path]]
+        }
+        if !tags.isEmpty { filter["tagIds"] = ["all": tags.map(\.id)] }
+        if notInAlbum {
+            filter["hasAlbums"] = ["eq": false]
+        } else if let album {
+            filter["albumIds"] = ["any": [album.id]]
+        }
+        if favoritesOnly { filter["isFavorite"] = ["eq": true] }
+        return filter
+    }
+
+    /// One active filter, shown as a chip that removes it.
+    struct Chip: Identifiable {
+        let id: String
+        let title: String
+        let symbol: String
+        let clear: (inout SearchFilters) -> Void
+    }
+
+    var chips: [Chip] {
+        var chips: [Chip] = []
+        if media != .all { chips.append(Chip(id: "media", title: media.rawValue, symbol: media == .photos ? "photo" : "video") { $0.media = .all }) }
+        if after != nil || before != nil {
+            let day = { (date: Date?) in date?.formatted(date: .abbreviated, time: .omitted) ?? "…" }
+            chips.append(Chip(id: "date", title: "\(day(after)) – \(day(before))", symbol: "calendar") { $0.after = nil; $0.before = nil })
+        }
+        for text in Self.texts where !self[keyPath: text.path].isEmpty {
+            let path = text.path
+            chips.append(Chip(id: text.field, title: self[keyPath: path], symbol: text.symbol) { $0[keyPath: path] = "" })
+        }
+        for tag in tags {
+            chips.append(Chip(id: "tag-\(tag.id)", title: tag.path, symbol: "tag") { filters in filters.tags.removeAll { $0.id == tag.id } })
+        }
+        if notInAlbum {
+            chips.append(Chip(id: "notInAlbum", title: "Not in an Album", symbol: "rectangle.stack.badge.minus") { $0.notInAlbum = false })
+        } else if let album {
+            chips.append(Chip(id: "album", title: album.albumName, symbol: "rectangle.stack") { $0.album = nil })
+        }
+        if favoritesOnly { chips.append(Chip(id: "favorites", title: "Favorites", symbol: "heart") { $0.favoritesOnly = false }) }
+        return chips
     }
 }
 
@@ -277,8 +373,15 @@ struct FiltersSheet: View {
 
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
+    @State private var countries: [String] = []
+    @State private var states: [String] = []
+    @State private var cities: [String] = []
     @State private var makes: [String] = []
     @State private var models: [String] = []
+    @State private var lenses: [String] = []
+    @State private var albums: [Album] = []
+    @State private var tags: [AssetTag] = []
+    @State private var showsTags = false
 
     var body: some View {
         NavigationStack {
@@ -291,31 +394,77 @@ struct FiltersSheet: View {
                     optionalDate("From", $filters.after)
                     optionalDate("To", $filters.before)
                 }
+                Section("Place") {
+                    choice("Country", $filters.country, countries)
+                    choice("State", $filters.state, states)
+                    choice("City", $filters.city, cities)
+                }
                 Section("Camera") {
-                    Picker("Make", selection: $filters.make) {
-                        Text("Any").tag("")
-                        ForEach(makes, id: \.self) { Text($0).tag($0) }
+                    choice("Make", $filters.make, makes)
+                    choice("Model", $filters.model, models)
+                    choice("Lens", $filters.lens, lenses)
+                }
+                Section("Albums") {
+                    Picker("Album", selection: $filters.album) {
+                        Text("Any").tag(Album?.none)
+                        ForEach(albums) { Text($0.albumName).tag(Optional($0)) }
                     }
-                    Picker("Model", selection: $filters.model) {
-                        Text("Any").tag("")
-                        ForEach(models, id: \.self) { Text($0).tag($0) }
+                    .disabled(filters.notInAlbum)
+                    Toggle("Not in Any Album", isOn: $filters.notInAlbum)
+                }
+                if showsTags {
+                    NavigationLink {
+                        TagChecklist(tags: tags, selection: $filters.tags)
+                    } label: {
+                        LabeledContent("Tags", value: filters.tags.isEmpty ? "Any" : filters.tags.map(\.title).joined(separator: ", "))
                     }
+                }
+                Section("Text") {
+                    TextField("File Name", text: $filters.fileName)
+                    TextField("Description", text: $filters.details)
                 }
                 Toggle("Favorites Only", isOn: $filters.favoritesOnly)
                 Button("Reset Filters", role: .destructive) { filters = SearchFilters() }
             }
+            .autocorrectionDisabled()
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done", role: .confirm) { dismiss() } }
-            .task(id: filters.make) {
+            // each list narrows to the place or camera picked above it
+            .task(id: [filters.country, filters.state, filters.make, filters.model]) {
                 guard let client = session.client else { return }
-                makes = (try? await client.get("/search/suggestions", query: ["type": "camera-make"])) ?? []
-                var query = ["type": "camera-model"]
-                if !filters.make.isEmpty { query["make"] = filters.make }
-                models = (try? await client.get("/search/suggestions", query: query)) ?? []
+                let f = filters
+                async let countries = client.suggestions("country")
+                async let states = client.suggestions("state", ["country": f.country])
+                async let cities = client.suggestions("city", ["country": f.country, "state": f.state])
+                async let makes = client.suggestions("camera-make")
+                async let models = client.suggestions("camera-model", ["make": f.make])
+                async let lenses = client.suggestions("camera-lens-model", ["make": f.make, "model": f.model])
+                self.countries = (try? await countries) ?? []
+                self.states = (try? await states) ?? []
+                self.cities = (try? await cities) ?? []
+                self.makes = (try? await makes) ?? []
+                self.models = (try? await models) ?? []
+                self.lenses = (try? await lenses) ?? []
+            }
+            .task {
+                guard let client = session.client else { return }
+                albums = ((try? await client.albums()) ?? []).sorted { $0.albumName.localizedStandardCompare($1.albumName) == .orderedAscending }
+                showsTags = await tagsEnabled(client)
+                if showsTags { tags = (try? await client.tags()) ?? [] }
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    /// A menu of the server's values, with Any on top. A value picked earlier stays listed while its list loads.
+    private func choice(_ title: String, _ value: Binding<String>, _ options: [String]) -> some View {
+        Picker(title, selection: value) {
+            Text("Any").tag("")
+            ForEach(options.contains(value.wrappedValue) || value.wrappedValue.isEmpty ? options : [value.wrappedValue] + options, id: \.self) {
+                Text($0).tag($0)
+            }
+        }
     }
 
     private func optionalDate(_ title: String, _ date: Binding<Date?>) -> some View {

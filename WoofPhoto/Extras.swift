@@ -28,6 +28,13 @@ final class Pets {
 
     var isScanning: Bool { task != nil }
 
+    /// At sign-out: the scan belongs to the account.
+    func forget() {
+        task?.cancel()
+        record = Record()
+        try? FileManager.default.removeItem(at: Self.url)
+    }
+
     func scan(with client: ImmichClient) {
         guard task == nil else { return }
         task = Task {
@@ -171,8 +178,10 @@ struct TripsView: View {
     }
 
     static func find(_ client: ImmichClient) async throws -> [Trip] {
-        var query = TimelineQuery.library
-        query.params["withCoordinates"] = "true"
+        var located = TimelineQuery.library
+        located.params["withCoordinates"] = "true"
+        // a constant, so the month requests running side by side can share it
+        let query = located
         var places: [Place] = []
         var total = 0
         // every month at once: the requests share the server's few connections, so they still queue, but without waiting on each other

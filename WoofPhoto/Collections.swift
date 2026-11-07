@@ -257,9 +257,9 @@ struct CollectionsView: View {
     @ViewBuilder private func content(_ section: Section) -> some View {
         switch section {
         case .albums:
-            grid(albums.filter { $0.shared != true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil, isRow: listLayout) }
+            grid(albums.filter { $0.shared != true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil, isRow: listLayout) { Task { await load() } } }
         case .shared:
-            grid(albums.filter { $0.shared == true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil, isRow: listLayout) }
+            grid(albums.filter { $0.shared == true }.prefix(6), columns: 2) { AlbumTile(album: $0, size: nil, isRow: listLayout) { Task { await load() } } }
             if !partners.isEmpty {
                 row(partners) { partner in
                     NavigationLink(value: Shelf.partner(id: partner.id, name: partner.name)) {
@@ -366,15 +366,6 @@ func toggled(_ name: String, in list: String) -> String {
     var names = list.split(separator: ",").map(String.init)
     if let index = names.firstIndex(of: name) { names.remove(at: index) } else { names.append(name) }
     return names.joined(separator: ",")
-}
-
-struct TrailingIcon: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 4) {
-            configuration.title
-            configuration.icon.font(.subheadline.bold()).foregroundStyle(.secondary)
-        }
-    }
 }
 
 /// Media Types: rows with a tinted icon badge, like Settings.

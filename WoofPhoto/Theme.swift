@@ -260,29 +260,6 @@ extension FilterChips {
     }
 }
 
-/// A section title in a feed, with an optional See All link.
-struct FeedTitle<Destination: View>: View {
-    let title: String
-    @ViewBuilder var destination: Destination
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title).font(.title3.bold()).accessibilityAddTraits(.isHeader)
-            Spacer()
-            if Destination.self != EmptyView.self {
-                NavigationLink("See All") { destination }.font(.subheadline.weight(.semibold))
-            }
-        }
-        .padding(.horizontal, Tokens.screenPadding)
-        .padding(.top, Tokens.sectionGap)
-        .padding(.bottom, 8)
-    }
-}
-
-extension FeedTitle where Destination == EmptyView {
-    init(_ title: String) { self.init(title: title) { EmptyView() } }
-}
-
 // MARK: Press feedback (from WoofMusic)
 
 /// How long the feedback stays after the finger lifts, so a quick tap still shows it.

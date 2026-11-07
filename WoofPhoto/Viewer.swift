@@ -7,7 +7,7 @@ import SwiftUI
 import VisionKit
 
 /// Full-screen pages through a timeline, like the Photos viewer. Opens with a zoom from the tapped cell;
-/// swiping down closes it back into the cell.
+/// swiping down closes it back into the cell, or into the floating card once the zoom from the cell is over.
 struct Viewer: View {
     let timeline: Timeline
 
@@ -409,6 +409,8 @@ struct Viewer: View {
 
     private func currentChanged() async {
         guard let current else { return }
+        // the last page's date and place go at once, not when this page's details arrive
+        detail = nil
         defer {
             // Hidden stays behind Face ID, so its photos stay out of History
             if !Task.isCancelled, timeline.query != .hidden {
@@ -416,6 +418,8 @@ struct Viewer: View {
             }
         }
         guard let client = session.client, currentAsset?.localID == nil else { return }
+        detail = try? await client.asset(current)
+        if let detail { fillIn(current, from: detail) }
         await timeline.loadNeighbours(of: current, with: client)
         // the ambient blur of the pages either side, ready before the swipe starts
         if let index = timeline.assets.firstIndex(where: { $0.id == current }) {
@@ -427,11 +431,24 @@ struct Viewer: View {
                 }
             }
         }
-        detail = try? await client.asset(current)
         if let stackID = currentAsset?.stackID {
             if stack?.id != stackID { stack = try? await client.stack(stackID) }
         } else {
             stack = nil
+        }
+    }
+
+    /// History, the map and links open an item from its id alone, so it reads as a photo until the server says what it is.
+    private func fillIn(_ id: String, from detail: Asset) {
+        let full = detail.ref
+        guard let known = timeline.assets.first(where: { $0.id == id }),
+              known.isImage != full.isImage || known.livePhotoVideoId != full.livePhotoVideoId || known.date == nil else { return }
+        timeline.update(id) { asset in
+            asset.isImage = full.isImage
+            asset.livePhotoVideoId = full.livePhotoVideoId
+            asset.duration = full.duration
+            asset.thumbhash = asset.thumbhash ?? full.thumbhash
+            asset.date = asset.date ?? detail.date
         }
     }
 
@@ -442,6 +459,10 @@ struct Viewer: View {
         do {
             try await client.updateAssets([asset.id], ["isFavorite": !asset.isFavorite])
             timeline.update(asset.id) { $0.isFavorite.toggle() }
+            // a stack member isn't in the timeline, only in the stack
+            if let index = stack?.assets.firstIndex(where: { $0.id == asset.id }) {
+                stack?.assets[index].isFavorite = !asset.isFavorite
+            }
         } catch {
             message = error.explanation
         }
@@ -471,8 +492,15 @@ struct Viewer: View {
         OpenPhoto.shared.close()
     }
 
+    /// Takes the shown item away. A frame picked inside a stack leaves the stack; the rest of it stays.
     private func removeCurrent() {
         guard let current else { return }
+        if let shownID, shownID != current, stack?.assets.contains(where: { $0.id == shownID }) == true {
+            stack?.assets.removeAll { $0.id == shownID }
+            shownInStack[current] = nil
+            timeline.update(current) { $0.stackCount = max($0.stackCount - 1, 0) }
+            return
+        }
         let assets = timeline.assets
         let index = assets.firstIndex { $0.id == current } ?? 0
         let next = assets.indices.contains(index + 1) ? assets[index + 1] : assets.indices.contains(index - 1) ? assets[index - 1] : nil
@@ -905,7 +933,6 @@ struct PlayerLayer: UIViewRepresentable {
     }
 }
 
-/// Loads and caches the larger images the viewer shows.
 /// The scroll position in pages, kept outside the viewer's state so only the background redraws while swiping.
 @Observable final class PageProgress {
     var value: CGFloat = 0
@@ -939,6 +966,7 @@ private struct AmbientBackground: View {
     }
 }
 
+/// Loads and caches the larger images the viewer shows.
 enum Still {
     /// The best image already in memory: preview, then thumbnail, then the thumbhash.
     static func cached(_ asset: AssetRef) -> UIImage? {
@@ -947,6 +975,9 @@ enum Still {
     }
 
     private static let blurCache = NSCache<NSString, UIImage>()
+
+    /// At sign-out and when Hidden locks, so no blurred copy outlives them.
+    static func forgetBlurs() { blurCache.removeAllObjects() }
     private static let blurContext = CIContext()
 
     /// A small, blurred and saturated copy of the photo for the viewer's background, made once per image.
@@ -1179,8 +1210,13 @@ struct InfoSheet: View {
 
     private func saveCaption() async {
         guard let asset, caption != (asset.exifInfo?.description ?? "") else { return }
-        try? await session.client?.updateAssets([asset.id], ["description": caption])
-        self.asset?.exifInfo?.description = caption
+        do {
+            try await session.client?.updateAssets([asset.id], ["description": caption])
+            self.asset?.exifInfo?.description = caption
+        } catch {
+            // ponytail: shows only while the sheet is open; a save on close fails silently, retried on the next open
+            self.error = error.explanation
+        }
     }
 }
 

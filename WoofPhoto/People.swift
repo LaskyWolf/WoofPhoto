@@ -147,8 +147,7 @@ struct PersonView: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Save") {
                     Task {
-                        await update(["name": newName], done: nil)
-                        name = newName
+                        if await update(["name": newName], done: nil) { name = newName }
                     }
                 }
             }
@@ -216,12 +215,15 @@ struct PersonView: View {
         playsSlideshow = true
     }
 
-    private func update(_ fields: [String: Any], done: String?) async {
+    @discardableResult
+    private func update(_ fields: [String: Any], done: String?) async -> Bool {
         do {
             try await session.client?.updatePerson(id, fields)
             message = done
+            return true
         } catch {
             message = error.explanation
+            return false
         }
     }
 }

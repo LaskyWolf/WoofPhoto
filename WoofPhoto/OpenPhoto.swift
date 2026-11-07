@@ -91,7 +91,7 @@ struct MiniViewer: View {
     /// The open item's date and place, read once per item: the timeline doesn't carry them.
     @State private var caption: (id: String, title: String?, subtitle: String?)?
 
-    /// The date, pause and close strip under the photo.
+    /// The date, place and pause strip under the photo.
     private static let miniStripHeight: CGFloat = 44
     /// The glass shows this far around the photo.
     private static let miniInset: CGFloat = 6

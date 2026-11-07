@@ -48,6 +48,8 @@ struct LibraryView: View {
             }
         }
         .task(id: session.client == nil) {
+            // the next account starts from an empty timeline, not the last one's months
+            if session.client == nil { timeline = Timeline(.library) }
             guard session.client == nil, device == nil else { return }
             if await Backup.shared.authorize() { device = .device() } else { denied = true }
         }

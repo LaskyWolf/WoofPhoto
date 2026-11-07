@@ -63,11 +63,14 @@ struct AssetGrid: View {
             .environment(timeline)
             .assetActions(actions)
             .onAppear {
-                actions.timeline = timeline
                 // an action on the selection ends Select mode, as in WoofMusic's playlists
                 actions.done = { selection = nil }
             }
-            .task(id: ObjectIdentifier(timeline)) { await reload() }
+            .task(id: ObjectIdentifier(timeline)) {
+                // a new search or a refreshed trash swaps the timeline, so the actions follow it
+                actions.timeline = timeline
+                await reload()
+            }
     }
 
     /// Selecting acts on the server, so it needs one.
@@ -170,8 +173,8 @@ struct AssetGrid: View {
     }
 
     private func grid(_ months: [Timeline.Month], client: ImmichClient?) -> some View {
-        // WoofMusic's Quick Picks cards: 8-point gaps and corners, tighter as the cells get smaller
-        let spacing: CGFloat = columns <= 3 ? 8 : columns <= 5 ? 6 : 3
+        // Apple Photos' 2-point gaps and edges; the corners stay rounded, smaller as the cells get smaller
+        let spacing: CGFloat = 2
         let radius: CGFloat = columns <= 3 ? 8 : columns <= 5 ? 6 : 3
         return ScrollViewReader { proxy in
             ScrollView {
@@ -586,6 +589,9 @@ enum ImageCache {
             URLCache.shared.removeCachedResponse(for: client.request("/assets/\(id)/thumbnail", query: ["size": size]))
         }
     }
+
+    /// Everything in memory, at sign-out.
+    static func removeAll() { images.removeAllObjects() }
 
     static func placeholder(id: String, hash: String) -> UIImage? {
         let key = "hash:\(id)" as NSString

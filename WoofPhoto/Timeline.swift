@@ -12,7 +12,11 @@ final class Timeline {
     }
 
     let query: TimelineQuery?
-    private(set) var months: [Month]?
+    private(set) var months: [Month]? {
+        // kept ready: the viewer and grid read `assets` many times per frame
+        didSet { assets = Self.flatten(months) }
+    }
+    private(set) var assets: [AssetRef] = []
     /// The last failure, shown under the grid until tapped.
     var problem: String?
     private var loading: Set<String> = []
@@ -24,15 +28,17 @@ final class Timeline {
     init(assets: [AssetRef]) {
         query = nil
         months = [Month(key: "all", count: assets.count, assets: assets)]
+        self.assets = assets
     }
 
     /// Months that are already complete, like the photos on this iPhone.
     init(months: [Month]) {
         query = nil
         self.months = months
+        assets = Self.flatten(months)
     }
 
-    var assets: [AssetRef] { months?.flatMap { $0.assets ?? [] } ?? [] }
+    private static func flatten(_ months: [Month]?) -> [AssetRef] { months?.flatMap { $0.assets ?? [] } ?? [] }
 
     /// Photos only on this iPhone, shown in the Library next to the server's.
     private var local: [String: [AssetRef]] { query == .library ? Backup.shared.pendingByMonth : [:] }

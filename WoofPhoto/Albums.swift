@@ -56,7 +56,7 @@ struct AlbumsView: View {
     }
 }
 
-/// An album's cover, name and count. Long press to rename, pin or delete.
+/// An album's cover, name and count. Long press to rename or delete.
 struct AlbumTile: View {
     let album: Album
     /// Fixed width in a row; nil fills a grid column.
@@ -72,6 +72,7 @@ struct AlbumTile: View {
     @State private var renaming = false
     @State private var name = ""
     @State private var confirmsDelete = false
+    @State private var error: String?
 
     var body: some View {
         let cover = (album.albumThumbnailAssetId ?? firstPhoto).map { AssetRef(id: $0) }
@@ -116,7 +117,7 @@ struct AlbumTile: View {
             Button("Cancel", role: .cancel) {}
             Button("Save") {
                 Task {
-                    try? await session.client?.updateAlbum(album.id, ["albumName": name])
+                    do { try await session.client?.updateAlbum(album.id, ["albumName": name]) } catch { self.error = error.explanation }
                     onChange()
                 }
             }
@@ -124,11 +125,12 @@ struct AlbumTile: View {
         .confirmationDialog("The photos stay in your library.", isPresented: $confirmsDelete, titleVisibility: .visible) {
             Button("Delete Album", role: .destructive) {
                 Task {
-                    try? await session.client?.deleteAlbum(album.id)
+                    do { try await session.client?.deleteAlbum(album.id) } catch { self.error = error.explanation }
                     onChange()
                 }
             }
         }
+        .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
     }
 }
 
@@ -147,6 +149,7 @@ struct AlbumView: View {
     @State private var confirmsDelete = false
     @State private var playsSlideshow = false
     @State private var slideshow: [AssetRef] = []
+    @State private var error: String?
 
     init(id: String, name: String) {
         self.id = id
@@ -162,20 +165,29 @@ struct AlbumView: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Save") {
                     Task {
-                        try? await session.client?.updateAlbum(id, ["albumName": newName])
-                        name = newName
+                        do {
+                            try await session.client?.updateAlbum(id, ["albumName": newName])
+                            name = newName
+                        } catch {
+                            self.error = error.explanation
+                        }
                     }
                 }
             }
             .confirmationDialog("The photos stay in your library.", isPresented: $confirmsDelete, titleVisibility: .visible) {
                 Button("Delete Album", role: .destructive) {
                     Task {
-                        try? await session.client?.deleteAlbum(id)
-                        dismiss()
+                        do {
+                            try await session.client?.deleteAlbum(id)
+                            dismiss()
+                        } catch {
+                            self.error = error.explanation
+                        }
                     }
                 }
             }
             .sheet(isPresented: $showsActivity) { ActivitySheet(album: id) }
+            .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
             .fullScreenCover(isPresented: $playsSlideshow) { Slideshow(assets: slideshow, start: 0) }
             .task { album = try? await session.client?.album(id) }
     }

@@ -203,8 +203,9 @@ struct ImmichClient {
 
     /// The server transcodes videos to a format every iPhone plays.
     func video(_ id: String) -> AVURLAsset {
-        let url = request("/assets/\(id)/video/playback").url!
-        return AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(token ?? "")"]])
+        // the token and any proxy headers, as every other request sends them
+        let request = request("/assets/\(id)/video/playback")
+        return AVURLAsset(url: request.url!, options: ["AVURLAssetHTTPHeaderFieldsKey": request.allHTTPHeaderFields ?? [:]])
     }
 
     /// Uploads a file as a new asset and returns its id. The form is written to disk first and streamed,
@@ -251,7 +252,11 @@ struct ImmichClient {
         let name = response.suggestedFilename ?? id
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let file = folder.appending(path: name)
-        try FileManager.default.moveItem(at: temp, to: file)
+        do {
+            try FileManager.default.moveItem(at: temp, to: file)
+        } catch where FileManager.default.fileExists(atPath: file.path) {
+            // a second download of the same original finished first
+        }
         try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: file.path)
         return file
     }
@@ -290,18 +295,13 @@ struct BucketAssets: Decodable {
 
     var refs: [AssetRef] {
         id.indices.map { i in
-            let stack = Self.at(stack, i) ?? nil
-            return AssetRef(id: id[i], isImage: Self.at(isImage, i) ?? true, isFavorite: Self.at(isFavorite, i) ?? false,
-                            thumbhash: Self.at(thumbhash, i) ?? nil, duration: Self.at(duration, i) ?? nil,
-                            livePhotoVideoId: Self.at(livePhotoVideoId, i) ?? nil,
+            let stack = self.stack?[safe: i] ?? nil
+            return AssetRef(id: id[i], isImage: isImage?[safe: i] ?? true, isFavorite: isFavorite?[safe: i] ?? false,
+                            thumbhash: thumbhash?[safe: i] ?? nil, duration: duration?[safe: i] ?? nil,
+                            livePhotoVideoId: livePhotoVideoId?[safe: i] ?? nil,
                             stackID: stack?.first, stackCount: stack.flatMap { Int($0.last ?? "") } ?? 0,
-                            date: Self.at(fileCreatedAt, i).flatMap(Date.init(immich:)))
+                            date: fileCreatedAt?[safe: i].flatMap(Date.init(immich:)))
         }
-    }
-
-    private static func at<T>(_ array: [T]?, _ index: Int) -> T? {
-        guard let array, array.indices.contains(index) else { return nil }
-        return array[index]
     }
 }
 

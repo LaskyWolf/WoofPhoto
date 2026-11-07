@@ -40,12 +40,19 @@ final class Session {
         self.client = client
     }
 
-    /// Leaves nothing of the account on this iPhone: saved photos, History, the widget's photos and the backup record.
+    /// Leaves nothing of the account on this iPhone: saved photos, History, the widget's photos, the backup record,
+    /// and what the app kept in memory (images, trips, pets, the avatar).
     func signOut() {
         Keychain.delete("token")
         Keychain.delete("hidden.pin")
         Backup.shared.forget()
         History.shared.clear()
+        Pets.shared.forget()
+        ImageCache.removeAll()
+        Still.forgetBlurs()
+        TripsView.found = nil
+        TripsView.summary = nil
+        AccountButton.loaded = nil
         URLCache.shared.removeAllCachedResponses()
         for folder in [ImmichClient.offlineFolder, FileManager.default.temporaryDirectory.appending(path: "originals"),
                        URL.cachesDirectory.appending(path: "spatial"), Featured.folder].compactMap({ $0 }) {

@@ -8,7 +8,7 @@ import simd
 // Spatial Scenes: a port of prototype/spatial/index.html. The photo is split into a front layer and a
 // back layer at their own depths; tilting the iPhone moves the camera around them.
 
-/// The photo full screen as a Spatial Scene, opened from the viewer's top bar.
+/// The photo full screen as a Spatial Scene, opened from the viewer's tool card.
 struct SpatialView: View {
     let asset: AssetRef
     let onClose: () -> Void
@@ -133,6 +133,8 @@ final class SpatialScene {
             buildGoal = 1
             status = "Depth ready in \(started.secondsSince). Rebuilding what's hidden behind the edges…"
             let lama = try await AIModel.lama.download()
+            // closed while depth ran: don't start the 500 MB model for a scene nobody sees
+            try Task.checkCancellation()
             let filled = try await Task.detached { try Spatial.inpaint(photo, split, model: lama) }.value
             try Task.checkCancellation()
             show(filled)

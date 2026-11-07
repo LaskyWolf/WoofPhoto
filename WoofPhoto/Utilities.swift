@@ -171,6 +171,7 @@ struct HiddenView: View {
             guard stage == .unlocked, let client = session.client else { return }
             // the saved thumbnails go too, or History and other screens could show them without Face ID
             for asset in timeline.assets { ImageCache.forget(asset.id, client: client) }
+            Still.forgetBlurs()
             Task { try? await client.lockSession() }
         }
     }
@@ -251,6 +252,8 @@ struct DuplicatesView: View {
                         Button("Not Duplicates") { Task { await dismiss(group) } }
                         Spacer()
                         Button("Keep Selected") { Task { await resolve(group) } }.bold()
+                            // keeping none would send every copy to Recently Deleted
+                            .disabled(kept(group).isEmpty)
                     }
                     .buttonStyle(.borderless)
                 }

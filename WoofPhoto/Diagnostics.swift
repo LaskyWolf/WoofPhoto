@@ -60,7 +60,7 @@ struct DiagnosticsView: View {
 
             Section {
                 if problems.isEmpty {
-                    Text("No errors in the log.").foregroundStyle(.secondary)
+                    Text("Nothing in the log.").foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(problems.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.caption.monospaced()).textSelection(.enabled)
@@ -73,7 +73,7 @@ struct DiagnosticsView: View {
             } header: {
                 Text("Recent Problems")
             } footer: {
-                Text("The last errors from the log file, newest last. Clearing hides them here; the log file keeps them.")
+                Text("The last errors and model timings from the log file, newest last. Clearing hides them here; the log file keeps them.")
             }
 
             Section("Checks") {
@@ -209,11 +209,11 @@ struct DiagnosticsSection: Identifiable {
 
     static func clearProblems() { FileLog.shared.append("NOTICE", clearedMarker) }
 
-    /// The last 30 error lines of the log file, after the last clear.
+    /// The last 30 error and timing lines of the log file, after the last clear.
     static func recentProblems() -> [String] {
         guard let text = try? String(contentsOf: FileLog.shared.fileURL, encoding: .utf8) else { return [] }
         let lines = text.split(separator: "\n")
         let start = lines.lastIndex { $0.hasSuffix(clearedMarker) }.map { $0 + 1 } ?? lines.startIndex
-        return lines[start...].filter { $0.contains("[ERROR]") }.suffix(30).map(String.init)
+        return lines[start...].filter { $0.contains("[ERROR]") || $0.contains("[TIME]") }.suffix(30).map(String.init)
     }
 }

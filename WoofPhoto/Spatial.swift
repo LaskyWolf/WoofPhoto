@@ -124,11 +124,14 @@ final class SpatialScene {
                 return
             }
             buildGoal = 1
-            status = "Depth ready in \(started.secondsSince). Rebuilding what's hidden behind the edges…"
+            status = LaMa.isDownloaded ? "Depth ready in \(started.secondsSince). Loading LaMa…"
+                : "Depth ready in \(started.secondsSince). Downloading LaMa (40 MB, only once)…"
             let lama = try await LaMa.download()
             // closed while depth ran: don't start LaMa for a scene nobody sees
             try Task.checkCancellation()
-            let filled = try await Task.detached { try Spatial.inpaint(photo, split, model: lama) }.value
+            // each step shows, so a slow one can be told apart from one that never started
+            let progress: @Sendable (String) -> Void = { text in Task { @MainActor in self.status = text } }
+            let filled = try await Task.detached { try Spatial.inpaint(photo, split, model: lama, progress: progress) }.value
             try Task.checkCancellation()
             show(filled)
             SpatialCache.write(filled, id: asset.id)
@@ -143,7 +146,7 @@ final class SpatialScene {
     }
 }
 
-private extension Date {
+extension Date {
     var secondsSince: String { (Date.now.timeIntervalSince(self)).formatted(.number.precision(.fractionLength(1))) + " s" }
 }
 
@@ -255,6 +258,7 @@ enum LaMa {
     static func download() async throws -> URL {
         let compiled = compiled
         if isDownloaded { return compiled }
+        let started = Date.now
         let package = FileManager.default.temporaryDirectory.appending(path: "LaMa.mlpackage")
         try? FileManager.default.removeItem(at: package)
         defer { try? FileManager.default.removeItem(at: package) }
@@ -265,7 +269,10 @@ enum LaMa {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: temp, to: file)
         }
+        FileLog.shared.append("TIME", "LaMa downloaded in \(started.secondsSince)")
+        let compiling = Date.now
         let built = try await MLModel.compileModel(at: package)
+        FileLog.shared.append("TIME", "LaMa compiled in \(compiling.secondsSince)")
         try FileManager.default.createDirectory(at: compiled.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: compiled)
         try FileManager.default.moveItem(at: built, to: compiled)
@@ -485,7 +492,7 @@ enum Spatial {
     /// LaMa repaints the hidden area in overlapping tiles along the hole, at the photo's own resolution.
     /// One square over the whole hole squashed a big subject's surroundings into 512 pixels, and LaMa's
     /// texture came back stretched into lines.
-    static func inpaint(_ photo: Photo, _ split: Split, model: URL) throws -> SceneLayers {
+    static func inpaint(_ photo: Photo, _ split: Split, model: URL, progress: @Sendable (String) -> Void = { _ in }) throws -> SceneLayers {
         guard let box = split.holeBox else { return split.layers }
         let (W, H, N, size) = (photo.width, photo.height, photo.width * photo.height, lamaSize)
         let hide = hidden(split, width: W, height: H)
@@ -508,7 +515,7 @@ enum Spatial {
             if mask.filter({ $0 > 0 }).count > size * size * 7 / 10 { mask = resize(split.glow, W, 1, region: region, to: size, size) }
             return (resize(rgb, W, 3, region: region, to: size, size), mask.map { $0 > 0 ? 1 : 0 })
         }
-        let painted = try lama(squares, model: model)
+        let painted = try lama(squares, model: model, progress: progress)
 
         // blend the tiles inside the hole, each weighted by its distance from the tile's edge, so no seams show
         var sum = [Float](repeating: 0, count: N * 3), weight = [Float](repeating: 0, count: N)
@@ -559,12 +566,17 @@ enum Spatial {
     }
 
     /// LaMa on several squares, loading the model once. `model` is `LaMa.compiled`.
-    static func lama(_ squares: [(rgb: [Float], mask: [Float])], model: URL) throws -> [[Float]] {
+    static func lama(_ squares: [(rgb: [Float], mask: [Float])], model: URL, progress: @Sendable (String) -> Void = { _ in }) throws -> [[Float]] {
         let (P, size) = (lamaSize * lamaSize, lamaSize as NSNumber)
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .all
+        let loading = Date.now
         let lama = try MLModel(contentsOf: model, configuration: configuration)
-        return try squares.map { square in try autoreleasepool {
+        FileLog.shared.append("TIME", "LaMa loaded in \(loading.secondsSince), \(squares.count) tiles")
+        return try squares.enumerated().map { index, square in try autoreleasepool {
+            progress("Rebuilding what's hidden behind the edges, \(index + 1) of \(squares.count)…")
+            let predicting = Date.now
+            defer { FileLog.shared.append("TIME", "LaMa tile \(index + 1) in \(predicting.secondsSince)") }
             // in: RGB 0…1 and the mask, channel by channel; out: RGB 0…1
             let image = try MLMultiArray(shape: [1, 3, size, size], dataType: .float32)
             let mask = try MLMultiArray(shape: [1, 1, size, size], dataType: .float32)

@@ -18,6 +18,7 @@ struct Uniforms {
 struct Fragment {
     float4 position [[position]];
     float2 uv;
+    float depth;   // the depth the triangle interpolates between its corners
 };
 
 constexpr sampler linearClamp(filter::linear, address::clamp_to_edge);
@@ -32,6 +33,7 @@ vertex Fragment spatialVertex(uint id [[vertex_id]], const device float2 *uvs [[
     Fragment out;
     out.position = u.mvp * float4(uv.x - .5, .5 - uv.y, d * u.strength * g, 1.);
     out.uv = uv;
+    out.depth = d;
     return out;
 }
 
@@ -40,8 +42,13 @@ fragment float4 spatialFragment(Fragment in [[stage_in]], constant Uniforms &u [
                                 texture2d<float> mask [[texture(2)]]) {
     float a = 1.;
     if (u.front > .5) {
-        a = data.sample(linearClamp, in.uv).g;
+        float4 t = data.sample(linearClamp, in.uv);
+        a = t.g;
         if (a < .02) discard_fragment();
+        // a triangle with one corner on the subject and one behind it is stretched across the jump; there the
+        // interpolated depth sits between near and far and differs from the photo's own depth at this point.
+        // Dropping those pixels shows the rebuilt back layer instead of streaks.
+        if (abs(in.depth - t.r) > .08) discard_fragment();
     }
     float3 c = image.sample(linearClamp, in.uv).rgb;
     if (u.scan > 0.) {

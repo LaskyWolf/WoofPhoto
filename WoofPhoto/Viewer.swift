@@ -112,6 +112,8 @@ struct Viewer: View {
                 }
             }
             .scrollTargetLayout()
+            // the spatial scene draws the photo itself; the flat one under it would show around its edges
+            .opacity(spatial == nil ? 1 : 0)
         }
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: $current)

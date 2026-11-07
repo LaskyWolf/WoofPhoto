@@ -18,9 +18,9 @@ struct SpatialView: View {
     @State private var scene = SpatialScene()
 
     var body: some View {
+        // transparent around the photo: the viewer's blurred ambient shows through, as in the flat viewer
         SpatialCanvas(scene: scene, reduced: reduceMotion)
             .ignoresSafeArea()
-            .background(Color.black)
             // dragging tilts too, for Reduce Motion and for looking without moving the iPhone; 200 points is a full tilt
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { scene.drag = SIMD2(Float($0.translation.width / 200), Float($0.translation.height / 200)) }
@@ -581,7 +581,8 @@ struct SpatialCanvas: UIViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
         view.sampleCount = 4
-        view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        view.isOpaque = false
         view.preferredFramesPerSecond = 60
         view.delegate = context.coordinator
         return view
@@ -637,6 +638,9 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         descriptor.colorAttachments[0].isBlendingEnabled = true
         descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
         descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        // the front layer's soft edge over the back layer stays opaque, so the ambient doesn't leak through the outline
+        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         descriptor.depthAttachmentPixelFormat = .depth32Float
         descriptor.rasterSampleCount = 4
         let depth = MTLDepthStencilDescriptor()

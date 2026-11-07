@@ -247,13 +247,13 @@ struct AIModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let folder = "spatial-4"
+    private static let folder = "spatial-5"
     private static func file(_ id: String) -> URL {
         URL.cachesDirectory.appending(path: "\(folder)/\(id.replacingOccurrences(of: "/", with: "_")).scene")
     }
     /// Scenes from older versions; deleted once per launch, on the first save.
     private static let dropOld: Void = {
-        for old in ["spatial", "spatial-2", "spatial-3"] { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: old)) }
+        for old in ["spatial", "spatial-2", "spatial-3", "spatial-4"] { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: old)) }
     }()
 
     static func read(_ id: String, photo: Photo) -> SceneLayers? {
@@ -336,14 +336,18 @@ enum Spatial {
         var alpha = box(tear, W, H, 1)
         for i in 0..<N { alpha[i] = 1 - min(1, alpha[i] * 2) }
 
-        // back layer: the farthest depth within the widest parallax shift, so it always sits behind,
-        // then blurred as wide again: erode moves the subject's depth step outward but keeps it a step, and the
-        // back mesh tore across it in streaks. The blur turns it into a ramp that bends instead.
+        // back layer: flat behind the subject. Any rise in it, a step or a ramp, stretches the background
+        // into lines along the tilt. So the subject's depth is removed and filled in from the background around it.
+        // Subject = as near as the near side of the closest-to-far tear, so everything in front of the background goes.
         let r = max(4, Int((0.06 * longest).rounded()))
-        let dBg = box(erode(d, W, H, r), W, H, r)
+        let eroded = erode(d, W, H, r), nearTear = box(tear, W, H, r)
+        var subject: Float = 2
+        for i in 0..<N where nearTear[i] > 0 && d[i] - eroded[i] > jump { subject = min(subject, d[i]) }
+        var dBg = d, behind = [Float](repeating: 0, count: N)
+        for i in 0..<N { behind[i] = d[i] < subject ? 1 : 0 }
+        fill(&dBg, behind, W, H, 1)
 
         // hole = near side of a tear, as wide as a tilt can uncover; only there the back layer gets new colours
-        let nearTear = box(tear, W, H, r)
         var hole = [Float](repeating: 0, count: N)
         for i in 0..<N { hole[i] = nearTear[i] > 0 && d[i] - dBg[i] > jump ? 1 : 0 }
         // grow 3 px past the edge: the outline's faint anti-aliased fringe is repainted too, not left behind

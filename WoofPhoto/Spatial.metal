@@ -10,7 +10,6 @@ struct Uniforms {
     float rise;    // 0…1, depth grows in from the top once it is known
     float time;
     float scan;    // analyzing: a band of light reads the flat photo top to bottom
-    float build;   // rebuilding: the area LaMa repaints (mask) shimmers
     float reduced;
     float front;
 };
@@ -42,8 +41,7 @@ vertex Fragment spatialVertex(uint id [[vertex_id]], const device float2 *uvs [[
 }
 
 fragment float4 spatialFragment(Fragment in [[stage_in]], constant Uniforms &u [[buffer(0)]],
-                                texture2d<float> image [[texture(0)]], texture2d<float> data [[texture(1)]],
-                                texture2d<float> mask [[texture(2)]]) {
+                                texture2d<float> image [[texture(0)]], texture2d<float> data [[texture(1)]]) {
     float a = 1.;
     float focus = 0.;   // the back layer is all background, so always soft
     if (u.front > .5) {
@@ -64,11 +62,6 @@ fragment float4 spatialFragment(Fragment in [[stage_in]], constant Uniforms &u [
         float band = u.reduced > .5 ? .25 + .25 * sin(u.time * 2.) : exp(-offset * offset);
         c = mix(c, float3(dot(c, float3(.299, .587, .114))), .4 * u.scan);
         c += light * band * .45 * u.scan;
-    }
-    if (u.build > 0.) {
-        float m = mask.sample(linearClamp, in.uv).r;
-        float s = u.reduced > .5 ? .5 : .5 + .5 * sin((in.uv.x + 1. - in.uv.y) * 40. - u.time * 3.);
-        c += light * m * u.build * (.12 + .3 * s);
     }
     return float4(c, a);
 }

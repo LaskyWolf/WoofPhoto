@@ -29,7 +29,7 @@ struct SharePage: View {
 
     private enum Phase: Equatable { case ready, uploading(Int), finished, failed(String) }
 
-    @State private var client = ImmichClient.saved()
+    private let client = ImmichClient.saved()
     @State private var albums: [AlbumRow] = []
     @State private var albumID: String?
     @State private var phase = Phase.ready

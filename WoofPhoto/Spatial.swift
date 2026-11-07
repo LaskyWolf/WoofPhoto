@@ -2,13 +2,14 @@ import CoreMotion
 import MetalKit
 import OnnxRuntimeBindings
 import SwiftUI
+import Vision
 import os
 import simd
 
 // Spatial Scenes: a port of prototype/spatial/index.html. The photo is split into a front layer and a
-// back layer at their own depths; tilting the iPhone moves the camera around them.
+// back layer at their own depths; tilting the iPhone slides the nearer layer more, like looking through a window.
 
-/// The photo full screen as a Spatial Scene, opened from the viewer's tool card.
+/// The photo full screen as a Spatial Scene, opened from the viewer's bottom bar.
 struct SpatialView: View {
     let asset: AssetRef
 
@@ -107,7 +108,7 @@ final class SpatialScene {
             let depthModel = try await AIModel.depth.download()
             status = "Estimating depth…"
             let raw = try await Task.detached { try Spatial.depth(photo, model: depthModel) }.value
-            let split = await Task.detached { Spatial.split(photo, depth: raw) }.value
+            let split = await Task.detached { Spatial.split(photo, depth: raw, subject: Spatial.subjectMask(photo)) }.value
             try Task.checkCancellation()
             show(split.layers)
             scanGoal = 0
@@ -117,8 +118,7 @@ final class SpatialScene {
                 SpatialCache.write(split.layers, id: asset.id)
                 return
             }
-            // LaMa peaked at about 490 MB in the M0 spike; with less free memory iOS would close the app
-            guard os_proc_available_memory() > 700 << 20 else {
+            guard Spatial.lamaFits else {
                 status = "Not enough free memory to rebuild the background, so it's filled from the edges."
                 return
             }
@@ -247,14 +247,21 @@ struct AIModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let folder = "spatial-6"
+    private static let version = 7
+    private static func folder(_ version: Int) -> URL {
+        URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
+    }
     private static func file(_ id: String) -> URL {
-        URL.cachesDirectory.appending(path: "\(folder)/\(id.replacingOccurrences(of: "/", with: "_")).scene")
+        folder(version).appending(path: "\(id.replacingOccurrences(of: "/", with: "_")).scene")
     }
     /// Scenes from older versions; deleted once per launch, on the first save.
     private static let dropOld: Void = {
-        for old in ["spatial", "spatial-2", "spatial-3", "spatial-4", "spatial-5"] { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: old)) }
+        for old in 1..<version { try? FileManager.default.removeItem(at: folder(old)) }
     }()
+    /// Every scene, current and old: signing out removes them.
+    static func removeAll() {
+        for v in 1...version { try? FileManager.default.removeItem(at: folder(v)) }
+    }
 
     static func read(_ id: String, photo: Photo) -> SceneLayers? {
         let size = photo.width * photo.height * 4
@@ -280,13 +287,15 @@ enum Spatial {
     static let jump: Float = 0.3
     /// LaMa's fixed input size.
     static let lamaSize = 512
+    /// Free memory LaMa needs: it peaked at about 490 MB in the M0 spike; with less iOS would close the app.
+    static var lamaFits: Bool { os_proc_available_memory() > 700 << 20 }
 
     struct Split: Sendable {
         var layers: SceneLayers
         /// 1 where the back layer gets new colours.
         var hole: [Float]
         var glow: [Float]
-        /// x0, y0, x1, y1 of the hole, padded; nil when there are no sharp depth edges.
+        /// x0, y0, x1, y1 of the hole; nil when there are no sharp depth edges.
         var holeBox: (x0: Int, y0: Int, x1: Int, y1: Int)?
     }
 
@@ -311,7 +320,36 @@ enum Spatial {
         return resize(out.values.map { max(0, $0) / top }, outW, 1, region: (0, 0, outW, outH), to: W, H)
     }
 
-    static func split(_ photo: Photo, depth raw: [Float]) -> Split {
+    /// The subject's outline from Vision, the same mask Photos uses to lift a subject off a photo.
+    /// 1 on the subject, 0 elsewhere; nil when Vision finds no subject (a landscape) or fails.
+    static func subjectMask(_ photo: Photo) -> [Float]? {
+        let (W, H) = (photo.width, photo.height)
+        guard let provider = CGDataProvider(data: Data(photo.rgba) as CFData),
+              let image = CGImage(width: W, height: H, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: W * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { return nil }
+        let request = VNGenerateForegroundInstanceMaskRequest(), handler = VNImageRequestHandler(cgImage: image)
+        guard (try? handler.perform([request])) != nil, let observation = request.results?.first,
+              let buffer = try? observation.generateScaledMaskForImage(forInstances: observation.allInstances, from: handler),
+              CVPixelBufferGetWidth(buffer) == W, CVPixelBufferGetHeight(buffer) == H
+        else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let row = CVPixelBufferGetBytesPerRow(buffer)
+        var mask = [Float](repeating: 0, count: W * H)
+        for y in 0..<H {
+            let line = (base + y * row).assumingMemoryBound(to: Float.self)
+            for x in 0..<W { mask[y * W + x] = line[x] > 0.5 ? 1 : 0 }
+        }
+        return mask
+    }
+
+    /// `subject`: Vision's subject mask. With it the outline comes from the mask, which follows fur and hair
+    /// far closer than the depth map's soft edge; the depth only decides how near the subject is.
+    static func split(_ photo: Photo, depth raw: [Float], subject mask: [Float]? = nil) -> Split {
         let (W, H, N) = (photo.width, photo.height, photo.width * photo.height)
         let longest = Float(max(W, H))
         let rgba = photo.rgba
@@ -325,6 +363,15 @@ enum Spatial {
         for i in 0..<N {
             let hi = 1 - hiInv[i], range = hi - lo[i]
             d[i] = range > jump ? (raw[i] - lo[i] > 0.08 * range ? hi : lo[i]) : raw[i]
+        }
+        if let mask {
+            // around the subject: the background's depth, filled in from outside the mask (grown past the outline,
+            // where the depth map still fades). On the subject: at least a clear step nearer, so the whole outline
+            // tears and the subject moves as one layer over the background, as in Photos.
+            let outside = erode(mask.map { 1 - $0 }, W, H, R)
+            var back = d
+            fill(&back, outside, W, H, 1)
+            for i in 0..<N { d[i] = mask[i] > 0 ? min(1, max(d[i], back[i] + jump + 0.1)) : back[i] }
         }
 
         // tears: pixels clearly farther than something 3 px away, i.e. the FAR side of a sharp depth jump.
@@ -357,8 +404,7 @@ enum Spatial {
         // the subject's cast shadow is painted on the background, so depth calls it background and it would stay
         // behind as a dark halo. In a band around the hole, repaint pixels darker than the background past the band
         // but of the same colour: a shadow dims the floor without changing its hue, a dark object changes both.
-        let S = max(4, Int((0.06 * longest).rounded()))
-        let band = box(hole, W, H, S)
+        let band = box(hole, W, H, r)
         var known = [Float](repeating: 0, count: N)
         for i in 0..<N { known[i] = band[i] > 0 ? 0 : 1 }
         var expected = photo.rgb
@@ -423,12 +469,13 @@ enum Spatial {
                 tiles.append((x, y))
             }
         }
+        let rgb = photo.rgb
         let squares = tiles.map { tile -> (rgb: [Float], mask: [Float]) in
             let region = (tile.x, tile.y, t, t)
             var mask = resize(hide, W, 1, region: region, to: size, size)
             // when the subject fills most of the tile, LaMa would have nothing to copy from: hide only the edge
             if mask.filter({ $0 > 0 }).count > size * size * 7 / 10 { mask = resize(split.glow, W, 1, region: region, to: size, size) }
-            return (resize(photo.rgb, W, 3, region: region, to: size, size), mask.map { $0 > 0 ? 1 : 0 })
+            return (resize(rgb, W, 3, region: region, to: size, size), mask.map { $0 > 0 ? 1 : 0 })
         }
         let painted = try lama(squares, model: model)
 
@@ -669,9 +716,6 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
     private var build: Float = 0
     private let start = CACurrentMediaTime()
 
-    private static let distance: Float = 3
-    private static let fieldOfView: Float = 40 * .pi / 180
-
     init?(scene: SpatialScene, reduced: Bool) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
               let library = device.makeDefaultLibrary() else { return nil }
@@ -763,14 +807,17 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         // while rebuilding, the camera sways on its own so the 3D shows without touching anything
         let sway = reduced ? 0 : build
         let cx = tilt.x + sin(time * 0.7) * 0.6 * sway, cy = tilt.y + sin(time * 0.5) * 0.3 * sway
-        let orbit: Float = 0.25, d = Self.distance
-        let eye = SIMD3(sin(cx * orbit) * d, sin(cy * orbit) * d, cos(cx * orbit) * cos(cy * orbit) * d)
 
-        let viewAspect = Float(view.drawableSize.width / view.drawableSize.height)
-        // the whole picture, shrunk 10% so it stays on screen while the camera orbits
-        let viewHeight = 2 * d * tan(Self.fieldOfView / 2)
-        let s = min(viewHeight * viewAspect / aspect, viewHeight) * 0.9
-        let mvp = perspective(aspect: viewAspect) * lookAt(eye) * simd_float4x4(diagonal: SIMD4(s * aspect, s, s, 1))
+        // the photo fills the screen and the frame stays still, as in Photos: no camera turn, each point slides
+        // by its depth instead (near = more), so the subject moves over a background that barely moves.
+        // 5% larger than the screen, so the background's small slide never shows an edge.
+        let viewAspect = Float(view.drawableSize.width / view.drawableSize.height), overscan: Float = 1.05
+        let fx = overscan * max(1, aspect / viewAspect), fy = overscan * max(1, viewAspect / aspect)
+        // ponytail: 0.4 = how far a full tilt slides the nearest point (0.1 of the screen at strength 0.25)
+        let slide = -SIMD2(cx, cy) * 0.4
+        // z: nearer is smaller, so the subject wins the depth test over the back layer
+        let mvp = simd_float4x4(columns: (SIMD4(2 * fx, 0, 0, 0), SIMD4(0, 2 * fy, 0, 0),
+                                          SIMD4(slide.x, slide.y, -1, 0), SIMD4(0, 0, 0.5, 1)))
 
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
@@ -805,20 +852,5 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
             buffer.commit()
         }
         return texture
-    }
-
-    /// Right-handed, depth 0…1 as Metal expects.
-    private func perspective(aspect: Float, near: Float = 0.1, far: Float = 100) -> simd_float4x4 {
-        let y = 1 / tan(Self.fieldOfView / 2), z = far / (near - far)
-        return simd_float4x4(columns: (SIMD4(y / aspect, 0, 0, 0), SIMD4(0, y, 0, 0), SIMD4(0, 0, z, -1), SIMD4(0, 0, z * near, 0)))
-    }
-
-    /// The camera at `eye`, looking at the middle of the photo, slightly in front of it like the prototype.
-    private func lookAt(_ eye: SIMD3<Float>) -> simd_float4x4 {
-        let f = simd_normalize(SIMD3(0, 0, 0.1) - eye)
-        let s = simd_normalize(simd_cross(f, SIMD3(0, 1, 0)))
-        let u = simd_cross(s, f)
-        return simd_float4x4(columns: (SIMD4(s.x, u.x, -f.x, 0), SIMD4(s.y, u.y, -f.y, 0), SIMD4(s.z, u.z, -f.z, 0),
-                                       SIMD4(-simd_dot(s, eye), -simd_dot(u, eye), simd_dot(f, eye), 1)))
     }
 }

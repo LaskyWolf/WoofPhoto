@@ -112,14 +112,6 @@ struct CollageEditor: View {
 enum CollageLayout: String, CaseIterable {
     case grid = "Grid", feature = "Feature", rows = "Rows"
 
-    var symbol: String {
-        switch self {
-        case .grid: "square.grid.2x2"
-        case .feature: "rectangle.grid.1x2"
-        case .rows: "rectangle.split.1x2"
-        }
-    }
-
     func cells(_ count: Int) -> [CGRect] {
         guard count > 0 else { return [] }
         switch self {

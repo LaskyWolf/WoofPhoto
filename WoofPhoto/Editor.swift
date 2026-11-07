@@ -3,6 +3,7 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import ImageIO
 import Photos
+import PencilKit
 import SwiftUI
 
 /// The editor for photos and videos: Trim (videos), Adjust, Filters, Crop, Clean Up and Markup (photos), and Live for Live Photos.
@@ -42,7 +43,8 @@ struct EditorView: View {
     @State private var brush: CGFloat = 40
     /// The photo's pixels before each Clean Up stroke or Markup, for Undo.
     @State private var undo: [CIImage?] = []
-    @State private var markingUp = false
+    /// Markup's drawing, kept while switching away and back until Done or Cancel.
+    @State private var canvas = PKCanvasView()
 
     var body: some View {
         NavigationStack {
@@ -51,6 +53,11 @@ struct EditorView: View {
                     // the photo without the other edits, so a stroke lands on the pixels it covers
                     CleanUpCanvas(image: edit.base(source), brush: brush) { retouch($0) }
                         .frame(maxHeight: .infinity)
+                } else if tool == .markup, let source {
+                    MarkupCanvas(image: edit.base(source), canvas: canvas)
+                        .frame(maxHeight: .infinity)
+                        // ponytail: room for PencilKit's tool picker, about this tall on iPhone; read its frame if it covers the photo
+                        .padding(.bottom, 90)
                 } else {
                     ZStack {
                         if let preview {
@@ -66,40 +73,59 @@ struct EditorView: View {
                         Task { await render(original: pressing) }
                     }
                 }
-                controls
-                Picker("Tool", selection: $tool) {
-                    ForEach(tools, id: \.self) { Text($0.rawValue) }
+                // Markup's tool picker takes the bottom, as in Photos; its own Cancel and Done lead back
+                if tool != .markup {
+                    controls
+                    Picker("Tool", selection: $tool) {
+                        ForEach(tools, id: \.self) { Text($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
             }
             .padding(.bottom)
             .background(.black)
             .foregroundStyle(.white)
             .overlay { if busy { ProgressView().controlSize(.large) } }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", role: .cancel) { dismiss() }
-                }
-                ToolbarItem(placement: .principal) {
-                    if hasServerEdits {
-                        Button("Revert") { Task { await revert() } }.tint(.red)
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", role: .confirm) { Task { await save() } }
-                        .disabled(!changed || busy)
-                }
+                if tool == .markup { markupToolbar } else { editorToolbar }
             }
             .messageAlert($error)
-            .fullScreenCover(isPresented: $markingUp) {
-                if let source { MarkupView(image: edit.base(source)) { retouch($0) } }
-            }
-            .onChange(of: tool) { if tool == .markup { markingUp = true } }
         }
         .task { await load() }
         .task(id: edit) { await render(original: false) }
         .task(id: framePosition) { await showFrame(at: framePosition) }
+    }
+
+    @ToolbarContentBuilder private var markupToolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel", role: .cancel) {
+                canvas.drawing = PKDrawing()
+                tool = .adjust
+            }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done", role: .confirm) {
+                if let source, let marked = MarkupCanvas.flatten(canvas, onto: edit.base(source)) { retouch(marked) }
+                canvas.drawing = PKDrawing()
+                tool = .adjust
+            }
+        }
+    }
+
+    @ToolbarContentBuilder private var editorToolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel", role: .cancel) { dismiss() }
+        }
+        ToolbarItem(placement: .principal) {
+            if hasServerEdits {
+                Button("Revert") { Task { await revert() } }.tint(.red)
+            }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done", role: .confirm) { Task { await save() } }
+                .disabled(!changed || busy)
+        }
     }
 
     private var changed: Bool { edit != PhotoEdit() || trim != 0...1 || muted }
@@ -196,12 +222,7 @@ struct EditorView: View {
             }
             .padding(.horizontal)
         case .markup:
-            HStack(spacing: 20) {
-                Button("Draw on Photo", systemImage: "pencil.tip.crop.circle") { markingUp = true }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                undoButton
-            }
+            EmptyView()
         case .live:
             VStack {
                 Toggle("Live", isOn: Binding { !edit.motionOff } set: { edit.motionOff = !$0 })

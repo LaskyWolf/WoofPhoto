@@ -181,7 +181,7 @@ private struct AssetActionsHost: ViewModifier {
                     actions.run(session.client, removes: true) { try await $0.deleteAssets(ids, force: force) }
                 }
             }
-            .alert(actions.message ?? "", isPresented: Binding { actions.message != nil } set: { if !$0 { actions.message = nil } }) {}
+            .messageAlert($actions.message)
     }
 }
 

@@ -25,13 +25,12 @@ struct WoofPhotoApp: App {
     /// The background run iOS starts: back up until done or until iOS says time is up.
     @MainActor private static func runBackup(_ task: BGTask) {
         let backup = Backup.shared
-        guard let text = UserDefaults.standard.string(forKey: "server"), let url = URL(string: text),
-              let token = Keychain.read("token") else {
+        guard let client = ImmichClient.saved() else {
             task.setTaskCompleted(success: false)
             return
         }
         task.expirationHandler = { MainActor.assumeIsolated { backup.stop() } }
-        backup.start(with: ImmichClient(server: url, token: token))
+        backup.start(with: client)
         Task {
             while backup.isRunning { try? await Task.sleep(for: .seconds(1)) }
             backup.scheduleBackground()

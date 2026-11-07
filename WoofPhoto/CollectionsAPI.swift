@@ -127,12 +127,12 @@ extension ImmichClient {
     }
 
     /// The assets that best match a description, most similar first.
-    func searchSmart(_ query: String, filters: [String: Any] = [:], limit: Int = 300) async throws -> [Asset] {
+    func searchSmart(_ query: String, limit: Int = 300) async throws -> [Asset] {
         var assets: [Asset] = []
         var page = 1
         while assets.count < limit {
             let response: SearchResponse = try await fetch("POST", "/search/smart",
-                                                          body: filters.merging(["query": query, "page": page, "size": 100]) { $1 })
+                                                          body: ["query": query, "page": page, "size": 100])
             assets += response.assets.items
             guard response.assets.nextPage != nil else { break }
             page += 1

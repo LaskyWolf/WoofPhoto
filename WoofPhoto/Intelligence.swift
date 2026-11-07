@@ -40,14 +40,13 @@ enum Intelligence {
 
     /// A Photos-style title for a group of photos: a trip, a memory, a day.
     @MainActor
-    static func title(key: String, kind: String, places: [String], start: Date?, end: Date?, people: [String] = []) async -> String? {
+    static func title(key: String, kind: String, places: [String], start: Date?, end: Date?) async -> String? {
         if let title = titles[key] { return title }
         guard isAvailable else { return nil }
         var facts = ["Kind: \(kind)"]
         if !places.isEmpty { facts.append("Places, most photos first: \(places.prefix(5).joined(separator: ", "))") }
         if let start { facts.append("From: \(start.formatted(.dateTime.day().month(.wide).year()))") }
         if let end { facts.append("To: \(end.formatted(.dateTime.day().month(.wide).year()))") }
-        if !people.isEmpty { facts.append("People: \(people.prefix(4).joined(separator: ", "))") }
         let session = LanguageModelSession(instructions: """
             You name photo collections for a gallery app, in the style of Apple Photos memories \
             ("Summer in Lisbon", "Weekend in the Alps", "Milan Through the Years"). Use only the facts given.

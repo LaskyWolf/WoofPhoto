@@ -56,8 +56,9 @@ final class Session {
         TripsView.summary = nil
         AccountButton.loaded = nil
         URLCache.shared.removeAllCachedResponses()
+        SpatialCache.removeAll()
         for folder in [ImmichClient.offlineFolder, FileManager.default.temporaryDirectory.appending(path: "originals"),
-                       URL.cachesDirectory.appending(path: "spatial"), Featured.folder].compactMap({ $0 }) {
+                       Featured.folder].compactMap({ $0 }) {
             try? FileManager.default.removeItem(at: folder)
         }
         WidgetCenter.shared.reloadAllTimelines()

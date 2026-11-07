@@ -60,7 +60,8 @@ struct Viewer: View {
                     .frame(maxHeight: .infinity)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                bottomBar
+                // Spatial is full screen with only its close button, as in Photos
+                if spatial == nil { bottomBar.transition(.opacity) }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
             .background(.black)
@@ -69,7 +70,7 @@ struct Viewer: View {
             .environment(\.colorScheme, .dark)
             .overlay { if busy { ProgressView().controlSize(.large) } }
             .task(id: current) {
-                if let asset = timeline.assets.first(where: { $0.id == current }) { OpenPhoto.shared.asset = asset }
+                if let asset = currentAsset { OpenPhoto.shared.asset = asset }
                 await currentChanged()
             }
             .sheet(item: $sharing) { file in
@@ -130,8 +131,6 @@ struct Viewer: View {
             guard spatial != nil else { return }
             spatial = shownAsset?.isImage == true && shownAsset?.localID == nil ? shownAsset : nil
         }
-        .environment(\.liveTextInset, 8)
-        .environment(\.videoControlsLift, 10)
         .ignoresSafeArea(edges: .top)
         // WoofTube's ambient mode: the photo itself, blurred, instead of black
         .background { ambient }
@@ -154,11 +153,12 @@ struct Viewer: View {
         // over the spatial scene too, where it's only the close button
         .overlay(alignment: .top) { if !chromeHidden || spatial != nil { topBar.transition(.opacity) } }
         .overlay {
-            BottomCornersCover(radius: 16)
+            if spatial == nil { BottomCornersCover(radius: 16)
                 .fill(.black, style: FillStyle(eoFill: true))
                 .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
+                .allowsHitTesting(false) }
         }
+        .ignoresSafeArea(edges: spatial == nil ? [] : .bottom)
     }
 
     private static let stripHeight: CGFloat = 46
@@ -737,7 +737,6 @@ struct DevicePage: View {
 /// WoofTube's player controls on a plain AVPlayer: play/pause in the middle, a thin accent progress bar,
 /// a gradient while visible, auto-hide while playing, double-tap a side to skip 10 seconds.
 struct VideoSurface: View {
-    @Environment(\.videoControlsLift) private var controlsLift
     let player: AVPlayer
     @Binding var chromeHidden: Bool
     let onTap: () -> Void
@@ -790,8 +789,7 @@ struct VideoSurface: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                // above the viewer's photo strip
-                if !chromeHidden { controls.padding(.bottom, controlsLift).transition(.opacity) }
+                if !chromeHidden { controls.padding(.bottom, 10).transition(.opacity) }
             }
         }
         .task {
@@ -977,14 +975,12 @@ struct ZoomableImage: UIViewRepresentable {
     var image: UIImage?
     var onTap: () -> Void
     var onZoomIn: () -> Void
-    @Environment(\.liveTextInset) private var liveTextInset
 
     func makeUIView(context: Context) -> ZoomView { ZoomView() }
 
     func updateUIView(_ view: ZoomView, context: Context) {
         view.onTap = onTap
         view.onZoomIn = onZoomIn
-        view.liveTextInset = liveTextInset
         view.show(image)
     }
 }
@@ -992,10 +988,6 @@ struct ZoomableImage: UIViewRepresentable {
 final class ZoomView: UIScrollView, UIScrollViewDelegate {
     var onTap: () -> Void = {}
     var onZoomIn: () -> Void = {}
-    /// Lifts Live Text's button above the date, rail and strip drawn over the photo.
-    var liveTextInset: CGFloat = 0 {
-        didSet { analysis.supplementaryInterfaceContentInsets = UIEdgeInsets(top: 0, left: 0, bottom: liveTextInset, right: 0) }
-    }
 
     private let imageView = UIImageView()
     private let analysis = ImageAnalysisInteraction()
@@ -1015,6 +1007,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
         imageView.accessibilityLabel = "Photo"
         imageView.accessibilityTraits = .image
         imageView.addInteraction(analysis)
+        // Live Text's button a little above the photo's bottom edge
+        analysis.supplementaryInterfaceContentInsets = UIEdgeInsets(top: 0, left: 0, bottom: 8, right: 0)
         addSubview(imageView)
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:)))
@@ -1070,7 +1064,7 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
 
 // MARK: - Info
 
-/// The pull-up panel: caption, date, camera, people and where the photo was taken, as cards.
+/// The details under the photo: caption, date, camera, people and where the photo was taken, as cards.
 struct InfoSheet: View {
     let id: String
 
@@ -1208,13 +1202,13 @@ struct InfoSheet: View {
             try await session.client?.updateAssets([asset.id], ["description": caption])
             self.asset?.exifInfo?.description = caption
         } catch {
-            // ponytail: shows only while the sheet is open; a save on close fails silently, retried on the next open
+            // ponytail: shows only while the details are open; a save on close fails silently, retried on the next open
             self.error = error.explanation
         }
     }
 }
 
-/// The pull-up panel for an item only on this iPhone: its date, place, size and file name, from Photos.
+/// The details under the photo for an item only on this iPhone: its date, place, size and file name, from Photos.
 struct DeviceInfoSheet: View {
     let localID: String
     @State private var asset: PHAsset?
@@ -1255,20 +1249,11 @@ struct DeviceInfoSheet: View {
             .padding(Tokens.screenPadding)
             .padding(.top, 8)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
         .task {
             asset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject
             fileName = asset.flatMap { PHAssetResource.assetResources(for: $0).first?.originalFilename }
         }
     }
-}
-
-extension EnvironmentValues {
-    /// How far above the page's bottom Live Text's button goes.
-    @Entry var liveTextInset: CGFloat = 0
-    /// How far above the page's bottom a video's controls go, clear of the photo strip.
-    @Entry var videoControlsLift: CGFloat = 4
 }
 
 private extension View {

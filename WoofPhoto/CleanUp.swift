@@ -65,8 +65,7 @@ struct CleanUpCanvas: View {
                 status = nil
             }
             do {
-                // the same guard as Spatial Scenes: LaMa peaks near 500 MB
-                guard os_proc_available_memory() > 700 << 20 else { throw CleanUp.Failure.memory }
+                guard Spatial.lamaFits else { throw CleanUp.Failure.memory }
                 if !FileManager.default.fileExists(atPath: AIModel.lama.file.path) {
                     status = "Downloading Clean Up, once…"
                 }

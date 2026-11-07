@@ -130,9 +130,35 @@ final class SpatialScene {
             let filled = try await Task.detached { try Spatial.inpaint(photo, split, model: lama) }.value
             try Task.checkCancellation()
             show(filled)
+            SpatialCache.write(filled, id: asset.id)
+            // Stable Diffusion repaints it sharper on top, when downloaded; LaMa's result shows meanwhile
+            if SharpBackgrounds.shared.isReady, os_proc_available_memory() > 2 << 30 {
+                status = "Painting a sharper background…"
+                let cancelled = OSAllocatedUnfairLock(initialState: false)
+                do {
+                    let sharp = try await withTaskCancellationHandler {
+                        try await Task.detached {
+                            try Spatial.sharpen(photo, split, layers: filled, cancelled: cancelled) { done, total in
+                                Task { @MainActor in self.status = "Painting a sharper background (\(done + 1) of \(total))…" }
+                            }
+                        }.value
+                    } onCancel: {
+                        cancelled.withLock { $0 = true }
+                    }
+                    try Task.checkCancellation()
+                    show(sharp)
+                    SpatialCache.write(sharp, id: asset.id)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // LaMa's background is already on screen and saved; say why it stays
+                    buildGoal = 0
+                    status = "Couldn't paint a sharper background: \(error.localizedDescription)"
+                    return
+                }
+            }
             buildGoal = 0
             status = nil
-            SpatialCache.write(filled, id: asset.id)
         } catch is CancellationError {
         } catch {
             buildGoal = 0
@@ -407,28 +433,14 @@ enum Spatial {
     static func inpaint(_ photo: Photo, _ split: Split, model: URL) throws -> SceneLayers {
         guard let box = split.holeBox else { return split.layers }
         let (W, H, N, size) = (photo.width, photo.height, photo.width * photo.height, lamaSize)
-        // hide the whole subject, not just its edge: LaMa copies what it sees, and it should only see background.
-        // Subject = as near as the nearest-side of the hole, read from the depth the split stored.
-        let depth = { (i: Int) in Float(split.layers.data[i * 4]) / 255 }, back = { (i: Int) in Float(split.layers.data[i * 4 + 2]) / 255 }
-        let near = (0..<N).filter { split.hole[$0] != 0 && depth($0) - back($0) > jump }.map(depth).min() ?? 2
-        var hide = split.glow
-        for i in 0..<N where depth(i) >= near { hide[i] = 1 }
+        let hide = hidden(split, width: W, height: H)
 
         // tiles of `t` photo pixels, a quarter overlapping; photos over 1536 pixels go in a little smaller
         // so a big one doesn't need dozens of tiles
         let t = min(Int(Float(size) * max(1, Float(max(W, H)) / 1536)), W, H)
-        func starts(_ lo: Int, _ hi: Int, _ n: Int) -> [Int] {
-            var result: [Int] = [], p = max(0, lo - t / 4)
-            while true {
-                let start = min(p, n - t)
-                result.append(start)
-                if start + t > hi || start == n - t { return result }
-                p += t * 3 / 4
-            }
-        }
         var tiles: [(x: Int, y: Int)] = []
-        for y in starts(box.y0, box.y1, H) {
-            for x in starts(box.x0, box.x1, W)
+        for y in tileStarts(box.y0, box.y1, H, t) {
+            for x in tileStarts(box.x0, box.x1, W, t)
             where (y..<y + t).contains(where: { row in (x..<x + t).contains { split.hole[row * W + $0] != 0 } }) {
                 tiles.append((x, y))
             }
@@ -461,6 +473,27 @@ enum Spatial {
             for c in 0..<3 { layers.background[i * 4 + c] = byte(sum[i * 3 + c] / weight[i]) }
         }
         return layers
+    }
+
+    /// 1 where the inpainting must not look: the whole subject, not just its edge, since LaMa and SD copy what they see
+    /// and should only see background. Subject = as near as the near side of the hole, from the depth the split stored.
+    static func hidden(_ split: Split, width W: Int, height H: Int) -> [Float] {
+        let depth = { (i: Int) in Float(split.layers.data[i * 4]) / 255 }, back = { (i: Int) in Float(split.layers.data[i * 4 + 2]) / 255 }
+        let near = (0..<W * H).filter { split.hole[$0] != 0 && depth($0) - back($0) > jump }.map(depth).min() ?? 2
+        var hide = split.glow
+        for i in 0..<W * H where depth(i) >= near { hide[i] = 1 }
+        return hide
+    }
+
+    /// Where tiles `t` wide start so they cover lo…hi of a side `n` long, overlapping by a quarter.
+    static func tileStarts(_ lo: Int, _ hi: Int, _ n: Int, _ t: Int) -> [Int] {
+        var result: [Int] = [], p = max(0, lo - t / 4)
+        while true {
+            let start = min(p, n - t)
+            result.append(start)
+            if start + t > hi || start == n - t { return result }
+            p += t * 3 / 4
+        }
     }
 
     /// LaMa on one `lamaSize` square, for Clean Up. `rgb` is 0…255, three per pixel, row by row from the top;

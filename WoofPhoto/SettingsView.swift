@@ -207,6 +207,7 @@ struct LibrarySettings: View {
         List {
             TimelineSettings()
             ViewerSettings()
+            SharpBackgroundsSettings()
             HistorySettings()
         }
         .navigationTitle("Library & Viewer")

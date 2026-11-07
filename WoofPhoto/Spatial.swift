@@ -52,7 +52,7 @@ struct SceneLayers: Sendable {
     var height: Int
     var photo: [UInt8]
     var background: [UInt8]
-    /// R = front depth, G = front alpha, B = back depth; 255 is near.
+    /// R = front depth, G = front alpha, B = back depth; 255 is near. A = focus: 255 on the subject, 0 behind it.
     var data: [UInt8]
     /// R = how strongly each pixel shimmers while the hidden area is rebuilt.
     var mask: [UInt8]
@@ -131,32 +131,6 @@ final class SpatialScene {
             try Task.checkCancellation()
             show(filled)
             SpatialCache.write(filled, id: asset.id)
-            // Stable Diffusion repaints it sharper on top, when downloaded; LaMa's result shows meanwhile
-            if SharpBackgrounds.shared.isReady, os_proc_available_memory() > 2 << 30 {
-                status = "Painting a sharper background…"
-                let cancelled = OSAllocatedUnfairLock(initialState: false)
-                do {
-                    let sharp = try await withTaskCancellationHandler {
-                        try await Task.detached {
-                            try Spatial.sharpen(photo, split, layers: filled, cancelled: cancelled) { done, total in
-                                Task { @MainActor in self.status = "Painting a sharper background (\(done + 1) of \(total))…" }
-                            }
-                        }.value
-                    } onCancel: {
-                        cancelled.withLock { $0 = true }
-                    }
-                    try Task.checkCancellation()
-                    show(sharp)
-                    SpatialCache.write(sharp, id: asset.id)
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    // LaMa's background is already on screen and saved; say why it stays
-                    buildGoal = 0
-                    status = "Couldn't paint a sharper background: \(error.localizedDescription)"
-                    return
-                }
-            }
             buildGoal = 0
             status = nil
         } catch is CancellationError {
@@ -273,13 +247,13 @@ struct AIModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let folder = "spatial-5"
+    private static let folder = "spatial-6"
     private static func file(_ id: String) -> URL {
         URL.cachesDirectory.appending(path: "\(folder)/\(id.replacingOccurrences(of: "/", with: "_")).scene")
     }
     /// Scenes from older versions; deleted once per launch, on the first save.
     private static let dropOld: Void = {
-        for old in ["spatial", "spatial-2", "spatial-3", "spatial-4"] { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: old)) }
+        for old in ["spatial", "spatial-2", "spatial-3", "spatial-4", "spatial-5"] { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: old)) }
     }()
 
     static func read(_ id: String, photo: Photo) -> SceneLayers? {
@@ -406,8 +380,12 @@ enum Spatial {
         fill(&rgb, keepBg, W, H, 3)
         var background = rgba, data = [UInt8](repeating: 255, count: N * 4), mask = [UInt8](repeating: 0, count: N * 4)
         let glow = box(hole, W, H, Int((Float(r) / 3).rounded()))   // soft falloff for the shimmer, not slabs
+        // focus: the subject sharp, everything behind it soft like a portrait, so the repainted strip,
+        // softer than the photo, blends into the background around it. Feathered 2 px so the outline isn't jagged.
+        let focus = box(d.map { $0 >= subject ? 1 : 0 }, W, H, 2)
         for i in 0..<N {
             if hole[i] != 0 { for c in 0..<3 { background[i * 4 + c] = byte(rgb[i * 3 + c]) } }
+            data[i * 4 + 3] = byte(focus[i] * 255)
             data[i * 4] = byte(d[i] * 255)
             data[i * 4 + 1] = byte(alpha[i] * 255)
             data[i * 4 + 2] = byte(dBg[i] * 255)
@@ -475,7 +453,7 @@ enum Spatial {
         return layers
     }
 
-    /// 1 where the inpainting must not look: the whole subject, not just its edge, since LaMa and SD copy what they see
+    /// 1 where the inpainting must not look: the whole subject, not just its edge, since LaMa copies what it sees
     /// and should only see background. Subject = as near as the near side of the hole, from the depth the split stored.
     static func hidden(_ split: Split, width W: Int, height H: Int) -> [Float] {
         let depth = { (i: Int) in Float(split.layers.data[i * 4]) / 255 }, back = { (i: Int) in Float(split.layers.data[i * 4 + 2]) / 255 }
@@ -757,7 +735,8 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
 
     private func render(_ view: MTKView) {
         if scene.version != version, let layers = scene.layers {
-            textures = [layers.photo, layers.background, layers.data, layers.mask].compactMap { texture($0, layers.width, layers.height) }
+            textures = [(layers.photo, true), (layers.background, true), (layers.data, false), (layers.mask, false)]
+                .compactMap { texture($0.0, layers.width, layers.height, mipmapped: $0.1) }
             aspect = Float(layers.width) / Float(layers.height)
             version = scene.version
         }
@@ -812,12 +791,18 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         buffer.commit()
     }
 
-    private func texture(_ bytes: [UInt8], _ width: Int, _ height: Int) -> MTLTexture? {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+    /// `mipmapped`: smaller copies too, which the shader reads for the soft background.
+    private func texture(_ bytes: [UInt8], _ width: Int, _ height: Int, mipmapped: Bool) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: mipmapped)
         descriptor.usage = .shaderRead
-        let texture = device.makeTexture(descriptor: descriptor)
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
         bytes.withUnsafeBytes {
-            texture?.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: width * 4)
+            texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: width * 4)
+        }
+        if mipmapped, let buffer = queue.makeCommandBuffer(), let blit = buffer.makeBlitCommandEncoder() {
+            blit.generateMipmaps(for: texture)
+            blit.endEncoding()
+            buffer.commit()
         }
         return texture
     }

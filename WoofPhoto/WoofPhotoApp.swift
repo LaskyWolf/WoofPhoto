@@ -15,6 +15,8 @@ struct WoofPhotoApp: App {
         // videos play with sound when the iPhone's silent switch is on, like in Photos
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         Backup.shared.refreshPending()
+        // ponytail: builds 44–45 could download a 2 GB Stable Diffusion model here; drop this line once those are gone
+        try? FileManager.default.removeItem(at: URL.applicationSupportDirectory.appending(path: "Models/Runway_SD1.5_Inpaint_chunked"))
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Backup.taskID, using: .main) { task in
             MainActor.assumeIsolated { Self.runBackup(task) }
         }

@@ -112,8 +112,15 @@ final class SpatialScene {
         show(photo.flat)
         scanGoal = 1
         do {
-            status = "Estimating depth…"
+            // Depth Anything Base: about 400 MB of weights plus the photo's activations
+            guard os_proc_available_memory() > 1200 << 20 else {
+                status = "Not enough free memory to estimate depth. Close other apps and try again."
+                return
+            }
+            let downloaded = FileManager.default.fileExists(atPath: AIModel.depth.file.path)
+            status = downloaded ? "Estimating depth…" : "Downloading the depth model (390 MB, only once)…"
             let depthModel = try await AIModel.depth.download()
+            status = "Estimating depth…"
             let raw = try await Task.detached { try Spatial.depth(photo, model: depthModel) }.value
             let split = await Task.detached { Spatial.split(photo, depth: raw) }.value
             try Task.checkCancellation()
@@ -203,7 +210,7 @@ struct Photo: Sendable {
 struct AIModel: Sendable {
     var url: URL
 
-    static let depth = AIModel(url: URL(string: "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx")!)
+    static let depth = AIModel(url: URL(string: "https://huggingface.co/onnx-community/depth-anything-v2-base/resolve/main/onnx/model.onnx")!)
     static let lama = AIModel(url: URL(string: "https://huggingface.co/opencv/inpainting_lama/resolve/main/inpainting_lama_2025jan.onnx")!)
 
     /// Where the download lives; it exists once the model was downloaded.
@@ -223,9 +230,18 @@ struct AIModel: Sendable {
     static func run(_ file: URL, inputs: [String: (values: [Float], shape: [Int])], output: String) throws -> (values: [Float], shape: [Int]) {
         try autoreleasepool {
             let env = try ORTEnv(loggingLevel: .warning)
-            let options = try ORTSessionOptions()
-            try options.setIntraOpNumThreads(Int32(ProcessInfo.processInfo.activeProcessorCount))
-            let session = try ORTSession(env: env, modelPath: file.path, sessionOptions: options)
+            // Core ML runs the model on the Neural Engine and GPU; the CPU is the fallback when Core ML can't load it
+            func session(coreML: Bool) throws -> ORTSession {
+                let options = try ORTSessionOptions()
+                try options.setIntraOpNumThreads(Int32(ProcessInfo.processInfo.activeProcessorCount))
+                if coreML {
+                    let coreMLOptions = ORTCoreMLExecutionProviderOptions()
+                    coreMLOptions.createMLProgram = true
+                    try options.appendCoreMLExecutionProvider(with: coreMLOptions)
+                }
+                return try ORTSession(env: env, modelPath: file.path, sessionOptions: options)
+            }
+            let session = (try? session(coreML: true)) ?? (try session(coreML: false))
             var feeds: [String: ORTValue] = [:]
             for (name, input) in inputs {
                 let data = input.values.withUnsafeBufferPointer { NSMutableData(bytes: $0.baseAddress, length: $0.count * 4) }
@@ -244,9 +260,13 @@ struct AIModel: Sendable {
 /// Saves the finished back layer and depth per asset, so a scene is built only once.
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
+    /// Bump when the models or the split change, so old scenes are built again.
+    private static let folder = "spatial-2"
     private static func file(_ id: String) -> URL {
-        URL.cachesDirectory.appending(path: "spatial/\(id.replacingOccurrences(of: "/", with: "_")).scene")
+        URL.cachesDirectory.appending(path: "\(folder)/\(id.replacingOccurrences(of: "/", with: "_")).scene")
     }
+    /// Scenes from older versions; deleted once per launch, on the first save.
+    private static let dropOld: Void = { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "spatial")) }()
 
     static func read(_ id: String, photo: Photo) -> SceneLayers? {
         let size = photo.width * photo.height * 4
@@ -259,6 +279,7 @@ enum SpatialCache {
     }
 
     static func write(_ layers: SceneLayers, id: String) {
+        _ = dropOld
         let url = file(id)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? (Data(layers.background + layers.data) as NSData).compressed(using: .lzfse).write(to: url, options: .completeFileProtection)
@@ -338,19 +359,23 @@ enum Spatial {
         for i in 0..<N { hole[i] = grown[i] > 0 ? 1 : 0 }
 
         // the subject's cast shadow is painted on the background, so depth calls it background and it would stay
-        // behind as a dark halo. In a band around the hole, repaint pixels clearly darker than the background past the band.
-        let S = max(4, Int((0.02 * longest).rounded()))
+        // behind as a dark halo. In a band around the hole, repaint pixels darker than the background past the band
+        // but of the same colour: a shadow dims the floor without changing its hue, a dark object changes both.
+        let S = max(4, Int((0.06 * longest).rounded()))
         let band = box(hole, W, H, S)
-        var lum = [Float](repeating: 0, count: N), known = [Float](repeating: 0, count: N)
-        for i in 0..<N {
-            lum[i] = (0.299 * Float(rgba[i * 4]) + 0.587 * Float(rgba[i * 4 + 1]) + 0.114 * Float(rgba[i * 4 + 2])) / 255
-            known[i] = band[i] > 0 ? 0 : 1
-        }
-        var expected = lum
-        fill(&expected, known, W, H, 1)
+        var known = [Float](repeating: 0, count: N)
+        for i in 0..<N { known[i] = band[i] > 0 ? 0 : 1 }
+        var expected = photo.rgb
+        fill(&expected, known, W, H, 3)
         var keepBg = [Float](repeating: 0, count: N)
         for i in 0..<N {
-            if hole[i] == 0, band[i] > 0, lum[i] < expected[i] * 0.85 - 0.04 { hole[i] = 1 }
+            if hole[i] == 0, band[i] > 0 {
+                let seen = (0..<3).map { Float(rgba[i * 4 + $0]) }, bare = (0..<3).map { expected[i * 3 + $0] }
+                let (sum, bareSum) = (seen.reduce(0, +) + 1, bare.reduce(0, +) + 1)
+                // ponytail: fixed thresholds; tune on real photos (darker than 0.9, hue within 0.05)
+                let sameHue = (0..<3).allSatisfy { abs(seen[$0] / sum - bare[$0] / bareSum) < 0.05 }
+                if sum < bareSum * 0.9, sameHue { hole[i] = 1 }
+            }
             keepBg[i] = 1 - hole[i]
         }
 
@@ -367,7 +392,7 @@ enum Spatial {
             mask[i * 4] = byte(glow[i] * 255)
         }
 
-        // the hole's bounding box, padded 10%, is what LaMa repaints
+        // the hole's bounding box; inpaint adds the context around it
         var (x0, y0, x1, y1) = (W, H, 0, 0)
         for y in 0..<H {
             for x in 0..<W where hole[y * W + x] != 0 {
@@ -375,31 +400,40 @@ enum Spatial {
             }
         }
         var holeBox: (Int, Int, Int, Int)?
-        if x1 >= x0 {
-            let pad = Int((0.1 * Float(max(x1 - x0, y1 - y0))).rounded())
-            holeBox = (max(0, x0 - pad), max(0, y0 - pad), min(W - 1, x1 + pad), min(H - 1, y1 + pad))
-        }
+        if x1 >= x0 { holeBox = (x0, y0, x1, y1) }
         return Split(layers: SceneLayers(width: W, height: H, photo: rgba, background: background, data: data, mask: mask),
                      hole: hole, glow: glow, holeBox: holeBox)
     }
 
-    /// LaMa repaints the hidden area; only the hole's box goes in, so its 512 pixels go where they matter.
+    /// LaMa repaints the hidden area; only a square around the hole goes in, so its 512 pixels go where they matter.
     static func inpaint(_ photo: Photo, _ split: Split, model: URL) throws -> SceneLayers {
         guard let box = split.holeBox else { return split.layers }
-        let (x0, y0, x1, y1) = box
-        let (W, size) = (photo.width, lamaSize)
-        let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1)
+        let (W, H, size) = (photo.width, photo.height, lamaSize)
+        // a square around the hole, half again as wide, so LaMa sees real background around it and nothing is stretched
+        let side = (max(box.x1 - box.x0, box.y1 - box.y0) + 1) * 3 / 2
+        let (cw, ch) = (min(side, W), min(side, H))
+        let x0 = min(max(0, (box.x0 + box.x1 - cw) / 2), W - cw), y0 = min(max(0, (box.y0 + box.y1 - ch) / 2), H - ch)
+        // hide the whole subject, not just its edge: LaMa copies what it sees, and it should only see background.
+        // Subject = as near as the nearest-side of the hole, read from the depth the split stored.
+        let depth = { (i: Int) in Float(split.layers.data[i * 4]) / 255 }, back = { (i: Int) in Float(split.layers.data[i * 4 + 2]) / 255 }
+        let near = (0..<W * H).filter { split.hole[$0] != 0 && depth($0) - back($0) > jump }.map(depth).min() ?? 2
+        var hide = split.glow
+        for i in 0..<W * H where depth(i) >= near { hide[i] = 1 }
         let crop = resize(photo.rgb, W, 3, region: (x0, y0, cw, ch), to: size, size)
-        let maskCrop = resize(split.glow, W, 1, region: (x0, y0, cw, ch), to: size, size)
+        var maskCrop = resize(hide, W, 1, region: (x0, y0, cw, ch), to: size, size)
+        // when the subject fills most of the square, LaMa would have nothing to copy from: hide only the edge, as before
+        if maskCrop.filter({ $0 > 0 }).count > size * size * 7 / 10 {
+            maskCrop = resize(split.glow, W, 1, region: (x0, y0, cw, ch), to: size, size)
+        }
         let painted = try lama(crop, mask: maskCrop.map { $0 > 0 ? Float(1) : 0 }, model: model)
-        let back = resize(painted, size, 3, region: (0, 0, size, size), to: cw, ch)
+        let result = resize(painted, size, 3, region: (0, 0, size, size), to: cw, ch)
         // paste LaMa's result back, only inside the hole
         var layers = split.layers
         for y in 0..<ch {
             for x in 0..<cw {
                 let i = (y + y0) * W + x + x0
                 guard split.hole[i] != 0 else { continue }
-                for c in 0..<3 { layers.background[i * 4 + c] = byte(back[(y * cw + x) * 3 + c]) }
+                for c in 0..<3 { layers.background[i * 4 + c] = byte(result[(y * cw + x) * 3 + c]) }
             }
         }
         return layers

@@ -246,7 +246,7 @@ struct AIModel: Sendable {
     }
 }
 
-/// LaMa converted to Core ML (6-bit, 40 MB), so it runs on the Neural Engine instead of onnxruntime's CPU.
+/// LaMa converted to Core ML (6-bit, 40 MB), so it runs on the GPU instead of onnxruntime's CPU.
 /// Downloaded as the three files of its .mlpackage and compiled once on the iPhone.
 enum LaMa {
     private static let base = URL(string: "https://huggingface.co/Dadm-n/lama-dilated-coreml/resolve/main/Resources/LaMa.mlpackage/")!
@@ -569,7 +569,9 @@ enum Spatial {
     static func lama(_ squares: [(rgb: [Float], mask: [Float])], model: URL, progress: @Sendable (String) -> Void = { _ in }) throws -> [[Float]] {
         let (P, size) = (lamaSize * lamaSize, lamaSize as NSNumber)
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
+        // not the Neural Engine: preparing LaMa for it took minutes on the iPhone (its Fourier layers don't map
+        // onto it). The GPU loads in seconds and runs the whole model.
+        configuration.computeUnits = .cpuAndGPU
         let loading = Date.now
         let lama = try MLModel(contentsOf: model, configuration: configuration)
         FileLog.shared.append("TIME", "LaMa loaded in \(loading.secondsSince), \(squares.count) tiles")

@@ -704,7 +704,8 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         var target = scene.drag
         // roll and pitch measured from the floor break down when the iPhone is held upright (gimbal lock),
         // so take the rotation since the scene opened: it stays small, and small angles are always stable
-        if let attitude = motion.deviceMotion?.attitude {
+        // a copy: multiply changes it in place, and the same reading can reach two frames
+        if let attitude = motion.deviceMotion?.attitude.copy() as? CMAttitude {
             if let neutral { attitude.multiply(byInverseOf: neutral) } else { neutral = attitude.copy() as? CMAttitude }
             target += SIMD2(Float(attitude.roll), Float(attitude.pitch)) / (20 * .pi / 180)
         }

@@ -24,8 +24,16 @@ struct SettingsView: View {
                 SettingsRow("Backup", icon: "icloud.and.arrow.up") { BackupView() }
                 SettingsRow("Storage", icon: "internaldrive") { StorageSettings() }
             }
-            Section("Server") {
+            Section {
                 SettingsRow("Immich", icon: "server.rack") { ImmichSettings() }
+            } header: {
+                Text("Server")
+            } footer: {
+                // which build is installed, so an old install is easy to spot
+                let info = Bundle.main.infoDictionary
+                Text("WoofPhoto \(info?["CFBundleShortVersionString"] as? String ?? "") (\(info?["CFBundleVersion"] as? String ?? ""))")
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 12)
             }
         }
         .listSectionSpacing(.compact)

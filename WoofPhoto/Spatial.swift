@@ -583,7 +583,7 @@ enum Spatial {
             // the Neural Engine can pad rows, so read through the strides; half precision is the model's own
             let strides = out.strides.map(\.intValue), w = lamaSize
             var painted = [Float](repeating: 0, count: 3 * P)
-            func read<T: BinaryFloatingPoint>(_ type: T.Type) {
+            func read<T: BinaryFloatingPoint & MLShapedArrayScalar>(_ type: T.Type) {
                 out.withUnsafeBufferPointer(ofType: T.self) { buffer in
                     for c in 0..<3 {
                         for y in 0..<w {

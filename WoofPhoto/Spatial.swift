@@ -211,25 +211,34 @@ struct AIModel: Sendable {
         return file
     }
 
-    /// Runs the model once and releases it, so only one model is in memory at a time.
-    static func run(_ file: URL, inputs: [String: (values: [Float], shape: [Int])], output: String) throws -> (values: [Float], shape: [Int]) {
+    typealias Tensor = (values: [Float], shape: [Int])
+
+    static func run(_ file: URL, inputs: [String: Tensor], output: String) throws -> Tensor {
+        try run(file, batch: [inputs], output: output)[0]
+    }
+
+    /// Loads the model once, runs it on each input set, and releases it, so only one model is in memory at a time.
+    static func run(_ file: URL, batch: [[String: Tensor]], output: String) throws -> [Tensor] {
         try autoreleasepool {
             let env = try ORTEnv(loggingLevel: .warning)
             // ponytail: CPU only; onnxruntime 1.20's Core ML recompiles on every run and lacks LaMa's FFT, try again on a newer onnxruntime
             let options = try ORTSessionOptions()
             try options.setIntraOpNumThreads(Int32(ProcessInfo.processInfo.activeProcessorCount))
             let session = try ORTSession(env: env, modelPath: file.path, sessionOptions: options)
-            var feeds: [String: ORTValue] = [:]
-            for (name, input) in inputs {
-                let data = input.values.withUnsafeBufferPointer { NSMutableData(bytes: $0.baseAddress, length: $0.count * 4) }
-                feeds[name] = try ORTValue(tensorData: data, elementType: .float, shape: input.shape.map { NSNumber(value: $0) })
-            }
-            guard let value = try session.run(withInputs: feeds, outputNames: [output], runOptions: nil)[output] else {
-                throw CocoaError(.featureUnsupported)
-            }
-            let shape = try value.tensorTypeAndShapeInfo().shape.map(\.intValue)
-            let values = (try value.tensorData() as Data).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            return (values, shape)
+            // each run's buffers are released before the next one, not at the end of the batch
+            return try batch.map { inputs in try autoreleasepool {
+                var feeds: [String: ORTValue] = [:]
+                for (name, input) in inputs {
+                    let data = input.values.withUnsafeBufferPointer { NSMutableData(bytes: $0.baseAddress, length: $0.count * 4) }
+                    feeds[name] = try ORTValue(tensorData: data, elementType: .float, shape: input.shape.map { NSNumber(value: $0) })
+                }
+                guard let value = try session.run(withInputs: feeds, outputNames: [output], runOptions: nil)[output] else {
+                    throw CocoaError(.featureUnsupported)
+                }
+                let shape = try value.tensorTypeAndShapeInfo().shape.map(\.intValue)
+                let values = (try value.tensorData() as Data).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                return (values, shape)
+            } }
         }
     }
 }
@@ -238,13 +247,13 @@ struct AIModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let folder = "spatial-3"
+    private static let folder = "spatial-4"
     private static func file(_ id: String) -> URL {
         URL.cachesDirectory.appending(path: "\(folder)/\(id.replacingOccurrences(of: "/", with: "_")).scene")
     }
     /// Scenes from older versions; deleted once per launch, on the first save.
     private static let dropOld: Void = {
-        for old in ["spatial", "spatial-2"] { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: old)) }
+        for old in ["spatial", "spatial-2", "spatial-3"] { try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: old)) }
     }()
 
     static func read(_ id: String, photo: Photo) -> SceneLayers? {
@@ -388,55 +397,91 @@ enum Spatial {
                      hole: hole, glow: glow, holeBox: holeBox)
     }
 
-    /// LaMa repaints the hidden area; only a square around the hole goes in, so its 512 pixels go where they matter.
+    /// LaMa repaints the hidden area in overlapping tiles along the hole, at the photo's own resolution.
+    /// One square over the whole hole squashed a big subject's surroundings into 512 pixels, and LaMa's
+    /// texture came back stretched into lines.
     static func inpaint(_ photo: Photo, _ split: Split, model: URL) throws -> SceneLayers {
         guard let box = split.holeBox else { return split.layers }
-        let (W, H, size) = (photo.width, photo.height, lamaSize)
-        // a square around the hole, half again as wide, so LaMa sees real background around it and nothing is stretched
-        let side = (max(box.x1 - box.x0, box.y1 - box.y0) + 1) * 3 / 2
-        let (cw, ch) = (min(side, W), min(side, H))
-        let x0 = min(max(0, (box.x0 + box.x1 - cw) / 2), W - cw), y0 = min(max(0, (box.y0 + box.y1 - ch) / 2), H - ch)
+        let (W, H, N, size) = (photo.width, photo.height, photo.width * photo.height, lamaSize)
         // hide the whole subject, not just its edge: LaMa copies what it sees, and it should only see background.
         // Subject = as near as the nearest-side of the hole, read from the depth the split stored.
         let depth = { (i: Int) in Float(split.layers.data[i * 4]) / 255 }, back = { (i: Int) in Float(split.layers.data[i * 4 + 2]) / 255 }
-        let near = (0..<W * H).filter { split.hole[$0] != 0 && depth($0) - back($0) > jump }.map(depth).min() ?? 2
+        let near = (0..<N).filter { split.hole[$0] != 0 && depth($0) - back($0) > jump }.map(depth).min() ?? 2
         var hide = split.glow
-        for i in 0..<W * H where depth(i) >= near { hide[i] = 1 }
-        let crop = resize(photo.rgb, W, 3, region: (x0, y0, cw, ch), to: size, size)
-        var maskCrop = resize(hide, W, 1, region: (x0, y0, cw, ch), to: size, size)
-        // when the subject fills most of the square, LaMa would have nothing to copy from: hide only the edge, as before
-        if maskCrop.filter({ $0 > 0 }).count > size * size * 7 / 10 {
-            maskCrop = resize(split.glow, W, 1, region: (x0, y0, cw, ch), to: size, size)
-        }
-        let painted = try lama(crop, mask: maskCrop.map { $0 > 0 ? Float(1) : 0 }, model: model)
-        let result = resize(painted, size, 3, region: (0, 0, size, size), to: cw, ch)
-        // paste LaMa's result back, only inside the hole
-        var layers = split.layers
-        for y in 0..<ch {
-            for x in 0..<cw {
-                let i = (y + y0) * W + x + x0
-                guard split.hole[i] != 0 else { continue }
-                for c in 0..<3 { layers.background[i * 4 + c] = byte(result[(y * cw + x) * 3 + c]) }
+        for i in 0..<N where depth(i) >= near { hide[i] = 1 }
+
+        // tiles of `t` photo pixels, a quarter overlapping; photos over 1536 pixels go in a little smaller
+        // so a big one doesn't need dozens of tiles
+        let t = min(Int(Float(size) * max(1, Float(max(W, H)) / 1536)), W, H)
+        func starts(_ lo: Int, _ hi: Int, _ n: Int) -> [Int] {
+            var result: [Int] = [], p = max(0, lo - t / 4)
+            while true {
+                let start = min(p, n - t)
+                result.append(start)
+                if start + t > hi || start == n - t { return result }
+                p += t * 3 / 4
             }
+        }
+        var tiles: [(x: Int, y: Int)] = []
+        for y in starts(box.y0, box.y1, H) {
+            for x in starts(box.x0, box.x1, W)
+            where (y..<y + t).contains(where: { row in (x..<x + t).contains { split.hole[row * W + $0] != 0 } }) {
+                tiles.append((x, y))
+            }
+        }
+        let squares = tiles.map { tile -> (rgb: [Float], mask: [Float]) in
+            let region = (tile.x, tile.y, t, t)
+            var mask = resize(hide, W, 1, region: region, to: size, size)
+            // when the subject fills most of the tile, LaMa would have nothing to copy from: hide only the edge
+            if mask.filter({ $0 > 0 }).count > size * size * 7 / 10 { mask = resize(split.glow, W, 1, region: region, to: size, size) }
+            return (resize(photo.rgb, W, 3, region: region, to: size, size), mask.map { $0 > 0 ? 1 : 0 })
+        }
+        let painted = try lama(squares, model: model)
+
+        // blend the tiles inside the hole, each weighted by its distance from the tile's edge, so no seams show
+        var sum = [Float](repeating: 0, count: N * 3), weight = [Float](repeating: 0, count: N)
+        for (tile, square) in zip(tiles, painted) {
+            let result = resize(square, size, 3, region: (0, 0, size, size), to: t, t)
+            for y in 0..<t {
+                for x in 0..<t {
+                    let i = (y + tile.y) * W + x + tile.x
+                    guard split.hole[i] != 0 else { continue }
+                    let w = Float(min(x + 1, t - x) * min(y + 1, t - y))
+                    weight[i] += w
+                    for c in 0..<3 { sum[i * 3 + c] += result[(y * t + x) * 3 + c] * w }
+                }
+            }
+        }
+        var layers = split.layers
+        for i in 0..<N where weight[i] > 0 {
+            for c in 0..<3 { layers.background[i * 4 + c] = byte(sum[i * 3 + c] / weight[i]) }
         }
         return layers
     }
 
-    /// LaMa on one `lamaSize` square, shared with Clean Up. `rgb` is 0…255, three per pixel, row by row from the top;
+    /// LaMa on one `lamaSize` square, for Clean Up. `rgb` is 0…255, three per pixel, row by row from the top;
     /// `mask` is 1 where to repaint. Returns the painted square in the same layout.
     static func lama(_ rgb: [Float], mask: [Float], model: URL) throws -> [Float] {
+        try lama([(rgb, mask)], model: model)[0]
+    }
+
+    /// LaMa on several squares, loading the model once.
+    static func lama(_ squares: [(rgb: [Float], mask: [Float])], model: URL) throws -> [[Float]] {
         let (P, size) = (lamaSize * lamaSize, lamaSize)
-        var image = [Float](repeating: 0, count: 3 * P)
-        for i in 0..<P {
-            for c in 0..<3 { image[c * P + i] = rgb[i * 3 + c] / 255 }
+        let batch = squares.map { square -> [String: AIModel.Tensor] in
+            var image = [Float](repeating: 0, count: 3 * P)
+            for i in 0..<P {
+                for c in 0..<3 { image[c * P + i] = square.rgb[i * 3 + c] / 255 }
+            }
+            return ["image": (image, [1, 3, size, size]), "mask": (square.mask, [1, 1, size, size])]
         }
-        let out = try AIModel.run(model, inputs: ["image": (image, [1, 3, size, size]), "mask": (mask, [1, 1, size, size])],
-                                  output: "output").values
-        var painted = [Float](repeating: 0, count: 3 * P)
-        for i in 0..<P {
-            for c in 0..<3 { painted[i * 3 + c] = out[c * P + i] }
+        return try AIModel.run(model, batch: batch, output: "output").map { out in
+            var painted = [Float](repeating: 0, count: 3 * P)
+            for i in 0..<P {
+                for c in 0..<3 { painted[i * 3 + c] = out.values[c * P + i] }
+            }
+            return painted
         }
-        return painted
     }
 
     static func byte(_ value: Float) -> UInt8 { UInt8(min(max(value.rounded(), 0), 255)) }

@@ -6,7 +6,7 @@ import os
 struct SettingsView: View {
     @Environment(Session.self) private var session
     @State private var me: User?
-    @State private var showsChecks = false
+    @State private var showsDiagnostics = false
 
     var body: some View {
         List {
@@ -24,27 +24,20 @@ struct SettingsView: View {
                 SettingsRow("Backup", icon: "icloud.and.arrow.up") { BackupView() }
                 SettingsRow("Storage", icon: "internaldrive") { StorageSettings() }
             }
-            Section {
+            Section("Server") {
                 SettingsRow("Immich", icon: "server.rack") { ImmichSettings() }
-            } header: {
-                Text("Server")
-            } footer: {
-                // which build is installed, so an old install is easy to spot
-                let info = Bundle.main.infoDictionary
-                Text("WoofPhoto \(info?["CFBundleShortVersionString"] as? String ?? "") (\(info?["CFBundleVersion"] as? String ?? ""))")
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 12)
             }
         }
         .listSectionSpacing(.compact)
         .scrollBounceBehavior(.basedOnSize)
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(isPresented: $showsChecks) { SpikesView() }
+        .navigationDestination(isPresented: $showsDiagnostics) { DiagnosticsView() }
         .task { me = try? await session.client?.me() }
+        .task { if !AppUpdate.shared.didCheck { await AppUpdate.shared.check() } }
     }
 
-    /// Opens the account page. A long press opens the M0 checks, like WoofMusic's hidden Diagnostics.
+    /// Opens the account page. A long press opens Diagnostics, as in WoofMusic.
     private var accountRow: some View {
         NavigationLink { AccountSettings() } label: {
             HStack(spacing: 14) {
@@ -54,16 +47,22 @@ struct SettingsView: View {
                     Text(me?.email ?? session.client?.server.host() ?? "").font(.subheadline).foregroundStyle(.secondary)
                 }
                 .lineLimit(1)
+                if let release = AppUpdate.shared.available {
+                    Spacer(minLength: 0)
+                    Text("Update \(release.version)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
             }
             .padding(.vertical, 4)
         }
-        .simultaneousGesture(LongPressGesture(minimumDuration: 0.8).onEnded { _ in showsChecks = true })
-        .sensoryFeedback(.impact(weight: .medium), trigger: showsChecks) { _, shown in shown }
-        .accessibilityAction(named: "M0 Checks") { showsChecks = true }
+        .simultaneousGesture(LongPressGesture(minimumDuration: 0.8).onEnded { _ in showsDiagnostics = true })
+        .sensoryFeedback(.impact(weight: .medium), trigger: showsDiagnostics) { _, shown in shown }
+        .accessibilityAction(named: "Diagnostics") { showsDiagnostics = true }
     }
 }
 
-/// WoofMusic's SettingsNavigationRow: a label with its icon in the accent colour.
+/// WoofMusic's SettingsNavigationRow and WoofTube's settingsRow: a label with its icon in the accent colour.
 struct SettingsRow<Destination: View>: View {
     let title: String
     let icon: String
@@ -76,7 +75,9 @@ struct SettingsRow<Destination: View>: View {
     }
 
     var body: some View {
-        NavigationLink { destination() } label: { Label(title, systemImage: icon) }
+        NavigationLink { destination() } label: {
+            Label { Text(title) } icon: { Image(systemName: icon).foregroundStyle(.tint) }
+        }
     }
 }
 
@@ -109,6 +110,7 @@ struct AccountSettings: View {
     @Environment(Session.self) private var session
     @State private var me: User?
     @State private var version: String?
+    @State private var confirmsSignOut = false
 
     var body: some View {
         List {
@@ -137,17 +139,54 @@ struct AccountSettings: View {
             DevicesSection()
             PasskeysSection()
             Section {
-                Button("Sign Out", role: .destructive) { session.signOut() }
+                Button("Sign Out", role: .destructive) { confirmsSignOut = true }
             }
+            AppUpdateSection()
         }
         .listSectionSpacing(.compact)
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Sign out of this server?", isPresented: $confirmsSignOut, titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) { session.signOut() }
+        }
         .task {
             guard let client = session.client else { return }
             me = try? await client.me()
             let info: ServerVersion? = try? await client.get("/server/version")
             version = info.map { "\($0.major).\($0.minor).\($0.patch)" }
+        }
+    }
+}
+
+/// WoofTube's App section: the installed version and what GitHub has.
+private struct AppUpdateSection: View {
+    private let update = AppUpdate.shared
+
+    var body: some View {
+        Section {
+            LabeledContent("Version", value: "\(AppUpdate.currentVersion) (\(AppUpdate.currentBuild))")
+            if let release = update.available {
+                Link(destination: release.page) {
+                    Label("WoofPhoto \(release.version) Is Available", systemImage: "arrow.down.app")
+                }
+            } else {
+                Button { Task { await update.check() } } label: {
+                    HStack {
+                        Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
+                        Spacer(minLength: 8)
+                        if update.isChecking {
+                            ProgressView()
+                        } else if update.didCheck {
+                            Text(update.errorText ?? "Up to Date").font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .disabled(update.isChecking)
+            }
+        } header: {
+            Text("App")
+        } footer: {
+            Text("Compares this version with the newest release on GitHub.")
         }
     }
 }
@@ -191,8 +230,8 @@ struct AppearanceSettings: View {
                 Text("Applies to buttons, chips, selection and the selected tab.")
             }
             Section("Collections") {
-                Toggle("Show as List", isOn: $collectionsList)
-                NavigationLink("Sections") { SectionEditor() }
+                Toggle(isOn: $collectionsList) { Label("Show as List", systemImage: "list.bullet") }
+                NavigationLink { SectionEditor() } label: { Label("Sections", systemImage: "square.stack") }
             }
             WidgetSettings()
         }
@@ -269,7 +308,7 @@ struct HistorySettings: View {
             Text("History lists the photos you view, edit, delete, favorite, hide, archive or move between albums. It stays on this iPhone.")
         }
         Section {
-            Button("Clear History", role: .destructive) { confirmsClear = true }
+            Button("Clear History", systemImage: "trash", role: .destructive) { confirmsClear = true }
                 .disabled(History.shared.entries.isEmpty)
         }
         .confirmationDialog("All of History is deleted. Your photos stay as they are.", isPresented: $confirmsClear, titleVisibility: .visible) {
@@ -285,10 +324,10 @@ struct StorageSettings: View {
         List {
             Section {
                 LabeledContent("Saved Thumbnails", value: Int64(cacheSize).formatted(.byteCount(style: .file)))
-                Button("Clear Saved Thumbnails", role: .destructive) {
+                Button("Clear Saved Thumbnails", systemImage: "trash", role: .destructive) {
                     URLCache.shared.removeAllCachedResponses()
                     try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: "originals"))
-                    try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "spatial"))
+                    SpatialCache.removeAll()
                     cacheSize = URLCache.shared.currentDiskUsage
                 }
             } footer: {
@@ -444,8 +483,8 @@ struct WidgetSettings: View {
 
     var body: some View {
         Section {
-            Toggle("Favorites Only", isOn: $favoritesOnly)
-            Button("Choose New Photos") { Task { await refresh() } }
+            Toggle(isOn: $favoritesOnly) { Label("Favorites Only", systemImage: "heart") }
+            Button("Choose New Photos", systemImage: "shuffle") { Task { await refresh() } }
                 .disabled(busy)
             if busy { ProgressView() }
             if let status { Text(status).foregroundStyle(.secondary) }
@@ -518,6 +557,6 @@ enum FeaturedPhotos {
 
     enum FeaturedError: LocalizedError {
         case noGroup
-        var errorDescription: String? { "The widget's shared folder isn't available. Check the App Group in M0 Checks." }
+        var errorDescription: String? { "The widget's shared folder isn't available. Check the App Group in Diagnostics." }
     }
 }

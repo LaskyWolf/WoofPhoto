@@ -15,8 +15,9 @@ struct WoofPhotoApp: App {
         // videos play with sound when the iPhone's silent switch is on, like in Photos
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         Backup.shared.refreshPending()
-        // ponytail: builds 44–45 could download a 2 GB Stable Diffusion model here; drop this line once those are gone
+        // ponytail: models older builds downloaded (Stable Diffusion in 44–45, LaMa for onnxruntime up to 48); drop once those are gone
         try? FileManager.default.removeItem(at: URL.applicationSupportDirectory.appending(path: "Models/Runway_SD1.5_Inpaint_chunked"))
+        try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "models/inpainting_lama_2025jan.onnx"))
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Backup.taskID, using: .main) { task in
             MainActor.assumeIsolated { Self.runBackup(task) }
         }
@@ -57,7 +58,7 @@ struct WoofPhotoApp: App {
                 if phase == .background { backup.scheduleBackground() }
             }
             #if DEBUG
-            .task { ImmichClient.selfCheck(); FoldersView.selfCheck() }
+            .task { ImmichClient.selfCheck(); FoldersView.selfCheck(); GlyphScript.selfCheck(); FileLog.selfCheck(); AppUpdate.selfCheck() }
             #endif
         }
     }

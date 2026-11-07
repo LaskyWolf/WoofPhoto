@@ -188,7 +188,15 @@ enum ImmichError: LocalizedError {
 
 extension Error {
     /// A message that says what went wrong and what to try, for the errors a home server usually causes.
+    /// Each one is also written to the log file, where Diagnostics lists it under Recent Problems.
     var explanation: String {
+        let message = describe
+        // ponytail: logs where the message is made; every caller asks once per failure today
+        FileLog.shared.append("ERROR", "\(message) (\(String(describing: self).prefix(200)))")
+        return message
+    }
+
+    private var describe: String {
         if self is DecodingError {
             return "The server answered with data WoofPhoto can't read. When signing in, enter only the address, for example http://192.168.1.5:2283."
         }

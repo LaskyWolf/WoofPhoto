@@ -5,7 +5,7 @@ WoofPhoto is a native SwiftUI client for an Immich server. It has every feature 
 ## How to work through it
 
 - Each milestone ends with an IPA signed with FlareStore and a check run on the iPhone. A milestone is done only when its check passes.
-- Order: every feature working (M1), then design and fixes (M2), then Spatial Scenes (M3).
+- Order: every feature working (M1), then design and fixes (M2), then Spatial Scenes (M3), then editing tools (M4).
 - M1 uses plain system components. M2 restyles them, so M1 spends no time on visual detail.
 - Copy patterns from WoofTube and WoofMusic before writing new ones: tab bar, zoom transitions, image cache, settings screens, CI workflow.
 
@@ -129,3 +129,21 @@ Port of the web prototype (`prototype/spatial/index.html`). Each step reuses the
 - [x] Release each model after use; fall back to the fast fill when memory is low.
 
 **Check:** on the oldest target iPhone, the cats test photo and your test drawings build in under 30 seconds without iOS closing the app, and match the web prototype's result.
+
+## M4. Editing tools
+
+Brings the editor to the iOS 26 Photos editor. Each tool works on server photos, photos on this iPhone and, where it applies, videos.
+
+- [ ] Auto: one tap that sets exposure, contrast and colour from the photo, as Photos' magic wand.
+- [ ] Missing Adjust sliders: Brilliance, Black Point, Definition and Noise Reduction.
+- [ ] Crop: aspect ratio presets (square, 4:3, 16:9, freeform), straighten dial, vertical and horizontal perspective.
+- [ ] Clean Up: tap an object to remove it, using Vision's subject masks to highlight what can go.
+- [ ] Clean Up: tile large strokes on large photos, so they come back as sharp as small ones.
+- [ ] Markup: Undo and Redo after Done, and text and shapes from the PencilKit picker kept editable until saving.
+- [ ] Copy and paste edits between photos, and apply them to a selection of many photos.
+- [ ] Compare: tap and hold shows the original on every tool, with a label.
+- [ ] Portrait photos: change the background blur and the focus point from the depth data.
+- [ ] Videos: speed, filters and Adjust applied to the whole video, and crop.
+- [ ] Revert to Original for photos edited earlier, on the server and on this iPhone.
+
+**Check:** the same edit made in WoofPhoto and in Photos on a test photo looks the same, saves to the server as a new version, and Revert brings back the original.

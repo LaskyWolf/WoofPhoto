@@ -66,10 +66,10 @@ struct CleanUpCanvas: View {
             }
             do {
                 guard Spatial.lamaFits else { throw CleanUp.Failure.memory }
-                if !FileManager.default.fileExists(atPath: AIModel.lama.file.path) {
+                if !LaMa.isDownloaded {
                     status = "Downloading Clean Up, once…"
                 }
-                let model = try await AIModel.lama.download()
+                let model = try await LaMa.download()
                 status = "Cleaning up…"
                 let result = try await Task.detached { try CleanUp.erase(image, stroke: points, radius: radius, model: model) }.value
                 onErased(result)

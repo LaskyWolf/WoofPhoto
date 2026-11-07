@@ -173,9 +173,8 @@ struct AssetGrid: View {
     }
 
     private func grid(_ months: [Timeline.Month], client: ImmichClient?) -> some View {
-        // Apple Photos' 2-point gaps and edges; the corners stay rounded, smaller as the cells get smaller
+        // Apple Photos' square cells with 2-point gaps
         let spacing: CGFloat = 2
-        let radius: CGFloat = columns <= 3 ? 8 : columns <= 5 ? 6 : 3
         return ScrollViewReader { proxy in
             ScrollView {
                 hero
@@ -184,7 +183,7 @@ struct AssetGrid: View {
                     ForEach(months) { month in
                         ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
                             let asset = month.assets?[index]
-                            Thumbnail(asset: asset, cornerRadius: radius)
+                            Thumbnail(asset: asset)
                                 .overlay(alignment: .bottomTrailing) {
                                     if let selection, let id = asset?.id {
                                         let selected = selection.contains(id)
@@ -196,7 +195,7 @@ struct AssetGrid: View {
                                             .background(selected ? Color.white.opacity(0.25) : .clear)
                                     }
                                 }
-                                .contentShape(.contextMenuPreview, .rect(cornerRadius: radius))
+                                .contentShape(.contextMenuPreview, .rect)
                                 .liftedMenu(background: nil) {
                                     if let asset, asset.localID == nil, client != nil {
                                         AssetMenuItems(actions: actions, ids: [asset.id], isFavorite: asset.isFavorite)

@@ -249,9 +249,9 @@ struct BackupView: View {
 
     var body: some View {
         @Bindable var backup = backup
-        Form {
+        List {
             Section {
-                Toggle("Back Up This iPhone", isOn: $backup.enabled)
+                Toggle(isOn: $backup.enabled) { Label("Back Up This iPhone", systemImage: "icloud.and.arrow.up") }
                     .onChange(of: backup.enabled) { _, on in
                         if on, let client = session.client { backup.start(with: client) }
                     }
@@ -271,14 +271,14 @@ struct BackupView: View {
                 case let .failed(reason): Label(reason, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
                 }
                 if backup.isRunning {
-                    Button("Stop", role: .destructive) { backup.stop() }
+                    Button("Stop", systemImage: "stop.circle", role: .destructive) { backup.stop() }
                 } else {
-                    Button("Back Up Now") { if let client = session.client { backup.start(with: client) } }
+                    Button("Back Up Now", systemImage: "arrow.up.circle") { if let client = session.client { backup.start(with: client) } }
                 }
             }
             Section("Options") {
-                Toggle("Wi-Fi Only", isOn: $backup.wifiOnly)
-                Toggle("Only While Charging", isOn: $backup.chargingOnly)
+                Toggle(isOn: $backup.wifiOnly) { Label("Wi-Fi Only", systemImage: "wifi") }
+                Toggle(isOn: $backup.chargingOnly) { Label("Only While Charging", systemImage: "bolt") }
             }
             Section {
                 ForEach(albums, id: \.localIdentifier) { album in
@@ -295,7 +295,7 @@ struct BackupView: View {
                 Text(backup.albumIDs.isEmpty ? "No album chosen: every photo and video is backed up." : "Only the chosen albums are backed up.")
             }
             Section {
-                Button("Free Up Space") {
+                Button("Free Up Space", systemImage: "iphone.and.arrow.forward") {
                     Task {
                         do {
                             guard let client = session.client else { return }
@@ -313,7 +313,7 @@ struct BackupView: View {
                     .textContentType(.URL)
                     .keyboardType(.URL)
                 SecureField("App Token", text: $gotifyToken)
-                Button("Send Test") { Task { await sendTest() } }
+                Button("Send Test", systemImage: "paperplane") { Task { await sendTest() } }
                     .disabled(testing || gotifyServer.isEmpty || gotifyToken.isEmpty)
             } header: {
                 Text("Gotify")

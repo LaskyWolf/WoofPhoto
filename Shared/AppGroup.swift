@@ -23,6 +23,8 @@ struct SigningProfile {
     var expires: Date?
     var appGroups: [String]
     var keychainGroups: [String]
+    /// "All devices" or how many the profile lists.
+    var devices: String
 
     static let current = read(Bundle.main.bundleURL)
 
@@ -44,7 +46,8 @@ struct SigningProfile {
             team: profile["TeamName"] as? String ?? "?",
             expires: profile["ExpirationDate"] as? Date,
             appGroups: entitlements["com.apple.security.application-groups"] as? [String] ?? [],
-            keychainGroups: entitlements["keychain-access-groups"] as? [String] ?? []
+            keychainGroups: entitlements["keychain-access-groups"] as? [String] ?? [],
+            devices: profile["ProvisionsAllDevices"] as? Bool == true ? "All devices" : "\((profile["ProvisionedDevices"] as? [String])?.count ?? 0) devices"
         )
     }
 }

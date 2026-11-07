@@ -57,6 +57,7 @@ final class OpenPhoto {
 
     private func stopPlayer() {
         player?.pause()
+        UIApplication.shared.isIdleTimerDisabled = false
         player = nil
         playerID = nil
     }
@@ -301,13 +302,15 @@ private struct MiniControls: View {
                         if isPaused { player.play() } else { player.pause() }
                         isPaused.toggle()
                     } label: {
-                        Label(isPaused ? "Play" : "Pause", systemImage: isPaused ? "play.fill" : "pause.fill")
-                            .contentTransition(.symbolEffect(.replace))
+                        Label { Text(isPaused ? "Play" : "Pause") } icon: { PlayPauseGlyph(isPaused: isPaused, size: 15) }
+                            .foregroundStyle(.tint)
                     }
                     .task {
                         // ponytail: polls the player twice a second, like VideoSurface
                         while !Task.isCancelled {
                             isPaused = player.rate == 0
+                            // the screen stays on while the card's video plays
+                            UIApplication.shared.isIdleTimerDisabled = !isPaused
                             try? await Task.sleep(for: .milliseconds(500))
                         }
                     }

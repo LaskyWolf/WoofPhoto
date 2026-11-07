@@ -351,7 +351,10 @@ struct Viewer: View {
                 }
             }
         } label: {
-            Label("More", systemImage: "ellipsis")
+            // the ellipsis is a short glyph, and the glass circle sizes to it; sized like Back's chevron, so both circles match
+            Image(systemName: "chevron.left").hidden()
+                .overlay { Image(systemName: "ellipsis") }
+                .accessibilityLabel("More")
         }
         .menuStyle(.button)
     }
@@ -747,7 +750,8 @@ struct VideoSurface: View {
     @State private var muted = false
     /// 0…1 while a finger drags the progress bar.
     @State private var scrub: Double?
-    @State private var skipHint: Double?
+    /// The last double tap's side and how far taps in a row skipped, as in WoofTube.
+    @State private var skipHint: (id: UUID, seconds: Double)?
 
     var body: some View {
         GeometryReader { geometry in
@@ -768,22 +772,30 @@ struct VideoSurface: View {
             .overlay {
                 if !chromeHidden {
                     Button { toggle() } label: {
-                        Label(playing ? "Pause" : "Play", systemImage: playing ? "pause.fill" : "play.fill")
-                            .contentTransition(.symbolEffect(.replace))
+                        Label { Text(playing ? "Pause" : "Play") } icon: { PlayPauseGlyph(isPaused: !playing, size: 34) }
                     }
                     .labelStyle(GlyphLabelStyle(size: 34))
                     .buttonStyle(GlyphPressStyle())
                     .transition(.opacity)
                 }
             }
-            .overlay(alignment: (skipHint ?? 0) < 0 ? .leading : .trailing) {
+            .overlay(alignment: (skipHint?.seconds ?? 0) < 0 ? .leading : .trailing) {
                 if let skipHint {
-                    Image(systemName: skipHint < 0 ? "gobackward.10" : "goforward.10")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.4), radius: 3)
-                        .padding(48)
-                        .transition(.opacity)
+                    let forward = skipHint.seconds > 0
+                    VStack(spacing: 4) {
+                        Image(systemName: forward ? "goforward.10" : "gobackward.10")
+                            .font(.system(size: 28, weight: .semibold))
+                            .glyphMotion(.dash(forward: forward), trigger: skipHint.id)
+                        if abs(skipHint.seconds) > 10 {
+                            Text("\(forward ? "+" : "−")\(Int(abs(skipHint.seconds)))")
+                                .font(.subheadline.weight(.bold).monospacedDigit())
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.4), radius: 3)
+                    .padding(.horizontal, 40)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
                 }
             }
             .overlay(alignment: .bottom) {
@@ -800,12 +812,15 @@ struct VideoSurface: View {
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
+        // the screen stays on while a video plays, as in Photos
+        .onChange(of: playing) { UIApplication.shared.isIdleTimerDisabled = playing }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .task(id: [chromeHidden, playing, scrub == nil]) {
             guard !chromeHidden, playing, scrub == nil, !voiceOver else { return }
             try? await Task.sleep(for: .seconds(3))
             if !Task.isCancelled { withAnimation(.easeOut(duration: 0.15)) { chromeHidden = true } }
         }
-        .task(id: skipHint) {
+        .task(id: skipHint?.id) {
             try? await Task.sleep(for: .seconds(0.6))
             if !Task.isCancelled { withAnimation { skipHint = nil } }
         }
@@ -815,45 +830,59 @@ struct VideoSurface: View {
         }
     }
 
+    /// WoofTube's player bottom: "time | length" and the sound button above a bar that thickens while scrubbing.
     private var controls: some View {
         let shown = scrub.map { $0 * duration } ?? time
+        let isThick = scrub != nil
         return VStack(spacing: 0) {
-            GeometryReader { bar in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.3))
-                    Capsule().fill(.tint).frame(width: bar.size.width * (duration > 0 ? min(shown / duration, 1) : 0))
+            HStack(alignment: .bottom) {
+                Text("\(Self.format(shown)) | \(Self.format(duration))")
+                    // reaches into the bar's empty space, as the button beside it needs its 44 points
+                    .offset(y: 5)
+                Spacer(minLength: 0)
+                Button { player.isMuted.toggle(); muted = player.isMuted } label: {
+                    Label { Text(muted ? "Unmute" : "Mute") } icon: {
+                        Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .contentTransition(.symbolEffect(.replace))
+                            .glyphMotion(muted ? .deflate : .pop, trigger: muted)
+                    }
                 }
-                .frame(height: scrub == nil ? 5 : 12)
+                .labelStyle(GlyphLabelStyle(size: 15))
+                .buttonStyle(GlyphPressStyle())
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.5), radius: 3)
+            .padding(.leading, 8)
+            GeometryReader { bar in
+                // thin and inset at rest, full width and 12 points tall under the finger
+                let inset: CGFloat = isThick ? 0 : 8
+                let height: CGFloat = isThick ? 12 : 5
+                let track = max(0, bar.size.width - inset * 2)
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(.white.opacity(0.3))
+                    Rectangle().fill(.tint).frame(width: track * (duration > 0 ? min(shown / duration, 1) : 0))
+                }
+                .frame(height: height)
+                .clipShape(.capsule)
+                .padding(.horizontal, inset)
+                .animation(.easeInOut(duration: 0.2), value: isThick)
                 .frame(maxHeight: .infinity)
                 .contentShape(.rect)
                 .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { scrub = min(max($0.location.x / bar.size.width, 0), 1) }
+                    .onChanged { scrub = min(max($0.location.x / max(bar.size.width, 1), 0), 1) }
                     .onEnded { _ in
                         if let scrub { player.seek(to: CMTime(seconds: scrub * duration, preferredTimescale: 600)) }
                         scrub = nil
                     })
             }
             .frame(height: 24)
-            .animation(.easeOut(duration: 0.15), value: scrub == nil)
             .accessibilityElement()
             .accessibilityLabel("Position")
             .accessibilityValue(Self.format(time))
             .accessibilityAdjustableAction { skip($0 == .increment ? 10 : -10) }
-            HStack {
-                Text(Self.format(shown))
-                Spacer()
-                Text(Self.format(duration))
-                Button { player.isMuted.toggle(); muted = player.isMuted } label: {
-                    Label(muted ? "Unmute" : "Mute", systemImage: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                }
-                .labelStyle(GlyphLabelStyle(size: 15))
-                .buttonStyle(GlyphPressStyle())
-            }
-            .font(.caption.weight(.semibold).monospacedDigit())
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.4), radius: 3)
         }
-        .padding(.horizontal, Tokens.screenPadding)
+        .padding(.horizontal, 4)
     }
 
     private func toggle() {
@@ -863,7 +892,9 @@ struct VideoSurface: View {
 
     private func skip(_ seconds: Double) {
         player.seek(to: CMTime(seconds: min(max(time + seconds, 0), duration), preferredTimescale: 600))
-        withAnimation { skipHint = seconds }
+        // taps in a row on the same side add up
+        let previous = skipHint.map { ($0.seconds > 0) == (seconds > 0) ? $0.seconds : 0 } ?? 0
+        withAnimation { skipHint = (UUID(), previous + seconds) }
     }
 
     static func format(_ seconds: Double) -> String {

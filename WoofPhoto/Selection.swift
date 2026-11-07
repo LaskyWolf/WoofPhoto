@@ -1,5 +1,6 @@
 import AVKit
 import Photos
+import os
 import SwiftUI
 
 /// Actions on some assets of a timeline, shared by the Select menu and the long-press menu.
@@ -198,12 +199,12 @@ enum DeviceLibrary {
         options.deliveryMode = .highQualityFormat // one callback, the final one
         options.isNetworkAccessAllowed = true
         return await withCheckedContinuation { continuation in
-            var resumed = false
+            let resumed = OSAllocatedUnfairLock(initialState: false)
             PHImageManager.default().requestLivePhoto(for: asset, targetSize: PHImageManagerMaximumSize,
                                                       contentMode: .aspectFit, options: options) { photo, info in
-                // PhotoKit may call back with a low-quality version first
-                guard info?[PHImageResultIsDegradedKey] as? Bool != true, !resumed else { return }
-                resumed = true
+                // PhotoKit may call back with a low-quality version first, on any thread
+                guard info?[PHImageResultIsDegradedKey] as? Bool != true,
+                      resumed.withLock({ done in defer { done = true }; return !done }) else { return }
                 continuation.resume(returning: photo)
             }
         }

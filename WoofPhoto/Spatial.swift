@@ -633,7 +633,8 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    deinit { motion.stopDeviceMotionUpdates() }
+    // on the main actor, where `motion` lives
+    isolated deinit { motion.stopDeviceMotionUpdates() }
 
     nonisolated func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 

@@ -130,7 +130,7 @@ struct AlbumTile: View {
                 }
             }
         }
-        .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
+        .messageAlert($error)
     }
 }
 
@@ -187,7 +187,7 @@ struct AlbumView: View {
                 }
             }
             .sheet(isPresented: $showsActivity) { ActivitySheet(album: id) }
-            .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
+            .messageAlert($error)
             .fullScreenCover(isPresented: $playsSlideshow) { Slideshow(assets: slideshow, start: 0) }
             .task { album = try? await session.client?.album(id) }
     }

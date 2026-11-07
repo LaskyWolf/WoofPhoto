@@ -221,7 +221,7 @@ struct HistoryView: View {
         .searchable(text: $query, prompt: "File name")
         .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
-        .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
+        .messageAlert($error)
     }
 
     private func row(_ entry: HistoryEntry) -> some View {

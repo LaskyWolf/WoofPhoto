@@ -117,6 +117,13 @@ extension View {
     }
 }
 
+extension View {
+    /// An OK alert with the message, shown while it's set; dismissing it clears it.
+    func messageAlert(_ message: Binding<String?>) -> some View {
+        alert(message.wrappedValue ?? "", isPresented: Binding { message.wrappedValue != nil } set: { if !$0 { message.wrappedValue = nil } }) {}
+    }
+}
+
 extension TabHeader where Buttons == EmptyView {
     init(title: String, subtitle: String? = nil) {
         self.init(title: title, subtitle: subtitle, buttons: { EmptyView() })

@@ -1,6 +1,7 @@
 import AVFoundation
 import CryptoKit
 import Foundation
+import os
 
 /// The few Immich endpoints the app uses. Every field the server might drop is optional,
 /// so a newer server version shows less data instead of failing to decode.
@@ -37,13 +38,17 @@ struct ImmichClient {
     #endif
 
     /// Settings > Immich: "Name: value" lines for a proxy in front of the server. In the Keychain, since they can be secrets.
-    // ponytail: a plain static, read on every request; written only from Settings
-    nonisolated(unsafe) static var proxyHeaders = Keychain.read("proxyHeaders") ?? UserDefaults.standard.string(forKey: "proxyHeaders") ?? "" {
-        didSet {
-            Keychain.write("proxyHeaders", proxyHeaders)
+    /// Read by every request on any thread and written by Settings, so a lock guards it.
+    static var proxyHeaders: String {
+        get { headers.withLock { $0 } }
+        set {
+            headers.withLock { $0 = newValue }
+            Keychain.write("proxyHeaders", newValue)
             UserDefaults.standard.removeObject(forKey: "proxyHeaders")
         }
     }
+    private static let headers = OSAllocatedUnfairLock(
+        initialState: Keychain.read("proxyHeaders") ?? UserDefaults.standard.string(forKey: "proxyHeaders") ?? "")
 
     func request(_ path: String, query: [String: String] = [:]) -> URLRequest {
         var components = URLComponents(url: server.appending(path: "api" + path), resolvingAgainstBaseURL: false)!

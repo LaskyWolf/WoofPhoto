@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import os
 
 /// WoofMusic's settings page: the account on top, then one page per area. Pushed from the account button.
 struct SettingsView: View {
@@ -428,9 +429,9 @@ enum FeaturedPhotos {
     @discardableResult
     static func refresh(client: ImmichClient, favoritesOnly: Bool = UserDefaults.standard.bool(forKey: "featured.favoritesOnly")) async throws -> Int {
         guard let folder = Featured.folder else { throw FeaturedError.noGroup }
-        guard !isRefreshing else { return 0 }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        // the check and the set happen together, so two refreshes can't both start
+        guard isRefreshing.withLock({ busy in defer { busy = true }; return !busy }) else { return 0 }
+        defer { isRefreshing.withLock { $0 = false } }
         // filled aside and swapped in at the end, so a failed refresh leaves the old photos
         let fresh = folder.deletingLastPathComponent().appending(path: "featured-new")
         try? FileManager.default.removeItem(at: fresh)
@@ -455,8 +456,7 @@ enum FeaturedPhotos {
     }
 
     /// Refreshes at most once a day, when the app opens.
-    // ponytail: a plain flag; refreshes start from the main actor only
-    nonisolated(unsafe) private static var isRefreshing = false
+    private static let isRefreshing = OSAllocatedUnfairLock(initialState: false)
 
     /// Only for a widget on the Home Screen: without one, no photos are copied out of the app.
     static func refreshIfStale(client: ImmichClient) async {

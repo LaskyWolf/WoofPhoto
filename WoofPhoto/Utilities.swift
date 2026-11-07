@@ -114,7 +114,7 @@ struct TrashView: View {
             .confirmationDialog("These items will be deleted for good. This can't be undone.", isPresented: $confirmsEmpty, titleVisibility: .visible) {
                 Button("Delete All", role: .destructive) { Task { await run { try await $0.emptyTrash() } } }
             }
-            .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
+            .messageAlert($error)
     }
 
     private func run(_ action: (ImmichClient) async throws -> Void) async {

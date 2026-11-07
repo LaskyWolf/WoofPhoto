@@ -171,7 +171,7 @@ struct PersonView: View {
             .sheet(isPresented: $merging) {
                 MergePicker(source: id) { dismiss() }
             }
-            .alert(message ?? "", isPresented: Binding { message != nil } set: { if !$0 { message = nil } }) {}
+            .messageAlert($message)
     }
 
     /// WoofMusic's artist header: the face in a circle, the name, the count, then More, Shuffle and Play.

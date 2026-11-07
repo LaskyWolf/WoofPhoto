@@ -80,7 +80,7 @@ struct EditorView: View {
                         .disabled(!changed || busy)
                 }
             }
-            .alert(error ?? "", isPresented: Binding { error != nil } set: { if !$0 { error = nil } }) {}
+            .messageAlert($error)
         }
         .task { await load() }
         .task(id: edit) { await render(original: false) }

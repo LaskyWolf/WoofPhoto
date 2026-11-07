@@ -11,7 +11,6 @@ import simd
 /// The photo full screen as a Spatial Scene, opened from the viewer's tool card.
 struct SpatialView: View {
     let asset: AssetRef
-    let onClose: () -> Void
 
     @Environment(Session.self) private var session
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -28,20 +27,6 @@ struct SpatialView: View {
             .accessibilityElement()
             .accessibilityLabel("Spatial scene")
             .accessibilityValue(scene.status ?? "Ready")
-            .overlay(alignment: .topLeading) {
-                // the whole circle takes the tap: a frame outside the label left only the glyph tappable,
-                // and taps around it went to the tilt drag underneath
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.title3.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .contentShape(.circle)
-                }
-                .buttonStyle(.plain)
-                .glassEffect(.regular.interactive(), in: .circle)
-                .accessibilityLabel("Close Spatial Scene")
-                .padding()
-            }
             .overlay(alignment: .bottom) {
                 if let status = scene.status {
                     Text(status)

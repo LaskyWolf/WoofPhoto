@@ -142,16 +142,17 @@ struct Viewer: View {
             if y < -80, !detailsShown { withAnimation(.snappy) { detailsShown = true } }
             if y > 80, detailsShown { withAnimation(.snappy) { detailsShown = false } }
         })
-        .overlay(alignment: .top) { if !chromeHidden { topBar.transition(.opacity) } }
         .overlay {
             if let spatial {
-                SpatialView(asset: spatial) { withAnimation(.easeOut(duration: 0.2)) { self.spatial = nil } }
+                SpatialView(asset: spatial)
                     .environment(session)
                     // a new photo gets a new scene; without the id SwiftUI kept the old one
                     .id(spatial.id)
                     .transition(.opacity)
             }
         }
+        // over the spatial scene too, where it's only the close button
+        .overlay(alignment: .top) { if !chromeHidden || spatial != nil { topBar.transition(.opacity) } }
         .overlay {
             BottomCornersCover(radius: 16)
                 .fill(.black, style: FillStyle(eoFill: true))
@@ -173,29 +174,36 @@ struct Viewer: View {
     }
 
     /// Photos' top bar: back, the place and time in a capsule, and the More menu.
+    /// In Spatial only an X, where Back is, closes the scene.
     private var topBar: some View {
         let date = detail?.date ?? shownAsset?.date
         let exif = detail?.exifInfo
         let place = exif?.city ?? exif?.country ?? detail?.originalFileName
         return HStack(spacing: 12) {
-            Button("Back", systemImage: "chevron.left") { OpenPhoto.shared.minimize() }
-                .accessibilityHint("Keeps the photo in the floating card")
-            Spacer(minLength: 0)
-            VStack(spacing: 0) {
-                if let place { Text(place).font(.subheadline.weight(.semibold)) }
-                if let date {
-                    Text(date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()) + "  "
-                         + date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()))
-                        .font(.caption)
+            if spatial != nil {
+                Button("Close Spatial Scene", systemImage: "xmark") { withAnimation(.easeOut(duration: 0.2)) { spatial = nil } }
+                    .contentTransition(.symbolEffect(.replace))
+                Spacer()
+            } else {
+                Button("Back", systemImage: "chevron.left") { OpenPhoto.shared.minimize() }
+                    .accessibilityHint("Keeps the photo in the floating card")
+                Spacer(minLength: 0)
+                VStack(spacing: 0) {
+                    if let place { Text(place).font(.subheadline.weight(.semibold)) }
+                    if let date {
+                        Text(date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()) + "  "
+                             + date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()))
+                            .font(.caption)
+                    }
                 }
+                .lineLimit(1)
+                .padding(.horizontal, 18)
+                .frame(minHeight: 44)
+                .glassEffect(.regular, in: .capsule)
+                .accessibilityElement(children: .combine)
+                Spacer(minLength: 0)
+                if shownAsset?.localID == nil, timeline.query?.isTrash != true { moreMenu } else { Color.clear.frame(width: 44, height: 44) }
             }
-            .lineLimit(1)
-            .padding(.horizontal, 18)
-            .frame(minHeight: 44)
-            .glassEffect(.regular, in: .capsule)
-            .accessibilityElement(children: .combine)
-            Spacer(minLength: 0)
-            if shownAsset?.localID == nil, timeline.query?.isTrash != true { moreMenu } else { Color.clear.frame(width: 44, height: 44) }
         }
         .labelStyle(.iconOnly)
         .buttonBorderShape(.circle)

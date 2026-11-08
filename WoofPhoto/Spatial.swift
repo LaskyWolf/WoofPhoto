@@ -54,7 +54,7 @@ struct SceneLayers: Sendable {
     var height: Int
     var photo: [UInt8]
     var background: [UInt8]
-    /// R = front depth, G = front alpha, B = back depth; 255 is near. A = focus: 255 on the subject, 0 behind it.
+    /// R = front depth, G = front alpha, B = back depth; 255 is near. A is unused.
     var data: [UInt8]
     /// R = how strongly each pixel shimmers while the hidden area is rebuilt.
     var mask: [UInt8]
@@ -110,7 +110,7 @@ final class SpatialScene {
             let split = try await Task.detached {
                 let subject = Spatial.subjectMask(photo)
                 let raw = try Spatial.depth(photo, model: CoreMLModel.depth.load(), subject: subject)
-                return Spatial.split(photo, depth: raw, subject: subject)
+                return Spatial.split(photo, depth: raw)
             }.value
             try Task.checkCancellation()
             show(split.layers)
@@ -304,7 +304,7 @@ struct CoreMLModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let version = 14
+    private static let version = 15
     private static func folder(_ version: Int) -> URL {
         URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
     }
@@ -342,8 +342,6 @@ enum SpatialCache {
 enum Spatial {
     /// Depth difference (0…1) within 3 pixels that counts as a separate object; lower values cut subjects apart.
     static let jump: Float = 0.3
-    /// How much of the subject's own depth relief is added on top of the depth map (0 = as measured).
-    static let subjectRelief: Float = 1
     /// LaMa's fixed input size.
     static let lamaSize = 512
     /// Free memory LaMa needs; its card lists a peak of about 600 MB.
@@ -420,9 +418,9 @@ enum Spatial {
         return mask
     }
 
-    /// `subject`: Vision's subject mask. With it the outline comes from the mask, which follows fur and hair
-    /// far closer than the depth map's soft edge; the depth only decides how near the subject is.
-    static func split(_ photo: Photo, depth raw: [Float], subject mask: [Float]? = nil) -> Split {
+    /// The web prototype's layers: the front keeps the depth map as it is, torn only at sharp depth jumps;
+    /// the back layer sits behind it and gets new colours where a tilt can uncover it.
+    static func split(_ photo: Photo, depth raw: [Float]) -> Split {
         let (W, H, N) = (photo.width, photo.height, photo.width * photo.height)
         let longest = Float(max(W, H))
         let rgba = photo.rgba
@@ -437,21 +435,6 @@ enum Spatial {
             let hi = 1 - hiInv[i], range = hi - lo[i]
             d[i] = range > jump ? (raw[i] - lo[i] > 0.08 * range ? hi : lo[i]) : raw[i]
         }
-        if let mask {
-            // around the subject: the background's depth, filled in from outside the mask (grown past the outline,
-            // where the depth map still fades). On the subject: at least a clear step nearer, so the whole outline
-            // tears and the subject moves as one layer over the background, as in Photos.
-            let outside = erode(mask.map { 1 - $0 }, W, H, R)
-            var back = d
-            fill(&back, outside, W, H, 1)
-            // The subject's own relief is added once more on top, so a face or an arm turns as the photo tilts
-            // instead of sliding like a flat cut-out.
-            let nearest = (0..<N).filter { mask[$0] > 0 }.map { d[$0] }.min() ?? 0
-            for i in 0..<N {
-                d[i] = mask[i] > 0 ? min(1, max(d[i], back[i] + jump + 0.1) + subjectRelief * (d[i] - nearest)) : back[i]
-            }
-        }
-
         // tears: pixels clearly farther than something 3 px away, i.e. the FAR side of a sharp depth jump.
         // The depth map is blurrier than the photo, so tearing the near side would eat the subject's edge.
         // Smooth depth (an arm reaching toward the camera) never tears.
@@ -461,17 +444,10 @@ enum Spatial {
         var alpha = box(tear, W, H, 1)
         for i in 0..<N { alpha[i] = 1 - min(1, alpha[i] * 2) }
 
-        // back layer: flat behind the subject. Any rise in it, a step or a ramp, stretches the background
-        // into lines along the tilt. So the subject's depth is removed and filled in from the background around it.
-        // Subject = as near as the near side of the closest-to-far tear, so everything in front of the background goes.
-        // as wide as the widest slide a full tilt makes (`slide` in the renderer), so LaMa repaints all it uncovers
-        let r = max(4, Int((0.08 * longest).rounded()))
-        let eroded = erode(d, W, H, r), nearTear = box(tear, W, H, r)
-        var subject: Float = 2
-        for i in 0..<N where nearTear[i] > 0 && d[i] - eroded[i] > jump { subject = min(subject, d[i]) }
-        var dBg = d, behind = [Float](repeating: 0, count: N)
-        for i in 0..<N { behind[i] = d[i] < subject ? 1 : 0 }
-        fill(&dBg, behind, W, H, 1)
+        // back layer: the farthest depth within the widest slide a tilt makes, so it always sits behind, as in the
+        // web prototype. The subject keeps the depth map's own relief, so a body stays round.
+        let r = max(4, Int((0.06 * longest).rounded()))
+        let dBg = erode(d, W, H, r), nearTear = box(tear, W, H, r)
 
         // hole = near side of a tear, as wide as a tilt can uncover; only there the back layer gets new colours
         var hole = [Float](repeating: 0, count: N)
@@ -505,12 +481,8 @@ enum Spatial {
         fill(&rgb, keepBg, W, H, 3)
         var background = rgba, data = [UInt8](repeating: 255, count: N * 4), mask = [UInt8](repeating: 0, count: N * 4)
         let glow = box(hole, W, H, Int((Float(r) / 3).rounded()))   // soft falloff for the shimmer, not slabs
-        // focus: the subject sharp, everything behind it soft like a portrait, so the repainted strip,
-        // softer than the photo, blends into the background around it. Feathered 2 px so the outline isn't jagged.
-        let focus = box(d.map { $0 >= subject ? 1 : 0 }, W, H, 2)
         for i in 0..<N {
             if hole[i] != 0 { for c in 0..<3 { background[i * 4 + c] = byte(rgb[i * 3 + c]) } }
-            data[i * 4 + 3] = byte(focus[i] * 255)
             data[i * 4] = byte(d[i] * 255)
             data[i * 4 + 1] = byte(alpha[i] * 255)
             data[i * 4 + 2] = byte(dBg[i] * 255)
@@ -882,8 +854,8 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
 
     private func render(_ view: MTKView) {
         if scene.version != version, let layers = scene.layers {
-            textures = [(layers.photo, true), (layers.background, true), (layers.data, false), (layers.mask, false)]
-                .compactMap { texture($0.0, layers.width, layers.height, mipmapped: $0.1) }
+            textures = [layers.photo, layers.background, layers.data, layers.mask]
+                .compactMap { texture($0, layers.width, layers.height) }
             aspect = Float(layers.width) / Float(layers.height)
             version = scene.version
         }
@@ -958,18 +930,12 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
                                        SIMD4(-simd_dot(s, eye), -simd_dot(u, eye), simd_dot(f, eye), 1)))
     }
 
-    /// `mipmapped`: smaller copies too, which the shader reads for the soft background.
-    private func texture(_ bytes: [UInt8], _ width: Int, _ height: Int, mipmapped: Bool) -> MTLTexture? {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: mipmapped)
+    private func texture(_ bytes: [UInt8], _ width: Int, _ height: Int) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = .shaderRead
         guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
         bytes.withUnsafeBytes {
             texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: width * 4)
-        }
-        if mipmapped, let buffer = queue.makeCommandBuffer(), let blit = buffer.makeBlitCommandEncoder() {
-            blit.generateMipmaps(for: texture)
-            blit.endEncoding()
-            buffer.commit()
         }
         return texture
     }

@@ -2,7 +2,6 @@ import CoreML
 import CryptoKit
 import CoreMotion
 import MetalKit
-import OnnxRuntimeBindings
 import SwiftUI
 import Vision
 import os
@@ -100,16 +99,15 @@ final class SpatialScene {
         show(photo.flat)
         scanGoal = 1
         do {
-            // Depth Anything Base: about 400 MB of weights plus the photo's activations
-            guard os_proc_available_memory() > 1200 << 20 else {
+            // Depth Anything Small: 50 MB of weights plus the photo's activations
+            guard os_proc_available_memory() > 300 << 20 else {
                 status = "Not enough free memory to estimate depth. Close other apps and try again."
                 return
             }
-            let downloaded = FileManager.default.fileExists(atPath: AIModel.depth.file.path)
-            status = downloaded ? "Estimating depth…" : "Downloading the depth model (390 MB, only once)…"
-            let depthModel = try await AIModel.depth.download()
+            status = CoreMLModel.depth.isDownloaded ? "Estimating depth…" : "Downloading the depth model (50 MB, only once)…"
+            _ = try await CoreMLModel.depth.download()
             status = "Estimating depth…"
-            let raw = try await Task.detached { try Spatial.depth(photo, model: depthModel) }.value
+            let raw = try await Task.detached { try Spatial.depth(photo, model: CoreMLModel.depth.load()) }.value
             let split = await Task.detached { Spatial.split(photo, depth: raw, subject: Spatial.subjectMask(photo)) }.value
             try Task.checkCancellation()
             show(split.layers)
@@ -125,14 +123,14 @@ final class SpatialScene {
                 return
             }
             buildGoal = 1
-            status = LaMa.isDownloaded ? "Depth ready in \(started.secondsSince). Loading LaMa…"
+            status = CoreMLModel.lama.isDownloaded ? "Depth ready in \(started.secondsSince). Loading LaMa…"
                 : "Depth ready in \(started.secondsSince). Downloading LaMa (100 MB, only once)…"
-            let lama = try await LaMa.download()
+            _ = try await CoreMLModel.lama.download()
             // closed while depth ran: don't start LaMa for a scene nobody sees
             try Task.checkCancellation()
             // each step shows, so a slow one can be told apart from one that never started
             let progress: @Sendable (String) -> Void = { text in Task { @MainActor in self.status = text } }
-            let filled = try await Task.detached { try Spatial.inpaint(photo, split, model: lama, progress: progress) }.value
+            let filled = try await Task.detached { try Spatial.inpaint(photo, split, model: CoreMLModel.lama.load(), progress: progress) }.value
             try Task.checkCancellation()
             show(filled)
             SpatialCache.write(filled, id: asset.id)
@@ -187,6 +185,15 @@ struct Photo: Sendable {
         return rgb
     }
 
+    /// The working-size photo as an image, for Vision and Core ML.
+    var cgImage: CGImage? {
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
     /// Depth 0 everywhere, fully opaque, no hole: the flat photo shown while the depth model runs.
     var flat: SceneLayers {
         let count = width * height
@@ -196,76 +203,48 @@ struct Photo: Sendable {
     }
 }
 
-/// The two models, the same ONNX files the prototype runs. Downloaded once into Caches.
-struct AIModel: Sendable {
-    var url: URL
+/// A Core ML model downloaded once as the three files of its .mlpackage, from a pinned commit, each checked
+/// by SHA-256, compiled on the iPhone, and kept loaded while the app runs, so the next scene starts at once.
+struct CoreMLModel: Sendable {
+    /// The compiled model's name in Caches/models.
+    let name: String
+    let base: URL
+    let parts: [(path: String, sha256: String)]
+    let computeUnits: MLComputeUnits
 
-    static let depth = AIModel(url: URL(string: "https://huggingface.co/onnx-community/depth-anything-v2-base/resolve/main/onnx/model.onnx")!)
+    /// Apple's own conversion of Depth Anything V2 Small (fp16, 50 MB), built for the Neural Engine: about 30 ms on an iPhone 12.
+    static let depth = CoreMLModel(
+        name: "DepthAnythingV2Small",
+        base: URL(string: "https://huggingface.co/apple/coreml-depth-anything-v2-small/resolve/cfef6f6f2a70783dedc0bfae40cecbc2052285d3/DepthAnythingV2SmallF16.mlpackage/")!,
+        parts: [
+            ("Manifest.json", "2883ae290c48fe916dc5ececac03a7d847fa277165a49ef5652fa1d2b9cb55f7"),
+            ("Data/com.apple.CoreML/model.mlmodel", "44ac97a3efcfd52113183fb2862ff59cd0368e9ec2e30a90a54980dd11407042"),
+            ("Data/com.apple.CoreML/weights/weight.bin", "fa60d9b6a155734f59029ebb882fd54e549bfaee3539c1a9cbd2cbbab64a0fed"),
+        ],
+        computeUnits: .all)
 
-    /// Where the download lives; it exists once the model was downloaded.
-    var file: URL { URL.cachesDirectory.appending(path: "models").appending(path: url.lastPathComponent) }
+    /// Big LaMa in half precision (fp16, 100 MB). A 6-bit LaMa (40 MB) painted the hole purple: 6-bit weights shift its colours.
+    /// CPU only: the Neural Engine took minutes to prepare LaMa, and the CPU computes in full precision.
+    /// ponytail: slower per tile; try .cpuAndGPU and compare the colours if tiles take too long
+    static let lama = CoreMLModel(
+        name: "LaMa-fp16",
+        base: URL(string: "https://huggingface.co/heypatkay/solume-big-lama-coreml/resolve/c4358e4356b4c576a7fbfaabf27b5ffd5d9d7758/lama/LaMa512.mlpackage/")!,
+        parts: [
+            ("Manifest.json", "a2576a37183e5a04265456092e18271e165564bd2e6578f6091e404236f3069b"),
+            ("Data/com.apple.CoreML/model.mlmodel", "a50e4ed35d3588892615046a111d274451ee83d29e854175fc91acc1361ffdd1"),
+            ("Data/com.apple.CoreML/weights/weight.bin", "4db509018e12aec710ab28d8ac1a88812665decf7511e538666590db3e5c88fb"),
+        ],
+        computeUnits: .cpuOnly)
+
+    /// The compiled model; it exists once downloaded.
+    var compiled: URL { URL.cachesDirectory.appending(path: "models/\(name).mlmodelc") }
+    var isDownloaded: Bool { FileManager.default.fileExists(atPath: compiled.path) }
 
     func download() async throws -> URL {
-        let file = file
-        if FileManager.default.fileExists(atPath: file.path) { return file }
-        let (temp, _) = try await URLSession.shared.download(from: url)
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? FileManager.default.removeItem(at: file)
-        try FileManager.default.moveItem(at: temp, to: file)
-        return file
-    }
-
-    typealias Tensor = (values: [Float], shape: [Int])
-
-    static func run(_ file: URL, inputs: [String: Tensor], output: String) throws -> Tensor {
-        try run(file, batch: [inputs], output: output)[0]
-    }
-
-    /// Loads the model once, runs it on each input set, and releases it, so only one model is in memory at a time.
-    static func run(_ file: URL, batch: [[String: Tensor]], output: String) throws -> [Tensor] {
-        try autoreleasepool {
-            let env = try ORTEnv(loggingLevel: .warning)
-            // ponytail: CPU only; onnxruntime 1.20's Core ML recompiles on every run and lacks LaMa's FFT, try again on a newer onnxruntime
-            let options = try ORTSessionOptions()
-            try options.setIntraOpNumThreads(Int32(ProcessInfo.processInfo.activeProcessorCount))
-            let session = try ORTSession(env: env, modelPath: file.path, sessionOptions: options)
-            // each run's buffers are released before the next one, not at the end of the batch
-            return try batch.map { inputs in try autoreleasepool {
-                var feeds: [String: ORTValue] = [:]
-                for (name, input) in inputs {
-                    let data = input.values.withUnsafeBufferPointer { NSMutableData(bytes: $0.baseAddress, length: $0.count * 4) }
-                    feeds[name] = try ORTValue(tensorData: data, elementType: .float, shape: input.shape.map { NSNumber(value: $0) })
-                }
-                guard let value = try session.run(withInputs: feeds, outputNames: [output], runOptions: nil)[output] else {
-                    throw CocoaError(.featureUnsupported)
-                }
-                let shape = try value.tensorTypeAndShapeInfo().shape.map(\.intValue)
-                let values = (try value.tensorData() as Data).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-                return (values, shape)
-            } }
-        }
-    }
-}
-
-/// Big LaMa converted to Core ML in half precision (fp16, 100 MB). The 6-bit model it replaced (40 MB)
-/// painted the hole purple: 6-bit weights shift LaMa's colours, half precision doesn't.
-/// Downloaded as the three files of its .mlpackage, from a pinned commit, each checked by SHA-256, then compiled once.
-enum LaMa {
-    private static let base = URL(string: "https://huggingface.co/heypatkay/solume-big-lama-coreml/resolve/c4358e4356b4c576a7fbfaabf27b5ffd5d9d7758/lama/LaMa512.mlpackage/")!
-    private static let parts = [
-        ("Manifest.json", "a2576a37183e5a04265456092e18271e165564bd2e6578f6091e404236f3069b"),
-        ("Data/com.apple.CoreML/model.mlmodel", "a50e4ed35d3588892615046a111d274451ee83d29e854175fc91acc1361ffdd1"),
-        ("Data/com.apple.CoreML/weights/weight.bin", "4db509018e12aec710ab28d8ac1a88812665decf7511e538666590db3e5c88fb"),
-    ]
-    /// The compiled model; it exists once downloaded.
-    static var compiled: URL { URL.cachesDirectory.appending(path: "models/LaMa-fp16.mlmodelc") }
-    static var isDownloaded: Bool { FileManager.default.fileExists(atPath: compiled.path) }
-
-    static func download() async throws -> URL {
         let compiled = compiled
         if isDownloaded { return compiled }
         let started = Date.now
-        let package = FileManager.default.temporaryDirectory.appending(path: "LaMa.mlpackage")
+        let package = FileManager.default.temporaryDirectory.appending(path: "\(name).mlpackage")
         try? FileManager.default.removeItem(at: package)
         defer { try? FileManager.default.removeItem(at: package) }
         for (part, sha256) in parts {
@@ -277,14 +256,42 @@ enum LaMa {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: temp, to: file)
         }
-        FileLog.shared.append("TIME", "LaMa downloaded in \(started.secondsSince)")
+        FileLog.shared.append("TIME", "\(name) downloaded in \(started.secondsSince)")
         let compiling = Date.now
         let built = try await MLModel.compileModel(at: package)
-        FileLog.shared.append("TIME", "LaMa compiled in \(compiling.secondsSince)")
+        FileLog.shared.append("TIME", "\(name) compiled in \(compiling.secondsSince)")
         try FileManager.default.createDirectory(at: compiled.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: compiled)
         try FileManager.default.moveItem(at: built, to: compiled)
         return compiled
+    }
+
+    // ponytail: one lock for every model; the loads it guards are rare
+    nonisolated(unsafe) private static var loaded: [String: MLModel] = [:]
+    private static let lock = NSLock()
+    /// iOS asks for memory back: drop the loaded models, the next scene loads them again.
+    nonisolated(unsafe) private static var memoryWarning: NSObjectProtocol?
+
+    /// The downloaded model, loaded on first use and kept.
+    func load() throws -> MLModel {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        if let model = Self.loaded[name] { return model }
+        if Self.memoryWarning == nil {
+            Self.memoryWarning = NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { _ in
+                    Self.lock.lock()
+                    Self.loaded = [:]
+                    Self.lock.unlock()
+                }
+        }
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = computeUnits
+        let loading = Date.now
+        let model = try MLModel(contentsOf: compiled, configuration: configuration)
+        FileLog.shared.append("TIME", "\(name) loaded in \(loading.secondsSince)")
+        Self.loaded[name] = model
+        return model
     }
 }
 
@@ -292,7 +299,7 @@ enum LaMa {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let version = 11
+    private static let version = 12
     private static func folder(_ version: Int) -> URL {
         URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
     }
@@ -332,8 +339,7 @@ enum Spatial {
     static let jump: Float = 0.3
     /// LaMa's fixed input size.
     static let lamaSize = 512
-    /// Free memory LaMa needs: the onnxruntime build peaked at about 490 MB in the M0 spike.
-    /// ponytail: kept for the Core ML build, which likely needs less; lower it once measured
+    /// Free memory LaMa needs; its card lists a peak of about 600 MB.
     static var lamaFits: Bool { os_proc_available_memory() > 700 << 20 }
 
     struct Split: Sendable {
@@ -345,37 +351,38 @@ enum Spatial {
         var holeBox: (x0: Int, y0: Int, x1: Int, y1: Int)?
     }
 
-    /// Depth Anything V2: the short side 518 and both sides a multiple of 14, ImageNet mean and deviation.
-    /// The long side stops at 728: attention memory grows with the square of the 14-pixel patches, and a tall
-    /// screenshot at 518 wide needed several hundred MB more, enough for iOS to close the app.
-    /// Returns 0…1 per pixel at the photo's size, 1 = near.
-    static func depth(_ photo: Photo, model: URL) throws -> [Float] {
-        let (W, H) = (photo.width, photo.height)
-        let scale = min(518 / Float(min(W, H)), 728 / Float(max(W, H)))
-        let w = max(14, Int((Float(W) * scale / 14).rounded()) * 14)
-        let h = max(14, Int((Float(H) * scale / 14).rounded()) * 14)
-        let small = resize(photo.rgb, W, 3, region: (0, 0, W, H), to: w, h)
-        let mean: [Float] = [0.485, 0.456, 0.406], deviation: [Float] = [0.229, 0.224, 0.225]
-        var input = [Float](repeating: 0, count: 3 * w * h)
-        for i in 0..<w * h {
-            for c in 0..<3 { input[c * w * h + i] = (small[i * 3 + c] / 255 - mean[c]) / deviation[c] }
+    /// Depth Anything V2 Small on Core ML: the photo stretched to the model's fixed 518 × 392, as Apple's own
+    /// evaluation does, and the depth stretched back. Returns 0…1 per pixel at the photo's size, 1 = near.
+    static func depth(_ photo: Photo, model: MLModel) throws -> [Float] {
+        guard let image = photo.cgImage,
+              let constraint = model.modelDescription.inputDescriptionsByName["image"]?.imageConstraint else {
+            throw CocoaError(.featureUnsupported)
         }
-        let out = try AIModel.run(model, inputs: ["pixel_values": (input, [1, 3, h, w])], output: "predicted_depth")
-        let (outH, outW) = (out.shape[out.shape.count - 2], out.shape[out.shape.count - 1])
-        let top = max(out.values.max() ?? 1, .leastNonzeroMagnitude)
-        return resize(out.values.map { max(0, $0) / top }, outW, 1, region: (0, 0, outW, outH), to: W, H)
+        let input = try MLFeatureValue(cgImage: image, constraint: constraint,
+                                       options: [.cropAndScale: VNImageCropAndScaleOption.scaleFill.rawValue])
+        guard let buffer = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": input]))
+            .featureValue(for: "depth")?.imageBufferValue,
+              CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_OneComponent16Half else {
+            throw CocoaError(.featureUnsupported)
+        }
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { throw CocoaError(.featureUnsupported) }
+        let (w, h, row) = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer), CVPixelBufferGetBytesPerRow(buffer))
+        var values = [Float](repeating: 0, count: w * h)
+        for y in 0..<h {
+            let line = (base + y * row).assumingMemoryBound(to: Float16.self)
+            for x in 0..<w { values[y * w + x] = max(0, Float(line[x])) }
+        }
+        let top = max(values.max() ?? 1, .leastNonzeroMagnitude)
+        return resize(values.map { $0 / top }, w, 1, region: (0, 0, w, h), to: photo.width, photo.height)
     }
 
     /// The subject's outline from Vision, the same mask Photos uses to lift a subject off a photo.
     /// 1 on the subject, 0 elsewhere; nil when Vision finds no subject (a landscape) or fails.
     static func subjectMask(_ photo: Photo) -> [Float]? {
         let (W, H) = (photo.width, photo.height)
-        guard let provider = CGDataProvider(data: Data(photo.rgba) as CFData),
-              let image = CGImage(width: W, height: H, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: W * 4,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
-        else { return nil }
+        guard let image = photo.cgImage else { return nil }
         let request = VNGenerateForegroundInstanceMaskRequest(), handler = VNImageRequestHandler(cgImage: image)
         guard (try? handler.perform([request])) != nil, let observation = request.results?.first,
               let buffer = try? observation.generateScaledMaskForImage(forInstances: observation.allInstances, from: handler),
@@ -500,10 +507,15 @@ enum Spatial {
     /// LaMa repaints the hidden area in overlapping tiles along the hole, at the photo's own resolution.
     /// One square over the whole hole squashed a big subject's surroundings into 512 pixels, and LaMa's
     /// texture came back stretched into lines.
-    static func inpaint(_ photo: Photo, _ split: Split, model: URL, progress: @Sendable (String) -> Void = { _ in }) throws -> SceneLayers {
+    static func inpaint(_ photo: Photo, _ split: Split, model: MLModel, progress: @Sendable (String) -> Void = { _ in }) throws -> SceneLayers {
         guard let box = split.holeBox else { return split.layers }
         let (W, H, N, size) = (photo.width, photo.height, photo.width * photo.height, lamaSize)
+        // LaMa repaints only the band a tilt uncovers, so it keeps the real background on its outer side to copy.
+        // Its inner side is the subject, which LaMa would copy too: there it sees the subject already filled in
+        // from the background colours around it.
         let hide = hidden(split, width: W, height: H)
+        var rgb = photo.rgb
+        fill(&rgb, hide.map { 1 - $0 }, W, H, 3)
 
         // tiles of `t` photo pixels, a quarter overlapping; photos over 1536 pixels go in a little smaller
         // so a big one doesn't need dozens of tiles
@@ -515,12 +527,9 @@ enum Spatial {
                 tiles.append((x, y))
             }
         }
-        let rgb = photo.rgb
         let squares = tiles.map { tile -> (rgb: [Float], mask: [Float]) in
             let region = (tile.x, tile.y, t, t)
-            var mask = resize(hide, W, 1, region: region, to: size, size)
-            // when the subject fills most of the tile, LaMa would have nothing to copy from: hide only the edge
-            if mask.filter({ $0 > 0 }).count > size * size * 7 / 10 { mask = resize(split.glow, W, 1, region: region, to: size, size) }
+            let mask = resize(split.hole, W, 1, region: region, to: size, size)
             return (resize(rgb, W, 3, region: region, to: size, size), mask.map { $0 > 0 ? 1 : 0 })
         }
         let painted = try lama(squares, model: model, progress: progress)
@@ -546,12 +555,12 @@ enum Spatial {
         return layers
     }
 
-    /// 1 where the inpainting must not look: the whole subject, not just its edge, since LaMa copies what it sees
-    /// and should only see background. Subject = as near as the near side of the hole, from the depth the split stored.
+    /// 1 on the hole and the whole subject: what LaMa must not copy from.
+    /// Subject = as near as the near side of the hole, from the depth the split stored.
     static func hidden(_ split: Split, width W: Int, height H: Int) -> [Float] {
         let depth = { (i: Int) in Float(split.layers.data[i * 4]) / 255 }, back = { (i: Int) in Float(split.layers.data[i * 4 + 2]) / 255 }
         let near = (0..<W * H).filter { split.hole[$0] != 0 && depth($0) - back($0) > jump }.map(depth).min() ?? 2
-        var hide = split.glow
+        var hide = split.hole
         for i in 0..<W * H where depth(i) >= near { hide[i] = 1 }
         return hide
     }
@@ -569,20 +578,13 @@ enum Spatial {
 
     /// LaMa on one `lamaSize` square, for Clean Up. `rgb` is 0…255, three per pixel, row by row from the top;
     /// `mask` is 1 where to repaint. Returns the painted square in the same layout.
-    static func lama(_ rgb: [Float], mask: [Float], model: URL) throws -> [Float] {
+    static func lama(_ rgb: [Float], mask: [Float], model: MLModel) throws -> [Float] {
         try lama([(rgb, mask)], model: model)[0]
     }
 
-    /// LaMa on several squares, loading the model once. `model` is `LaMa.compiled`.
-    static func lama(_ squares: [(rgb: [Float], mask: [Float])], model: URL, progress: @Sendable (String) -> Void = { _ in }) throws -> [[Float]] {
+    /// LaMa on several squares. `model` is `CoreMLModel.lama`, loaded.
+    static func lama(_ squares: [(rgb: [Float], mask: [Float])], model lama: MLModel, progress: @Sendable (String) -> Void = { _ in }) throws -> [[Float]] {
         let (P, size) = (lamaSize * lamaSize, lamaSize as NSNumber)
-        let configuration = MLModelConfiguration()
-        // CPU only: the Neural Engine took minutes to prepare LaMa, and the CPU computes in full precision.
-        // ponytail: slower per tile; try .cpuAndGPU and compare the colours if tiles take too long
-        configuration.computeUnits = .cpuOnly
-        let loading = Date.now
-        let lama = try MLModel(contentsOf: model, configuration: configuration)
-        FileLog.shared.append("TIME", "LaMa loaded in \(loading.secondsSince), \(squares.count) tiles")
         return try squares.enumerated().map { index, square in try autoreleasepool {
             progress("Rebuilding what's hidden behind the edges, \(index + 1) of \(squares.count)…")
             let predicting = Date.now

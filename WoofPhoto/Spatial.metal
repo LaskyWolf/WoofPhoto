@@ -24,8 +24,8 @@ struct Fragment {
 constexpr sampler linearClamp(filter::linear, address::clamp_to_edge);
 constexpr sampler mipClamp(filter::linear, mip_filter::linear, address::clamp_to_edge);
 // how soft the background is: the mip level read behind the subject.
-// ponytail: fixed; 1.8 hides LaMa's softness at 1280 pixels, tune if it looks too dreamy
-constant float defocus = 1.8;
+// ponytail: fixed; a light portrait blur, 1.8 hid the old edge fill's smears but blurred the whole background
+constant float defocus = 0.6;
 constant float3 light = float3(.55, .82, 1.);
 
 vertex Fragment spatialVertex(uint id [[vertex_id]], const device float2 *uvs [[buffer(0)]],

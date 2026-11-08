@@ -1,4 +1,5 @@
 import CoreImage
+import CoreML
 import SwiftUI
 import os
 
@@ -66,12 +67,14 @@ struct CleanUpCanvas: View {
             }
             do {
                 guard Spatial.lamaFits else { throw CleanUp.Failure.memory }
-                if !LaMa.isDownloaded {
-                    status = "Downloading Clean Up, once…"
+                if !CoreMLModel.lama.isDownloaded {
+                    status = "Downloading Clean Up (100 MB, once)…"
                 }
-                let model = try await LaMa.download()
+                _ = try await CoreMLModel.lama.download()
                 status = "Cleaning up…"
-                let result = try await Task.detached { try CleanUp.erase(image, stroke: points, radius: radius, model: model) }.value
+                let result = try await Task.detached {
+                    try CleanUp.erase(image, stroke: points, radius: radius, model: CoreMLModel.lama.load())
+                }.value
                 onErased(result)
             } catch {
                 self.error = error.explanation
@@ -95,7 +98,7 @@ enum CleanUp {
     /// Paints away what's under the stroke. `stroke` and `radius` are in the image's pixels, from its top left.
     /// Only a box around the stroke goes through LaMa's 512-pixel square, then it's blended back with a soft edge.
     /// ponytail: a big stroke on a big photo comes back softer, since its box is scaled to 512; tile the box if that shows.
-    static func erase(_ image: CIImage, stroke: [CGPoint], radius: CGFloat, model: URL) throws -> CIImage {
+    static func erase(_ image: CIImage, stroke: [CGPoint], radius: CGFloat, model: MLModel) throws -> CIImage {
         let extent = image.extent
         let xs = stroke.map(\.x), ys = stroke.map(\.y)
         guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { return image }

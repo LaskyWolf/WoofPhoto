@@ -78,7 +78,6 @@ struct DiagnosticsView: View {
 
             Section("Checks") {
                 NavigationLink("Open a Live Photo from the Server") { LivePhotoSpike() }
-                NavigationLink("Measure Depth and LaMa") { ModelSpike() }
             }
         }
         .navigationTitle("Diagnostics")
@@ -197,8 +196,8 @@ struct DiagnosticsSection: Identifiable {
 
     private static func models() -> DiagnosticsSection {
         DiagnosticsSection(title: "AI Models", rows: [
-            Row(label: "Depth", value: FileManager.default.fileExists(atPath: AIModel.depth.file.path) ? "Downloaded" : "Not downloaded"),
-            Row(label: "LaMa", value: LaMa.isDownloaded ? "Downloaded" : "Not downloaded"),
+            Row(label: "Depth", value: CoreMLModel.depth.isDownloaded ? "Downloaded" : "Not downloaded"),
+            Row(label: "LaMa", value: CoreMLModel.lama.isDownloaded ? "Downloaded" : "Not downloaded"),
             Row(label: "Apple Intelligence", value: Intelligence.isAvailable ? "Available" : "Not available"),
             Row(label: "Free Memory", value: Int64(os_proc_available_memory()).formatted(.byteCount(style: .memory))),
         ])

@@ -304,7 +304,7 @@ struct CoreMLModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let version = 15
+    private static let version = 16
     private static func folder(_ version: Int) -> URL {
         URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
     }
@@ -342,6 +342,9 @@ enum SpatialCache {
 enum Spatial {
     /// Depth difference (0…1) within 3 pixels that counts as a separate object; lower values cut subjects apart.
     static let jump: Float = 0.3
+    /// How much the small depth bumps inside a subject (face, legs) are grown; 0 = the depth map as measured.
+    /// ponytail: fixed; higher looks puffier and can tear a leg off the body, lower looks flatter
+    static let relief: Float = 1.5
     /// LaMa's fixed input size.
     static let lamaSize = 512
     /// Free memory LaMa needs; its card lists a peak of about 600 MB.
@@ -420,10 +423,16 @@ enum Spatial {
 
     /// The web prototype's layers: the front keeps the depth map as it is, torn only at sharp depth jumps;
     /// the back layer sits behind it and gets new colours where a tilt can uncover it.
-    static func split(_ photo: Photo, depth raw: [Float]) -> Split {
+    static func split(_ photo: Photo, depth measured: [Float]) -> Split {
         let (W, H, N) = (photo.width, photo.height, photo.width * photo.height)
         let longest = Float(max(W, H))
         let rgba = photo.rgba
+
+        // a face or a leg is only a small bump in the depth map next to the big step from the subject to the
+        // background, so on its own it barely moves on tilt. Adding back the difference from a blur 3% of the photo
+        // wide grows the small bumps and leaves the big layers where they are.
+        let smooth = box(measured, W, H, max(4, Int((0.03 * longest).rounded())))
+        let raw = (0..<N).map { min(1, max(0, measured[$0] + relief * (measured[$0] - smooth[$0]))) }
 
         // the depth map fades over a few pixels at an edge, and the subject's outline sits in that fade.
         // Snap the fade into a clean step, pushed outward: anything 8% up the fade belongs to the subject,

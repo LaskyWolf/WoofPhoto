@@ -299,7 +299,7 @@ struct CoreMLModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let version = 12
+    private static let version = 13
     private static func folder(_ version: Int) -> URL {
         URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
     }
@@ -337,6 +337,8 @@ enum SpatialCache {
 enum Spatial {
     /// Depth difference (0…1) within 3 pixels that counts as a separate object; lower values cut subjects apart.
     static let jump: Float = 0.3
+    /// How much of the subject's own depth relief is added on top of the depth map (0 = as measured).
+    static let subjectRelief: Float = 1
     /// LaMa's fixed input size.
     static let lamaSize = 512
     /// Free memory LaMa needs; its card lists a peak of about 600 MB.
@@ -424,7 +426,12 @@ enum Spatial {
             let outside = erode(mask.map { 1 - $0 }, W, H, R)
             var back = d
             fill(&back, outside, W, H, 1)
-            for i in 0..<N { d[i] = mask[i] > 0 ? min(1, max(d[i], back[i] + jump + 0.1)) : back[i] }
+            // The subject's own relief is added once more on top, so a face or an arm turns as the photo tilts
+            // instead of sliding like a flat cut-out.
+            let nearest = (0..<N).filter { mask[$0] > 0 }.map { d[$0] }.min() ?? 0
+            for i in 0..<N {
+                d[i] = mask[i] > 0 ? min(1, max(d[i], back[i] + jump + 0.1) + subjectRelief * (d[i] - nearest)) : back[i]
+            }
         }
 
         // tears: pixels clearly farther than something 3 px away, i.e. the FAR side of a sharp depth jump.
@@ -439,7 +446,8 @@ enum Spatial {
         // back layer: flat behind the subject. Any rise in it, a step or a ramp, stretches the background
         // into lines along the tilt. So the subject's depth is removed and filled in from the background around it.
         // Subject = as near as the near side of the closest-to-far tear, so everything in front of the background goes.
-        let r = max(4, Int((0.06 * longest).rounded()))
+        // as wide as the widest slide a full tilt makes (`slide` in the renderer), so LaMa repaints all it uncovers
+        let r = max(4, Int((0.08 * longest).rounded()))
         let eroded = erode(d, W, H, r), nearTear = box(tear, W, H, r)
         var subject: Float = 2
         for i in 0..<N where nearTear[i] > 0 && d[i] - eroded[i] > jump { subject = min(subject, d[i]) }
@@ -871,14 +879,14 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         build += (scene.buildGoal - build) * 0.04
         let rise = scene.riseStart.map { 1 - pow(2, -10 * min(1, Float(now - $0) / (reduced ? 0.3 : 1.6))) } ?? 0
 
-        // the first reading is the neutral pose; ±20° is a full swing
+        // the first reading is the neutral pose; ±12° is a full swing
         var target = scene.drag
         // roll and pitch measured from the floor break down when the iPhone is held upright (gimbal lock),
         // so take the rotation since the scene opened: it stays small, and small angles are always stable
         // a copy: multiply changes it in place, and the same reading can reach two frames
         if let attitude = motion.deviceMotion?.attitude.copy() as? CMAttitude {
             if let neutral { attitude.multiply(byInverseOf: neutral) } else { neutral = attitude.copy() as? CMAttitude }
-            target += SIMD2(Float(attitude.roll), Float(attitude.pitch)) / (20 * .pi / 180)
+            target += SIMD2(Float(attitude.roll), Float(attitude.pitch)) / (12 * .pi / 180)
         }
         tilt += (simd_clamp(target, SIMD2(repeating: -1), SIMD2(repeating: 1)) - tilt) * 0.08
         // while rebuilding, the camera sways on its own so the 3D shows without touching anything
@@ -889,8 +897,9 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         // each point slides by its depth instead (near = more), so the subject moves over a background that barely moves
         let viewAspect = Float(view.drawableSize.width / view.drawableSize.height)
         let fx = min(1, aspect / viewAspect), fy = min(1, viewAspect / aspect)
-        // ponytail: 0.4 = how far a full tilt slides the nearest point (0.1 of the screen at strength 0.25)
-        let slide = -SIMD2(cx, cy) * 0.4
+        // ponytail: 0.6 = how far a full tilt slides the nearest point (0.15 of the screen at strength 0.25);
+        // more needs a wider hole in `split`
+        let slide = -SIMD2(cx, cy) * 0.6
         // z: nearer is smaller, so the subject wins the depth test over the back layer
         let mvp = simd_float4x4(columns: (SIMD4(2 * fx, 0, 0, 0), SIMD4(0, 2 * fy, 0, 0),
                                           SIMD4(slide.x, slide.y, -1, 0), SIMD4(0, 0, 0.5, 1)))

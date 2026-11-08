@@ -893,16 +893,15 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         let sway = reduced ? 0 : build
         let cx = tilt.x + sin(time * 0.7) * 0.6 * sway, cy = tilt.y + sin(time * 0.5) * 0.3 * sway
 
-        // the whole photo, the same size as the flat one, and the frame stays still, as in Photos: no camera turn,
-        // each point slides by its depth instead (near = more), so the subject moves over a background that barely moves
+        // a perspective camera turning around the photo, as in the first Spatial builds: near points grow and swing
+        // out toward the eye, so the subject pops out of the frame instead of sliding flat across it
+        let orbit: Float = 0.25, d = Self.distance
+        let eye = SIMD3(sin(cx * orbit) * d, sin(cy * orbit) * d, cos(cx * orbit) * cos(cy * orbit) * d)
         let viewAspect = Float(view.drawableSize.width / view.drawableSize.height)
-        let fx = min(1, aspect / viewAspect), fy = min(1, viewAspect / aspect)
-        // ponytail: 0.6 = how far a full tilt slides the nearest point (0.15 of the screen at strength 0.25);
-        // more needs a wider hole in `split`
-        let slide = -SIMD2(cx, cy) * 0.6
-        // z: nearer is smaller, so the subject wins the depth test over the back layer
-        let mvp = simd_float4x4(columns: (SIMD4(2 * fx, 0, 0, 0), SIMD4(0, 2 * fy, 0, 0),
-                                          SIMD4(slide.x, slide.y, -1, 0), SIMD4(0, 0, 0.5, 1)))
+        // the whole photo, shrunk 10% from its flat size so the corners stay inside the view while the camera turns
+        let viewHeight = 2 * d * tan(Self.fieldOfView / 2)
+        let s = min(viewHeight * viewAspect / aspect, viewHeight) * 0.9
+        let mvp = perspective(aspect: viewAspect) * lookAt(eye) * simd_float4x4(diagonal: SIMD4(s * aspect, s, s, 1))
 
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
@@ -921,6 +920,24 @@ final class SpatialRenderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
         buffer.present(drawable)
         buffer.commit()
+    }
+
+    private static let distance: Float = 3
+    private static let fieldOfView: Float = 40 * .pi / 180
+
+    /// Right-handed, depth 0…1 as Metal expects.
+    private func perspective(aspect: Float, near: Float = 0.1, far: Float = 100) -> simd_float4x4 {
+        let y = 1 / tan(Self.fieldOfView / 2), z = far / (near - far)
+        return simd_float4x4(columns: (SIMD4(y / aspect, 0, 0, 0), SIMD4(0, y, 0, 0), SIMD4(0, 0, z, -1), SIMD4(0, 0, z * near, 0)))
+    }
+
+    /// The camera at `eye`, looking at the middle of the photo, slightly in front of it.
+    private func lookAt(_ eye: SIMD3<Float>) -> simd_float4x4 {
+        let f = simd_normalize(SIMD3(0, 0, 0.1) - eye)
+        let s = simd_normalize(simd_cross(f, SIMD3(0, 1, 0)))
+        let u = simd_cross(s, f)
+        return simd_float4x4(columns: (SIMD4(s.x, u.x, -f.x, 0), SIMD4(s.y, u.y, -f.y, 0), SIMD4(s.z, u.z, -f.z, 0),
+                                       SIMD4(-simd_dot(s, eye), -simd_dot(u, eye), simd_dot(f, eye), 1)))
     }
 
     /// `mipmapped`: smaller copies too, which the shader reads for the soft background.

@@ -21,6 +21,8 @@ struct WoofPhotoApp: App {
         // the 6-bit LaMa that painted purple (51–52), and the 390 MB depth model for onnxruntime (up to 53)
         try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "models/LaMa.mlmodelc"))
         try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "models/model.onnx"))
+        // Depth Anything V2 Small (54–56), which flattened the subject
+        try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "models/DepthAnythingV2Small.mlmodelc"))
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Backup.taskID, using: .main) { task in
             MainActor.assumeIsolated { Self.runBackup(task) }
         }

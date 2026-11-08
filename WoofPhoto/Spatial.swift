@@ -99,16 +99,19 @@ final class SpatialScene {
         show(photo.flat)
         scanGoal = 1
         do {
-            // Depth Anything Small: 50 MB of weights plus the photo's activations
-            guard os_proc_available_memory() > 300 << 20 else {
+            // Depth Anything 3 Base: its card lists a peak of about 700 MB
+            guard os_proc_available_memory() > 900 << 20 else {
                 status = "Not enough free memory to estimate depth. Close other apps and try again."
                 return
             }
-            status = CoreMLModel.depth.isDownloaded ? "Estimating depth…" : "Downloading the depth model (50 MB, only once)…"
+            status = CoreMLModel.depth.isDownloaded ? "Estimating depth…" : "Downloading the depth model (230 MB, only once)…"
             _ = try await CoreMLModel.depth.download()
             status = "Estimating depth…"
-            let raw = try await Task.detached { try Spatial.depth(photo, model: CoreMLModel.depth.load()) }.value
-            let split = await Task.detached { Spatial.split(photo, depth: raw, subject: Spatial.subjectMask(photo)) }.value
+            let split = try await Task.detached {
+                let subject = Spatial.subjectMask(photo)
+                let raw = try Spatial.depth(photo, model: CoreMLModel.depth.load(), subject: subject)
+                return Spatial.split(photo, depth: raw, subject: subject)
+            }.value
             try Task.checkCancellation()
             show(split.layers)
             scanGoal = 0
@@ -212,15 +215,17 @@ struct CoreMLModel: Sendable {
     let parts: [(path: String, sha256: String)]
     let computeUnits: MLComputeUnits
 
-    /// Apple's own conversion of Depth Anything V2 Small (fp16, 50 MB), built for the Neural Engine: about 30 ms on an iPhone 12.
+    /// Depth Anything 3 Base (fp16, 230 MB), converted for Core ML and checked against the original by its converter.
+    /// Base, not Small: Small loses a body's roundness and flattens the subject.
     static let depth = CoreMLModel(
-        name: "DepthAnythingV2Small",
-        base: URL(string: "https://huggingface.co/apple/coreml-depth-anything-v2-small/resolve/cfef6f6f2a70783dedc0bfae40cecbc2052285d3/DepthAnythingV2SmallF16.mlpackage/")!,
+        name: "DepthAnything3Base",
+        base: URL(string: "https://huggingface.co/mlboydaisuke/Depth-Anything-3-Base-CoreML/resolve/8e2e01d73a6b78f89beaac573ce3a009cf1fbb50/DepthAnythingV3_base_504.mlpackage/")!,
         parts: [
-            ("Manifest.json", "2883ae290c48fe916dc5ececac03a7d847fa277165a49ef5652fa1d2b9cb55f7"),
-            ("Data/com.apple.CoreML/model.mlmodel", "44ac97a3efcfd52113183fb2862ff59cd0368e9ec2e30a90a54980dd11407042"),
-            ("Data/com.apple.CoreML/weights/weight.bin", "fa60d9b6a155734f59029ebb882fd54e549bfaee3539c1a9cbd2cbbab64a0fed"),
+            ("Manifest.json", "20b752a53baf0102afce370e2b39288a8d98ebe24c095e987e90fc61542e58a7"),
+            ("Data/com.apple.CoreML/model.mlmodel", "1e7e0943bae1c2cd8c58c6d8968f57f7a451b34f152104f80101f1aea535c233"),
+            ("Data/com.apple.CoreML/weights/weight.bin", "7823e9552eef8dff710bb9c51f7b5b7cdbc4c7bd7e06b1a434369f5e8bef1c8b"),
         ],
+        // as converted: its card warns that other compute units can change the numbers
         computeUnits: .all)
 
     /// Big LaMa in half precision (fp16, 100 MB). A 6-bit LaMa (40 MB) painted the hole purple: 6-bit weights shift its colours.
@@ -299,7 +304,7 @@ struct CoreMLModel: Sendable {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let version = 13
+    private static let version = 14
     private static func folder(_ version: Int) -> URL {
         URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
     }
@@ -353,31 +358,44 @@ enum Spatial {
         var holeBox: (x0: Int, y0: Int, x1: Int, y1: Int)?
     }
 
-    /// Depth Anything V2 Small on Core ML: the photo stretched to the model's fixed 518 × 392, as Apple's own
-    /// evaluation does, and the depth stretched back. Returns 0…1 per pixel at the photo's size, 1 = near.
-    static func depth(_ photo: Photo, model: MLModel) throws -> [Float] {
+    /// Depth Anything 3 on Core ML: the photo stretched to the model's square 504 pixels, and the depth stretched back.
+    /// The model gives distance (far = more); this returns 0…1 per pixel at the photo's size, 1 = near.
+    /// `subject`: Vision's mask, which checks the direction: the subject must come out nearer than what's around it.
+    static func depth(_ photo: Photo, model: MLModel, subject: [Float]?) throws -> [Float] {
         guard let image = photo.cgImage,
               let constraint = model.modelDescription.inputDescriptionsByName["image"]?.imageConstraint else {
             throw CocoaError(.featureUnsupported)
         }
         let input = try MLFeatureValue(cgImage: image, constraint: constraint,
                                        options: [.cropAndScale: VNImageCropAndScaleOption.scaleFill.rawValue])
-        guard let buffer = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": input]))
-            .featureValue(for: "depth")?.imageBufferValue,
-              CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_OneComponent16Half else {
+        guard let out = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": input]))
+            .featureValue(for: "depth")?.multiArrayValue, out.shape.count == 3 else {
             throw CocoaError(.featureUnsupported)
         }
-        CVPixelBufferLockBaseAddress(buffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(buffer) else { throw CocoaError(.featureUnsupported) }
-        let (w, h, row) = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer), CVPixelBufferGetBytesPerRow(buffer))
-        var values = [Float](repeating: 0, count: w * h)
-        for y in 0..<h {
-            let line = (base + y * row).assumingMemoryBound(to: Float16.self)
-            for x in 0..<w { values[y * w + x] = max(0, Float(line[x])) }
+        let (h, w) = (out.shape[1].intValue, out.shape[2].intValue)
+        let strides = out.strides.map(\.intValue)
+        var distance = [Float](repeating: 0, count: w * h)
+        func read<T: BinaryFloatingPoint & MLShapedArrayScalar>(_ type: T.Type) {
+            out.withUnsafeBufferPointer(ofType: T.self) { buffer in
+                for y in 0..<h {
+                    for x in 0..<w { distance[y * w + x] = Float(buffer[y * strides[1] + x * strides[2]]) }
+                }
+            }
         }
-        let top = max(values.max() ?? 1, .leastNonzeroMagnitude)
-        return resize(values.map { $0 / top }, w, 1, region: (0, 0, w, h), to: photo.width, photo.height)
+        if out.dataType == .float16 { read(Float16.self) } else { read(Float.self) }
+        var near = distance.map { 1 / max($0, 1e-3) }
+        // the nearest 1% sets 1, so a few stray pixels don't flatten everything else
+        let top = max(near.sorted()[near.count * 99 / 100], .leastNonzeroMagnitude)
+        near = near.map { min(1, $0 / top) }
+        var result = resize(near, w, 1, region: (0, 0, w, h), to: photo.width, photo.height)
+        if let subject {
+            let on = zip(result, subject).filter { $0.1 > 0 }.map(\.0), off = zip(result, subject).filter { $0.1 == 0 }.map(\.0)
+            if !on.isEmpty, !off.isEmpty, on.reduce(0, +) / Float(on.count) < off.reduce(0, +) / Float(off.count) {
+                FileLog.shared.append("NOTICE", "Depth came out reversed; flipped")
+                result = result.map { 1 - $0 }
+            }
+        }
+        return result
     }
 
     /// The subject's outline from Vision, the same mask Photos uses to lift a subject off a photo.

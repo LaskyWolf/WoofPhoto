@@ -284,7 +284,7 @@ enum LaMa {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let version = 9
+    private static let version = 10
     private static func folder(_ version: Int) -> URL {
         URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
     }
@@ -569,9 +569,10 @@ enum Spatial {
     static func lama(_ squares: [(rgb: [Float], mask: [Float])], model: URL, progress: @Sendable (String) -> Void = { _ in }) throws -> [[Float]] {
         let (P, size) = (lamaSize * lamaSize, lamaSize as NSNumber)
         let configuration = MLModelConfiguration()
-        // not the Neural Engine: preparing LaMa for it took minutes on the iPhone (its Fourier layers don't map
-        // onto it). The GPU loads in seconds and runs the whole model.
-        configuration.computeUnits = .cpuAndGPU
+        // CPU only: the Neural Engine took minutes to prepare LaMa, and the GPU's half precision broke its
+        // Fourier layers into purple smears. The CPU computes in full precision.
+        // ponytail: slower per tile; try .cpuAndGPU again if a later model ships in full precision
+        configuration.computeUnits = .cpuOnly
         let loading = Date.now
         let lama = try MLModel(contentsOf: model, configuration: configuration)
         FileLog.shared.append("TIME", "LaMa loaded in \(loading.secondsSince), \(squares.count) tiles")
@@ -594,7 +595,7 @@ enum Spatial {
             guard let out = try lama.prediction(from: input).featureValue(for: "inpainted_image")?.multiArrayValue else {
                 throw CocoaError(.featureUnsupported)
             }
-            // the Neural Engine can pad rows, so read through the strides; half precision is the model's own
+            // Core ML can pad rows, so read through the strides; the output may be half precision
             let strides = out.strides.map(\.intValue), w = lamaSize
             var painted = [Float](repeating: 0, count: 3 * P)
             func read<T: BinaryFloatingPoint & MLShapedArrayScalar>(_ type: T.Type) {

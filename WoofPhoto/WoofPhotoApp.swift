@@ -18,6 +18,8 @@ struct WoofPhotoApp: App {
         // ponytail: models older builds downloaded (Stable Diffusion in 44–45, LaMa for onnxruntime up to 48); drop once those are gone
         try? FileManager.default.removeItem(at: URL.applicationSupportDirectory.appending(path: "Models/Runway_SD1.5_Inpaint_chunked"))
         try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "models/inpainting_lama_2025jan.onnx"))
+        // the 6-bit LaMa that painted purple
+        try? FileManager.default.removeItem(at: URL.cachesDirectory.appending(path: "models/LaMa.mlmodelc"))
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Backup.taskID, using: .main) { task in
             MainActor.assumeIsolated { Self.runBackup(task) }
         }

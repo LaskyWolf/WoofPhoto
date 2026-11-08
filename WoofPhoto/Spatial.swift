@@ -1,4 +1,5 @@
 import CoreML
+import CryptoKit
 import CoreMotion
 import MetalKit
 import OnnxRuntimeBindings
@@ -125,7 +126,7 @@ final class SpatialScene {
             }
             buildGoal = 1
             status = LaMa.isDownloaded ? "Depth ready in \(started.secondsSince). Loading LaMa…"
-                : "Depth ready in \(started.secondsSince). Downloading LaMa (40 MB, only once)…"
+                : "Depth ready in \(started.secondsSince). Downloading LaMa (100 MB, only once)…"
             let lama = try await LaMa.download()
             // closed while depth ran: don't start LaMa for a scene nobody sees
             try Task.checkCancellation()
@@ -246,13 +247,18 @@ struct AIModel: Sendable {
     }
 }
 
-/// LaMa converted to Core ML (6-bit, 40 MB), so it runs on the GPU instead of onnxruntime's CPU.
-/// Downloaded as the three files of its .mlpackage and compiled once on the iPhone.
+/// Big LaMa converted to Core ML in half precision (fp16, 100 MB). The 6-bit model it replaced (40 MB)
+/// painted the hole purple: 6-bit weights shift LaMa's colours, half precision doesn't.
+/// Downloaded as the three files of its .mlpackage, from a pinned commit, each checked by SHA-256, then compiled once.
 enum LaMa {
-    private static let base = URL(string: "https://huggingface.co/Dadm-n/lama-dilated-coreml/resolve/main/Resources/LaMa.mlpackage/")!
-    private static let parts = ["Manifest.json", "Data/com.apple.CoreML/model.mlmodel", "Data/com.apple.CoreML/weights/weight.bin"]
+    private static let base = URL(string: "https://huggingface.co/heypatkay/solume-big-lama-coreml/resolve/c4358e4356b4c576a7fbfaabf27b5ffd5d9d7758/lama/LaMa512.mlpackage/")!
+    private static let parts = [
+        ("Manifest.json", "a2576a37183e5a04265456092e18271e165564bd2e6578f6091e404236f3069b"),
+        ("Data/com.apple.CoreML/model.mlmodel", "a50e4ed35d3588892615046a111d274451ee83d29e854175fc91acc1361ffdd1"),
+        ("Data/com.apple.CoreML/weights/weight.bin", "4db509018e12aec710ab28d8ac1a88812665decf7511e538666590db3e5c88fb"),
+    ]
     /// The compiled model; it exists once downloaded.
-    static var compiled: URL { URL.cachesDirectory.appending(path: "models/LaMa.mlmodelc") }
+    static var compiled: URL { URL.cachesDirectory.appending(path: "models/LaMa-fp16.mlmodelc") }
     static var isDownloaded: Bool { FileManager.default.fileExists(atPath: compiled.path) }
 
     static func download() async throws -> URL {
@@ -262,9 +268,11 @@ enum LaMa {
         let package = FileManager.default.temporaryDirectory.appending(path: "LaMa.mlpackage")
         try? FileManager.default.removeItem(at: package)
         defer { try? FileManager.default.removeItem(at: package) }
-        for part in parts {
+        for (part, sha256) in parts {
             let (temp, response) = try await URLSession.shared.download(from: base.appending(path: part))
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            let digest = SHA256.hash(data: try Data(contentsOf: temp, options: .mappedIfSafe))
+            guard digest.map({ String(format: "%02x", $0) }).joined() == sha256 else { throw URLError(.cannotDecodeContentData) }
             let file = package.appending(path: part)
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: temp, to: file)
@@ -284,7 +292,7 @@ enum LaMa {
 /// ponytail: no size limit; iOS empties Caches when the iPhone runs low on space.
 enum SpatialCache {
     /// Bump when the models or the split change, so old scenes are built again.
-    private static let version = 10
+    private static let version = 11
     private static func folder(_ version: Int) -> URL {
         URL.cachesDirectory.appending(path: version == 1 ? "spatial" : "spatial-\(version)")
     }
@@ -569,9 +577,8 @@ enum Spatial {
     static func lama(_ squares: [(rgb: [Float], mask: [Float])], model: URL, progress: @Sendable (String) -> Void = { _ in }) throws -> [[Float]] {
         let (P, size) = (lamaSize * lamaSize, lamaSize as NSNumber)
         let configuration = MLModelConfiguration()
-        // CPU only: the Neural Engine took minutes to prepare LaMa, and the GPU's half precision broke its
-        // Fourier layers into purple smears. The CPU computes in full precision.
-        // ponytail: slower per tile; try .cpuAndGPU again if a later model ships in full precision
+        // CPU only: the Neural Engine took minutes to prepare LaMa, and the CPU computes in full precision.
+        // ponytail: slower per tile; try .cpuAndGPU and compare the colours if tiles take too long
         configuration.computeUnits = .cpuOnly
         let loading = Date.now
         let lama = try MLModel(contentsOf: model, configuration: configuration)
@@ -592,7 +599,7 @@ enum Spatial {
                 for i in 0..<P { buffer[i] = square.mask[i] }
             }
             let input = try MLDictionaryFeatureProvider(dictionary: ["image": image, "mask": mask])
-            guard let out = try lama.prediction(from: input).featureValue(for: "inpainted_image")?.multiArrayValue else {
+            guard let out = try lama.prediction(from: input).featureValue(for: "result")?.multiArrayValue else {
                 throw CocoaError(.featureUnsupported)
             }
             // Core ML can pad rows, so read through the strides; the output may be half precision

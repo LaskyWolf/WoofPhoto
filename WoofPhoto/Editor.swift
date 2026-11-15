@@ -128,6 +128,11 @@ struct EditorView: View {
             }
             .messageAlert($error)
         }
+        .sensoryFeedback(.selection, trigger: tool)
+        .sensoryFeedback(.selection, trigger: edit.filter)
+        .sensoryFeedback(.selection, trigger: slider)
+        // the detent: a slider coming back to its neutral value
+        .sensoryFeedback(trigger: edit[slider] == slider.neutral) { _, atZero in atZero ? .impact(weight: .light) : nil }
         .task { await load() }
         .task(id: edit) { await render(original: false) }
         .task(id: source == nil) { await makeFilterThumbs() }
@@ -600,9 +605,11 @@ struct EditorView: View {
                 ImageCache.forget(asset.id, client: client)
             }
             History.shared.record(HistoryEntry(kind: .edited, assetID: asset.id, localID: asset.localID, editID: editID))
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
             onSaved()
             dismiss()
         } catch {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
             self.error = error.explanation
         }
     }

@@ -108,6 +108,11 @@ struct MainTabs: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
+        // things that finish while the screen is elsewhere
+        .sensoryFeedback(trigger: Backup.shared.state) { old, new in
+            new == .finished && old != .finished ? .success : nil
+        }
+        .sensoryFeedback(trigger: OfflineDownloads.shared.isRunning) { old, new in old && !new ? .success : nil }
         .environment(\.photoZoom, zoom)
         .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
         .overlay { MiniViewer(zoom: zoom) }

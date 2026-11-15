@@ -229,6 +229,7 @@ struct AssetGrid: View {
                 .padding(.horizontal, spacing)
                 .scaleEffect(pinch)
                 .animation(.snappy, value: columns)
+                .sensoryFeedback(.selection, trigger: columns)
             }
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
             // Photos opens at the newest, so tapping the tab again goes back down to it

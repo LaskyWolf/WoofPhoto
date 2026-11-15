@@ -110,6 +110,7 @@ private struct AlbumOrderSheet: View {
                     .onMove { albums.move(fromOffsets: $0, toOffset: $1) }
             }
             .environment(\.editMode, .constant(.active))
+            .sensoryFeedback(.impact(weight: .light), trigger: albums.map(\.id))
             .navigationTitle("Reorder Albums")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

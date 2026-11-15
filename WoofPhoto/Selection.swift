@@ -13,6 +13,9 @@ final class AssetActions {
     var sharing: SharedFiles?
     var addsToAlbum = false
     var confirmsDelete = false
+    /// Counters the host turns into a tap: one for an action that went through, one for a delete.
+    var succeeded = 0
+    var deleted = 0
     var makesCollage = false
     var sharesLink = false
     var picksTags = false
@@ -39,6 +42,7 @@ final class AssetActions {
             do {
                 try await action(client)
                 if removes { timeline?.remove(ids) }
+                succeeded += 1
                 done()
             } catch {
                 message = error.explanation
@@ -187,9 +191,12 @@ private struct AssetActionsHost: ViewModifier {
                                 isPresented: $actions.confirmsDelete, titleVisibility: .visible) {
                 Button(actions.ids.count == 1 ? "Delete" : "Delete \(actions.ids.count) Items", role: .destructive) {
                     let force = actions.isTrash, ids = actions.ids
+                    actions.deleted += 1
                     actions.run(session.client, removes: true) { try await $0.deleteAssets(ids, force: force) }
                 }
             }
+            .sensoryFeedback(.impact(weight: .light), trigger: actions.succeeded)
+            .sensoryFeedback(.warning, trigger: actions.deleted)
             .messageAlert($actions.message)
     }
 }

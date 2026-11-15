@@ -14,6 +14,8 @@ struct Viewer: View {
 
     @Environment(Session.self) private var session
     @State private var current: String?
+    @State private var deletes = 0
+    @State private var moves = 0
     @State private var detail: Asset?
     @State private var stack: Stack?
     /// The stack member shown in place of a stack's top asset, after picking it in the strip.
@@ -236,6 +238,8 @@ struct Viewer: View {
         .onAppear { centerStrip() }
         .onChange(of: current) { withAnimation(.snappy) { centerStrip() } }
         .sensoryFeedback(.selection, trigger: current)
+        .sensoryFeedback(.warning, trigger: deletes)
+        .sensoryFeedback(.impact(weight: .light), trigger: moves)
         .accessibilityHidden(true)
     }
 
@@ -460,6 +464,7 @@ struct Viewer: View {
         guard let id = shownID, let client = session.client else { return }
         await perform {
             try await client.deleteAssets([id], force: timeline.query?.isTrash == true)
+            deletes += 1
             removeCurrent()
         }
     }
@@ -469,6 +474,7 @@ struct Viewer: View {
         guard let id = shownID, let client = session.client else { return }
         await perform {
             try await client.updateAssets([id], ["visibility": visibility])
+            moves += 1
             removeCurrent()
             message = done
         }
@@ -1190,6 +1196,7 @@ struct InfoSheet: View {
             }
             Spacer(minLength: 0)
         }
+        .sensoryFeedback(.selection, trigger: rating)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Rating")
         .accessibilityValue("\(rating) of 5 stars")

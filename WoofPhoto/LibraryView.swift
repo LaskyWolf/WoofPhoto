@@ -50,6 +50,8 @@ struct LibraryView: View {
                 ProgressView()
             }
         }
+        // the connection is back
+        .sensoryFeedback(trigger: noNetwork) { old, new in old && !new ? .success : nil }
         .task(id: session.client == nil) {
             // the next account starts from an empty timeline, not the last one's months
             if session.client == nil { timeline = Timeline(.library) }

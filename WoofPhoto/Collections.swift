@@ -532,6 +532,7 @@ struct SectionEditor: View {
                 }
             }
             .environment(\.editMode, .constant(.active))
+            .sensoryFeedback(.impact(weight: .light), trigger: order)
             .navigationTitle("Collections Sections")
             .navigationBarTitleDisplayMode(.inline)
     }

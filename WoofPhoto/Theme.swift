@@ -145,7 +145,7 @@ struct HeaderButton: View {
         } label: {
             Image(systemName: systemImage)
                 .font(.title3)
-                .foregroundStyle(isOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .foregroundStyle(isOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                 .symbolEffect(.bounce, value: taps)
                 .frame(width: 36, height: 36)
                 .tapArea(outset: 4)

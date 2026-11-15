@@ -124,12 +124,15 @@ struct AssetGrid: View {
                     } label: {
                         Image(systemName: "ellipsis.circle")
                             .font(.title3)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary)
+                            // dimmed by hand while nothing is selected: .disabled would grey it out much further
+                            .opacity(selection.isEmpty ? 0.55 : 1)
                             .frame(width: 36, height: 36)
                             .tapArea(outset: 4)
                     }
-                    .disabled(selection.isEmpty)
+                    .allowsHitTesting(!selection.isEmpty)
                     .accessibilityLabel("Actions for \(selection.count) selected")
+                    .accessibilityHint(selection.isEmpty ? "Select photos first" : "")
                     Button("Done") { toggleSelect() }
                         .font(.headline)
                         .frame(height: 36)

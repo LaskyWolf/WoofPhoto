@@ -25,9 +25,6 @@ struct SettingsView: View {
                 SettingsRow("Import from Files", icon: "square.and.arrow.down.on.square") { ImportFilesView() }
                 SettingsRow("Storage", icon: "internaldrive") { StorageSettings() }
             }
-            Section("Server") {
-                SettingsRow("Immich", icon: "server.rack") { ImmichSettings() }
-            }
         }
         .listSectionSpacing(.compact)
         .scrollBounceBehavior(.basedOnSize)
@@ -124,10 +121,6 @@ struct AccountSettings: View {
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)
             }
-            Section("Server") {
-                LabeledContent("Address", value: session.client?.server.absoluteString ?? "")
-                LabeledContent("Immich", value: version ?? "…")
-            }
             if let used = me?.quotaUsageInBytes {
                 Section("Storage on the Server") {
                     LabeledContent("Used", value: used.formatted(.byteCount(style: .file)))
@@ -137,8 +130,10 @@ struct AccountSettings: View {
                     }
                 }
             }
+            ServerSections(version: version)
             DevicesSection()
             PasskeysSection()
+            ProxyHeadersSection()
             Section {
                 Button("Sign Out", role: .destructive) { confirmsSignOut = true }
             }
@@ -426,18 +421,31 @@ final class ServerPreferences {
     }
 }
 
-/// Everything about the server on one page: its shared preferences, then this iPhone's local address and proxy headers.
-struct ImmichSettings: View {
+/// The Account page's server part: which server, this iPhone's local address, then the preferences stored on it.
+private struct ServerSections: View {
+    let version: String?
     @Environment(Session.self) private var session
     @State private var prefs = ServerPreferences()
-    @State private var headers = ImmichClient.proxyHeaders
     @State private var local = ImmichClient.localAddress?.absoluteString ?? ""
     /// Whether requests go to the local address after the last check; nil before it.
     @State private var usingLocal: Bool?
 
     var body: some View {
         let client = session.client
-        List {
+        Group {
+            Section {
+                LabeledContent("Address", value: client?.server.absoluteString ?? "")
+                LabeledContent("Immich", value: version ?? "…")
+                TextField("Local Address", text: $local, prompt: Text("http://192.168.1.5:2283"))
+                    .textContentType(.URL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Server")
+            } footer: {
+                Text(localFooter)
+            }
             if prefs.loaded {
                 Section {
                     Toggle(isOn: prefs.binding("memories", "enabled", default: true, client: client)) { Label("Memories", systemImage: "clock.arrow.circlepath") }
@@ -476,32 +484,7 @@ struct ImmichSettings: View {
             if let error = prefs.error {
                 Section { Text(error).foregroundStyle(.secondary) }
             }
-            Section {
-                TextField("Local Address", text: $local, prompt: Text("http://192.168.1.5:2283"))
-                    .textContentType(.URL)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            } header: {
-                Text("Local Network")
-            } footer: {
-                Text(localFooter)
-            }
-            // outside the server's preferences: a proxy may need these before anything loads
-            Section {
-                TextField("Name: value", text: $headers, axis: .vertical)
-                    .font(.body.monospaced())
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            } header: {
-                Text("Custom Proxy Headers")
-            } footer: {
-                Text("One header per line, like CF-Access-Client-Id: abc. Sent with every request, for servers behind a proxy that needs them.")
-            }
         }
-        .navigationTitle("Immich")
-        .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: headers) { ImmichClient.proxyHeaders = headers }
         .task { await prefs.load(client) }
         .task(id: local) {
             // waits for typing to pause before saving and trying the address
@@ -521,6 +504,25 @@ struct ImmichSettings: View {
         case false?: return base + " Not answering now: using the main address."
         case nil: return base
         }
+    }
+}
+
+/// Sent with every request, outside the server's preferences: a proxy may need these before anything loads.
+private struct ProxyHeadersSection: View {
+    @State private var headers = ImmichClient.proxyHeaders
+
+    var body: some View {
+        Section {
+            TextField("Name: value", text: $headers, axis: .vertical)
+                .font(.body.monospaced())
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+        } header: {
+            Text("Custom Proxy Headers")
+        } footer: {
+            Text("One header per line, like CF-Access-Client-Id: abc. Sent with every request, for servers behind a proxy that needs them.")
+        }
+        .onChange(of: headers) { ImmichClient.proxyHeaders = headers }
     }
 }
 

@@ -95,6 +95,8 @@ struct EditorView: View {
     /// True once the preview shows the whole picture, so the crop frame doesn't sit on a cropped one.
     @State private var previewUncropped = false
     @State private var confirmsCancel = false
+    /// The straighten angle when two fingers started turning the photo.
+    @State private var twistStart: Double?
     @State private var ink = Ink.pen
     @State private var inkColor = Color.yellow
     @State private var inkWidth = 8.0
@@ -136,6 +138,7 @@ struct EditorView: View {
         .sensoryFeedback(.selection, trigger: tool)
         .sensoryFeedback(.selection, trigger: edit.filter)
         .sensoryFeedback(.selection, trigger: slider)
+        .sensoryFeedback(trigger: edit.straighten == 0) { _, level in level ? .impact(weight: .light) : nil }
         // the detent: a slider coming back to its neutral value
         .sensoryFeedback(trigger: edit[slider] == slider.neutral) { _, atZero in atZero ? .impact(weight: .light) : nil }
         .onChange(of: tool) { old, new in
@@ -173,12 +176,14 @@ struct EditorView: View {
                         CropOverlay(crop: $edit.crop, imageAspect: preview.size.width / max(preview.size.height, 1), ratio: cropRatio, inset: Self.cropInset)
                     }
                 }
+                // two fingers turning the photo straighten it, as in Photos
+                .simultaneousGesture(RotateGesture().onChanged { twist($0.rotation.degrees) }.onEnded { _ in twist(nil) })
             } else {
                 // pinch and two fingers move the photo to look closer at an edit; one finger held shows the original
-                ZoomPreview(image: preview) { holding in
+                ZoomPreview(image: preview, onHold: { holding in
                     comparing = holding
                     Task { await render(original: holding) }
-                }
+                }, onTwist: { twist($0) })
                 .overlay(alignment: .top) {
                     if comparing {
                         Text("Original")
@@ -193,6 +198,21 @@ struct EditorView: View {
         } else {
             ProgressView()
         }
+    }
+
+    /// Two fingers turning the photo: `degrees` clockwise since they started, nil when they lift.
+    /// It sets the straighten angle (up to 45 either way; the Rotate button turns by quarters), and sticks at 0.
+    private func twist(_ degrees: Double?) {
+        guard let degrees else {
+            twistStart = nil
+            return
+        }
+        let start = twistStart ?? edit.straighten
+        twistStart = start
+        // the mirrored orientations turn the other way
+        var angle = min(max(start + (edit.mirrored ? -degrees : degrees), -45), 45)
+        if abs(angle) < 1.5 { angle = 0 }
+        edit.straighten = angle
     }
 
     private func cancel() {
@@ -1371,18 +1391,28 @@ struct CropOverlay: View {
 struct ZoomPreview: UIViewRepresentable {
     let image: UIImage
     var onHold: (Bool) -> Void
+    /// Degrees turned clockwise since two fingers started; nil when they lift.
+    var onTwist: (Double?) -> Void = { _ in }
 
     func makeUIView(context: Context) -> ZoomPane { ZoomPane() }
 
     func updateUIView(_ pane: ZoomPane, context: Context) {
         pane.onHold = onHold
+        pane.onTwist = onTwist
         pane.show(image)
     }
 }
 
 final class ZoomPane: UIScrollView, UIScrollViewDelegate {
     var onHold: (Bool) -> Void = { _ in }
+    var onTwist: (Double?) -> Void = { _ in }
     private let imageView = UIImageView()
+    private let together = Together()
+
+    /// Lets the twist run beside the pinch and the two-finger move.
+    private final class Together: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
+    }
 
     init() {
         super.init(frame: .zero)
@@ -1401,6 +1431,9 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
         doubleTap.numberOfTapsRequired = 2
         addGestureRecognizer(doubleTap)
+        let twist = UIRotationGestureRecognizer(target: self, action: #selector(twisted(_:)))
+        twist.delegate = together
+        addGestureRecognizer(twist)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -1428,6 +1461,14 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
         switch gesture.state {
         case .began: onHold(true)
         case .ended, .cancelled, .failed: onHold(false)
+        default: break
+        }
+    }
+
+    @objc private func twisted(_ gesture: UIRotationGestureRecognizer) {
+        switch gesture.state {
+        case .changed: onTwist(Double(gesture.rotation) * 180 / .pi)
+        case .ended, .cancelled, .failed: onTwist(nil)
         default: break
         }
     }

@@ -27,7 +27,6 @@ struct Viewer: View {
     @State private var detailsShown = false
     @State private var screenHeight: CGFloat = 0
     /// The page under the finger, with the fraction of the way to the next one, so the ambient blur fades as the photo slides.
-    @State private var progress = PageProgress()
     /// Goes up when a neighbour's thumbnail arrives, so the ambient blur picks it up.
     @State private var neighboursLoaded = 0
     /// Details of the photos already opened or about to be: the top bar's place shows at once when swiping to them.
@@ -118,11 +117,6 @@ struct Viewer: View {
         }
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: $current)
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.containerSize.width > 0 ? geometry.contentOffset.x / geometry.containerSize.width : 0
-        } action: { _, value in
-            progress.value = value
-        }
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
         // WoofTube's ambient mode: the photo itself, blurred, instead of black.
@@ -153,7 +147,7 @@ struct Viewer: View {
     }
 
     private var ambient: some View {
-        AmbientBackground(assets: timeline.assets, progress: progress, version: neighboursLoaded, shown: shown)
+        AmbientBackground(asset: currentAsset, version: neighboursLoaded, shown: shown)
             // up under the status bar only; below, the bars sit on black
             .ignoresSafeArea(edges: .top)
             // the blur spills past the photos; the tools under them stay black
@@ -920,42 +914,51 @@ struct PlayerLayer: UIViewRepresentable {
     }
 }
 
-/// The scroll position in pages, kept outside the viewer's state so only the background redraws while swiping.
-@Observable final class PageProgress {
-    var value: CGFloat = 0
-}
-
-/// The two photos either side of the finger, blurred ahead of time, the second one fading in as it slides over.
+/// The current photo, blurred. When the page changes, the new blur fades in over the old one, once, the same way every time:
+/// it doesn't follow the finger, which made it flicker and look different on every swipe.
 private struct AmbientBackground: View {
-    let assets: [AssetRef]
-    let progress: PageProgress
-    /// Goes up when new blurs are ready; the view redraws without being rebuilt.
+    let asset: AssetRef?
+    /// Goes up when new blurs are ready, so a placeholder's blur is replaced by the real photo's.
     let version: Int
     let shown: (AssetRef) -> AssetRef
 
+    @State private var front: UIImage?
+    @State private var back: UIImage?
+    @State private var frontOpacity = 1.0
+
+    private struct Key: Equatable {
+        var id: String?
+        var version: Int
+    }
+
     var body: some View {
-        let index = min(max(Int(progress.value.rounded(.down)), 0), max(assets.count - 1, 0))
-        let fraction = min(max(progress.value - CGFloat(index), 0), 1)
         // Color.black sets the size; the filled images overflow it and are cut at its edge.
         // In a ZStack the overflowing image made the stack itself grow, so .clipped() cut nothing and the blur ran under the bars.
         Color.black
             .overlay {
-                if index < assets.count {
-                    // while the finger moves, a blur that isn't ready is left out rather than made on the main thread
-                    layer(assets[index], make: fraction == 0)
-                    if index + 1 < assets.count, fraction > 0 {
-                        layer(assets[index + 1], make: false).opacity(fraction)
-                    }
-                }
+                if let back { fill(back) }
+                if let front { fill(front).opacity(frontOpacity) }
             }
             .clipped()
             .opacity(0.55)
+            .task(id: Key(id: asset?.id, version: version)) { change() }
     }
 
-    @ViewBuilder private func layer(_ asset: AssetRef, make: Bool) -> some View {
-        if let image = Still.blurred(shown(asset), make: make) {
-            Image(uiImage: image).resizable().interpolation(.high).scaledToFill()
+    private func fill(_ image: UIImage) -> some View {
+        Image(uiImage: image).resizable().interpolation(.high).scaledToFill()
+    }
+
+    private func change() {
+        guard let asset, let image = Still.blurred(shown(asset)), image !== front else { return }
+        guard front != nil else {
+            front = image
+            return
         }
+        // the old blur stays underneath at full strength, so the middle of the fade never dips to black
+        back = front
+        front = image
+        frontOpacity = 0
+        withAnimation(.easeInOut(duration: 0.5)) { frontOpacity = 1 }
     }
 }
 
@@ -989,11 +992,11 @@ enum Still {
             return image
         }
         guard make else { return nil }
-        let small = UIGraphicsImageRenderer(size: CGSize(width: 48, height: 48 * source.size.height / max(source.size.width, 1)))
+        let small = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32 * source.size.height / max(source.size.width, 1)))
             .image { context in source.draw(in: context.format.bounds) }
         guard let input = CIImage(image: small) else { return nil }
         let output = input.clampedToExtent()
-            .applyingGaussianBlur(sigma: 4)
+            .applyingGaussianBlur(sigma: 4.5)
             .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.4])
             .cropped(to: input.extent)
         guard let cgImage = blurContext.createCGImage(output, from: input.extent) else { return nil }

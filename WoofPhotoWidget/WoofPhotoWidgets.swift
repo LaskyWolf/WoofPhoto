@@ -6,7 +6,7 @@ struct WoofPhotoWidgets: WidgetBundle {
     var body: some Widget {
         WoofPhotoWidget()
         OnThisDayWidget()
-        MonthWidget()
+        PeopleWidget()
         BackupWidget()
     }
 }
@@ -175,133 +175,117 @@ private extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
 
-// MARK: This Month
+// MARK: People
 
-/// This month in photos, like Woof Stats: the count, one bar per week, the streak and the busiest day.
-struct MonthWidget: Widget {
+/// The people Immich recognised, as round faces with their names, like WoofMusic's artist rows: tap one to open their photos.
+/// The small widget shows one person and moves to the next every hour.
+struct PeopleWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "MonthStats", provider: SnapshotProvider<WidgetData.Month>(name: "MonthStats")) { entry in
-            MonthView(month: entry.value)
+        StaticConfiguration(kind: "People", provider: SnapshotProvider<[WidgetData.Face]>(name: "People")) { entry in
+            PeopleView(faces: entry.value, date: entry.date)
                 .containerBackground(for: .widget) {
                     LinearGradient(colors: [Color(hex: 0x123D4A), Color(hex: 0x0B0D12)], startPoint: .topLeading, endPoint: .bottomTrailing)
                 }
         }
-        .configurationDisplayName("This Month")
-        .description("How many photos you took this month, week by week.")
+        .configurationDisplayName("People")
+        .description("The people in your library, one tap from their photos.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
-private struct MonthView: View {
+private struct PeopleView: View {
     @Environment(\.widgetFamily) private var family
-    let month: WidgetData.Month?
+    let faces: [WidgetData.Face]?
+    let date: Date
 
     var body: some View {
-        if let month {
+        if let faces, !faces.isEmpty {
             switch family {
-            case .systemSmall: small(month)
-            case .systemLarge: large(month)
-            default: medium(month)
+            case .systemSmall: small(faces)
+            case .systemLarge: large(faces)
+            default: medium(faces)
             }
         } else {
-            WidgetPlaceholder(symbol: "chart.bar.xaxis", text: "Open WoofPhoto to count this month's photos")
+            WidgetPlaceholder(symbol: "person.2", text: "Name a person in WoofPhoto to see them here")
         }
     }
 
-    private func count(_ month: WidgetData.Month, size: CGFloat) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 3) {
-            Text(month.count, format: .number)
-                .font(.system(size: size, weight: .heavy, design: .rounded))
-                .minimumScaleFactor(0.6)
-            Text(month.count == 1 ? "photo" : "photos")
-                .font(.system(size: size * 0.4, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.7))
-        }
-        .foregroundStyle(.white)
-        .lineLimit(1)
+    private func url(_ face: WidgetData.Face) -> URL {
+        var components = URLComponents()
+        components.scheme = "woofphoto"
+        components.host = "person"
+        components.path = "/" + face.id
+        components.queryItems = [URLQueryItem(name: "name", value: face.name)]
+        return components.url!
     }
 
-    /// One bar per week so far, scaled to the busiest week; the current week in gold.
-    private func bars(_ month: WidgetData.Month, height: CGFloat) -> some View {
-        let peak = max(month.weeks.max() ?? 0, 1)
-        return HStack(alignment: .bottom, spacing: 4) {
-            ForEach(Array(month.weeks.enumerated()), id: \.offset) { index, value in
-                Capsule()
-                    .fill(index == month.weeks.count - 1 ? Color.gold : Color.teal.opacity(0.75))
-                    .frame(height: max(4, height * CGFloat(value) / CGFloat(peak)))
+    private func image(_ face: WidgetData.Face) -> UIImage? {
+        WidgetData.faces.flatMap { UIImage(contentsOfFile: $0.appending(path: face.file).path) }
+    }
+
+    private func circle(_ face: WidgetData.Face, size: CGFloat) -> some View {
+        Group {
+            if let image = image(face) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Image(systemName: "person.fill").foregroundStyle(.white.opacity(0.5)).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.white.opacity(0.1))
             }
         }
-        .frame(height: height, alignment: .bottom)
-        .accessibilityHidden(true)
+        .frame(width: size, height: size)
+        .clipShape(Circle())
     }
 
-    private func streak(_ month: WidgetData.Month) -> some View {
-        Text("🐾 \(month.streak) \(month.streak == 1 ? "day" : "days")")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.8))
-            .accessibilityLabel("\(month.streak)-day streak of days with photos")
-    }
-
-    private func busiest(_ month: WidgetData.Month) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            WidgetHeading(text: "Busiest day", color: .white.opacity(0.6))
-            if let day = month.bestDay {
-                Text(day.formatted(.dateTime.month(.abbreviated).day()))
-                    .font(.system(size: 15, weight: .bold))
+    private func person(_ face: WidgetData.Face, size: CGFloat) -> some View {
+        Link(destination: url(face)) {
+            VStack(spacing: 5) {
+                circle(face, size: size)
+                Text(face.name)
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
-                Text("\(month.bestCount) photos").font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1)
             }
+            .frame(maxWidth: .infinity)
         }
+        .accessibilityLabel(face.name)
     }
 
-    private func small(_ month: WidgetData.Month) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            WidgetHeading(text: "\(month.name) · Woof")
-            count(month, size: 30)
-            bars(month, height: 26)
-            Spacer(minLength: 0)
-            streak(month)
+    private func small(_ faces: [WidgetData.Face]) -> some View {
+        let hour = Int(date.timeIntervalSinceReferenceDate / 3600)
+        let face = faces[hour % faces.count]
+        return VStack(spacing: 6) {
+            WidgetHeading(text: "People · Woof")
+            circle(face, size: 84)
+            Text(face.name).font(.system(size: 13, weight: .bold)).foregroundStyle(.white).lineLimit(1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .widgetURL(url(face))
     }
 
-    private func medium(_ month: WidgetData.Month) -> some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                WidgetHeading(text: "\(month.name) · Woof")
-                count(month, size: 30)
-                Spacer(minLength: 0)
-                bars(month, height: 34)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                busiest(month)
-                Spacer(minLength: 0)
-                streak(month)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func large(_ month: WidgetData.Month) -> some View {
+    private func medium(_ faces: [WidgetData.Face]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            WidgetHeading(text: "\(month.name) · Woof")
-            count(month, size: 44)
-            bars(month, height: 120)
-            HStack {
-                ForEach(Array(month.weeks.enumerated()), id: \.offset) { index, value in
-                    Text("W\(index + 1)\n\(value)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white.opacity(0.7))
-                        .frame(maxWidth: .infinity)
+            WidgetHeading(text: "People · Woof")
+            Spacer(minLength: 0)
+            HStack(alignment: .top, spacing: 4) {
+                ForEach(Array(faces.prefix(4)), id: \.id) { person($0, size: 62) }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func large(_ faces: [WidgetData.Face]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            WidgetHeading(text: "People · Woof")
+            Grid(horizontalSpacing: 6, verticalSpacing: 14) {
+                ForEach(0..<2, id: \.self) { row in
+                    GridRow {
+                        ForEach(0..<3, id: \.self) { column in
+                            if let face = faces[safe: row * 3 + column] { person(face, size: 84) } else { Color.clear }
+                        }
+                    }
                 }
             }
             Spacer(minLength: 0)
-            HStack {
-                busiest(month)
-                Spacer()
-                streak(month)
-            }
         }
     }
 }

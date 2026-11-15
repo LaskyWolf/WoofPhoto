@@ -12,16 +12,11 @@ enum WidgetData {
         var year: Int
     }
 
-    /// This month so far, from the library timeline.
-    struct Month: Codable {
+    /// A person with a name, with the face the app saved for the widget.
+    struct Face: Codable {
+        var id: String
         var name: String
-        var count: Int
-        /// Photos per week of the month (days 1–7, 8–14…), up to the current week.
-        var weeks: [Int]
-        /// Days in a row, ending today or yesterday, with at least one photo.
-        var streak: Int
-        var bestDay: Date?
-        var bestCount: Int
+        var file: String
     }
 
     struct Backup: Codable {
@@ -49,12 +44,14 @@ enum WidgetData {
 
     /// The JPEGs of On This Day.
     static var photos: URL? { folder?.appending(path: "photos") }
+    /// The faces of People.
+    static var faces: URL? { folder?.appending(path: "faces") }
 
     #if DEBUG
     static func selfCheck() {
-        let month = Month(name: "May", count: 3, weeks: [1, 2], streak: 2, bestDay: nil, bestCount: 2)
-        let data = try? JSONEncoder().encode(month)
-        assert((data.flatMap { try? JSONDecoder().decode(Month.self, from: $0) })?.weeks == [1, 2])
+        let face = Face(id: "a", name: "Ana", file: "a.jpg")
+        let data = try? JSONEncoder().encode([face])
+        assert((data.flatMap { try? JSONDecoder().decode([Face].self, from: $0) })?.first?.name == "Ana")
     }
     #endif
 }

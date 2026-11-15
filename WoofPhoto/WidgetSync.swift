@@ -7,7 +7,7 @@ import WidgetKit
 @MainActor
 enum WidgetSync {
     static let onThisDay = "OnThisDay"
-    static let month = "MonthStats"
+    static let people = "People"
     static let backup = "BackupStatus"
 
     /// At most once an hour, when the app opens; the widgets ask for nothing from the server themselves.
@@ -19,7 +19,7 @@ enum WidgetSync {
         last = .now
         let kinds = Set(widgets.map(\.kind))
         writeBackup()
-        if kinds.contains(month) { await writeMonth(client: client) }
+        if kinds.contains(people) { await writePeople(client: client) }
         if kinds.contains(onThisDay) { await writeOnThisDay(client: client) }
         WidgetCenter.shared.reloadAllTimelines()
     }
@@ -34,32 +34,23 @@ enum WidgetSync {
         WidgetCenter.shared.reloadTimelines(ofKind: WidgetSync.backup)
     }
 
-    private static func writeMonth(client: ImmichClient) async {
-        let key = Date.now.formatted(.iso8601.year().month())
-        guard let buckets = try? await client.buckets(.library),
-              let bucket = buckets.first(where: { $0.timeBucket.hasPrefix(key) }),
-              let assets = try? await client.bucket(bucket.timeBucket, .library).refs else { return }
-        let calendar = Calendar.current
-        let today = calendar.component(.day, from: .now)
-        var weeks = Array(repeating: 0, count: (today - 1) / 7 + 1)
-        var perDay: [Int: Int] = [:]
-        for date in assets.compactMap(\.date) {
-            let day = calendar.component(.day, from: date)
-            perDay[day, default: 0] += 1
-            if (day - 1) / 7 < weeks.count { weeks[(day - 1) / 7] += 1 }
+    /// Up to six named people, favorites first, with their faces as 240-pixel JPEGs.
+    private static func writePeople(client: ImmichClient) async {
+        guard let folder = WidgetData.faces, let all = try? await client.people() else { return }
+        let named = all.filter { !$0.name.isEmpty && $0.isHidden != true }
+        let chosen = (named.filter { $0.isFavorite == true } + named.filter { $0.isFavorite != true }).prefix(6)
+        try? FileManager.default.removeItem(at: folder)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var faces: [WidgetData.Face] = []
+        for person in chosen {
+            guard let data = try? await client.personImage(person.id), let image = UIImage(data: data),
+                  let jpeg = image.preparingThumbnail(of: CGSize(width: 240, height: 240 * image.size.height / max(image.size.width, 1)))?
+                      .jpegData(compressionQuality: 0.8) else { continue }
+            let file = "\(person.id).jpg"
+            try? jpeg.write(to: folder.appending(path: file))
+            faces.append(WidgetData.Face(id: person.id, name: person.name, file: file))
         }
-        // a day without a photo yet doesn't break a streak that ran through yesterday
-        var day = perDay[today] == nil ? today - 1 : today
-        var streak = 0
-        while day >= 1, perDay[day] != nil {
-            streak += 1
-            day -= 1
-        }
-        let best = perDay.max { $0.value < $1.value }
-        WidgetData.write(WidgetData.Month(name: Date.now.formatted(.dateTime.month(.wide)), count: assets.count, weeks: weeks,
-                                          streak: streak,
-                                          bestDay: best.flatMap { calendar.date(bySetting: .day, value: $0.key, of: .now) },
-                                          bestCount: best?.value ?? 0), WidgetSync.month)
+        WidgetData.write(faces, WidgetSync.people)
     }
 
     /// One photo from each earlier year that has this date, up to six, as 600-pixel JPEGs.

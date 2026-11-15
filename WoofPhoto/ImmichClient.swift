@@ -209,6 +209,8 @@ extension ImmichClient {
     func deleteAssets(_ ids: [String], force: Bool = false) async throws {
         try await changeOrQueue("DELETE", "/assets", ["ids": ids, "force": force])
         await History.shared.record(force ? .deletedForGood : .deleted, ids)
+        // the same photo on this iPhone goes too
+        await Backup.shared.deleteOnDevice(serverIDs: ids)
     }
 
     func stack(_ id: String) async throws -> Stack {

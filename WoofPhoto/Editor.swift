@@ -1484,15 +1484,19 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
 
 // MARK: - Pens
 
-/// A pen, marker, pencil or eraser drawn upright with the tip up and shaded like a cylinder, as the system picker draws them.
+/// A pen, marker, pencil or eraser drawn upright with the tip up, shaded like a cylinder.
+/// Every tool is 26pt wide and 90pt tall; the picker clips the long barrel at the bottom edge.
 struct PenArt: View {
     let kind: EditorView.Ink
     let color: Color
 
-    private struct Tip: Shape {
+    /// A trapezoid: `top` wide at the top, full width at the bottom.
+    private struct Taper: Shape {
+        var top: CGFloat
         func path(in rect: CGRect) -> Path {
             Path { path in
-                path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+                path.move(to: CGPoint(x: rect.midX - top / 2, y: rect.minY))
+                path.addLine(to: CGPoint(x: rect.midX + top / 2, y: rect.minY))
                 path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
                 path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
                 path.closeSubpath()
@@ -1500,39 +1504,46 @@ struct PenArt: View {
         }
     }
 
-    /// Light in the middle, dark at the sides, over a base colour.
-    private func barrel(_ base: Color) -> some View {
-        Rectangle().fill(base).overlay {
-            LinearGradient(stops: [.init(color: .black.opacity(0.4), location: 0), .init(color: .white.opacity(0.55), location: 0.35),
-                                   .init(color: .white.opacity(0.1), location: 0.65), .init(color: .black.opacity(0.45), location: 1)],
-                           startPoint: .leading, endPoint: .trailing)
-        }
+    /// Light on the left of centre, dark at both edges: reads as a round body.
+    private var shade: some View {
+        LinearGradient(stops: [.init(color: .black.opacity(0.28), location: 0), .init(color: .white.opacity(0.35), location: 0.3),
+                               .init(color: .clear, location: 0.6), .init(color: .black.opacity(0.3), location: 1)],
+                       startPoint: .leading, endPoint: .trailing)
+    }
+
+    private func body(_ base: Color, height: CGFloat) -> some View {
+        Rectangle().fill(base).overlay { shade }.frame(width: 26, height: height)
+    }
+
+    private func band(_ base: Color, height: CGFloat) -> some View {
+        Rectangle().fill(base).overlay { shade }.frame(width: 26, height: height)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             switch kind {
             case .pen:
-                Tip().fill(color).frame(width: 12, height: 18)
-                barrel(Color(white: 0.55)).frame(width: 24, height: 6)
-                barrel(Color(white: 0.85)).frame(width: 24, height: 60).clipShape(.rect(topLeadingRadius: 0, bottomLeadingRadius: 6, bottomTrailingRadius: 6, topTrailingRadius: 0))
+                Taper(top: 3).fill(Color(white: 0.82)).overlay { shade.mask { Taper(top: 3) } }.frame(width: 26, height: 22)
+                    .overlay(alignment: .top) { Taper(top: 3).fill(color).frame(width: 7, height: 9) }
+                band(Color(white: 0.3), height: 5)
+                body(Color(white: 0.9), height: 64)
             case .marker:
-                Tip().fill(color).frame(width: 18, height: 14)
-                barrel(color).frame(width: 30, height: 10)
-                barrel(Color(white: 0.85)).frame(width: 30, height: 60).clipShape(.rect(topLeadingRadius: 0, bottomLeadingRadius: 6, bottomTrailingRadius: 6, topTrailingRadius: 0))
+                Taper(top: 12).fill(color).overlay { shade.mask { Taper(top: 12) } }.frame(width: 26, height: 20)
+                band(Color(white: 0.3), height: 5)
+                body(Color(white: 0.9), height: 66)
             case .pencil:
-                Tip().fill(Color(red: 0.9, green: 0.75, blue: 0.55)).frame(width: 22, height: 20)
-                    .overlay(alignment: .top) { Tip().fill(color).frame(width: 7, height: 8) }
-                barrel(Color(red: 0.95, green: 0.8, blue: 0.2)).frame(width: 24, height: 66)
-                    .clipShape(.rect(topLeadingRadius: 0, bottomLeadingRadius: 4, bottomTrailingRadius: 4, topTrailingRadius: 0))
+                Taper(top: 3).fill(Color(red: 0.93, green: 0.78, blue: 0.58)).overlay { shade.mask { Taper(top: 3) } }.frame(width: 26, height: 26)
+                    .overlay(alignment: .top) { Taper(top: 3).fill(color).frame(width: 8, height: 10) }
+                body(Color(red: 0.98, green: 0.78, blue: 0.2), height: 64)
             case .eraser:
-                RoundedRectangle(cornerRadius: 8).fill(Color(red: 1, green: 0.62, blue: 0.7))
-                    .overlay { LinearGradient(colors: [.white.opacity(0.5), .clear, .black.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing) }
-                    .frame(width: 30, height: 34)
-                barrel(Color(white: 0.8)).frame(width: 30, height: 46)
+                UnevenRoundedRectangle(topLeadingRadius: 13, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 13)
+                    .fill(Color(red: 1, green: 0.6, blue: 0.68)).overlay { shade }.frame(width: 26, height: 26)
+                band(Color(white: 0.6), height: 8)
+                body(Color(white: 0.9), height: 56)
             }
         }
-        .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+        .clipShape(.rect(bottomLeadingRadius: 5, bottomTrailingRadius: 5))
+        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
         .accessibilityHidden(true)
     }
 }

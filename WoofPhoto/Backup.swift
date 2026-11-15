@@ -23,6 +23,10 @@ final class Backup {
     var chargingOnly = UserDefaults.standard.bool(forKey: "backup.chargingOnly") {
         didSet { UserDefaults.standard.set(chargingOnly, forKey: "backup.chargingOnly") }
     }
+    /// A photo deleted in WoofPhoto also goes from this iPhone's library, when it was backed up from here.
+    var deletesOnDevice = UserDefaults.standard.object(forKey: "backup.deleteOnDevice") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(deletesOnDevice, forKey: "backup.deleteOnDevice") }
+    }
     /// Device albums to back up; empty means every photo and video.
     var albumIDs = UserDefaults.standard.stringArray(forKey: "backup.albums") ?? [] {
         didSet { UserDefaults.standard.set(albumIDs, forKey: "backup.albums") }
@@ -205,6 +209,20 @@ final class Backup {
         PHAsset.fetchAssets(withLocalIdentifiers: Array(uploaded.keys), options: nil)
     }
 
+    /// Moves the iPhone's own copies of photos deleted on the server to Recently Deleted. iOS asks to confirm.
+    /// What this app never backed up has no record here, so it is left alone. A refused prompt leaves the copy,
+    /// and the record stays, so the next backup doesn't upload it again.
+    func deleteOnDevice(serverIDs: [String]) async {
+        guard deletesOnDevice else { return }
+        let wanted = Set(serverIDs)
+        let local = uploaded.filter { wanted.contains($0.value) }.map(\.key)
+        guard !local.isEmpty else { return }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: local, options: nil)
+        guard assets.count > 0 else { return }
+        try? await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(assets) }
+        refreshPending()
+    }
+
     /// Forgets what was backed up, for signing out: another account's server doesn't have these.
     func forget() {
         stop()
@@ -281,6 +299,7 @@ struct BackupView: View {
             Section("Options") {
                 Toggle(isOn: $backup.wifiOnly) { Label("Wi-Fi Only", systemImage: "wifi") }
                 Toggle(isOn: $backup.chargingOnly) { Label("Only While Charging", systemImage: "bolt") }
+                Toggle(isOn: $backup.deletesOnDevice) { Label("Delete from This iPhone Too", systemImage: "trash") }
             }
             Section {
                 ForEach(albums, id: \.localIdentifier) { album in

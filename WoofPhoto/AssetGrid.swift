@@ -29,8 +29,10 @@ struct AssetGrid: View {
     @State private var gridWidth: CGFloat = 0
     @Environment(\.photoZoom) private var zoom
     @Environment(\.libraryReselects) private var reselects
-    /// The pinch in progress, shown as a scale before the column count changes.
-    @GestureState private var pinch: CGFloat = 1
+    /// The column step a pinch started from, so one pinch moves at most one or two steps.
+    @State private var pinchStart: Int?
+    /// A one-finger drag that turned out to be a scroll: it stays one until the finger lifts.
+    @State private var dragIgnored = false
     /// The long-press menu's actions.
     @State private var actions = AssetActions()
 
@@ -193,7 +195,6 @@ struct AssetGrid: View {
                                             .foregroundStyle(.white, .tint)
                                             .shadow(radius: 2)
                                             .padding(4)
-                                            .background(selected ? Color.white.opacity(0.25) : .clear)
                                     }
                                 }
                                 .contentShape(.contextMenuPreview, .rect)
@@ -222,15 +223,29 @@ struct AssetGrid: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
                 // in Select mode, a drag that starts sideways selects every cell it crosses
                 .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { value in
-                    dragSelect(value, months: months, spacing: spacing)
+                    // decided once, on the first movement: mostly vertical means scrolling, and it stays scrolling
+                    if dragIgnored { return }
+                    if drag == nil, abs(value.translation.width) < abs(value.translation.height) * 1.5 {
+                        dragIgnored = true
+                        return
+                    }
+                    dragSelect(start: value.startLocation, location: value.location, months: months, spacing: spacing)
                 }.onEnded { _ in
                     drag = nil
+                    dragIgnored = false
                 }, including: selection == nil ? .subviews : .all)
+                // two fingers dragging over the cells start Select mode and select them, as in Photos
+                .gesture(TwoFingerDrag { start, location in
+                    guard canSelect else { return }
+                    if selection == nil { withAnimation(.snappy) { selection = [] } }
+                    dragSelect(start: start, location: location, months: months, spacing: spacing)
+                } ended: {
+                    drag = nil
+                })
                 .padding(.horizontal, spacing)
-                .scaleEffect(pinch)
-                .animation(.snappy, value: columns)
                 .sensoryFeedback(.selection, trigger: columns)
             }
+            .scrollDisabled(drag != nil)
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
             // Photos opens at the newest, so tapping the tab again goes back down to it
             .onChange(of: reselects) {
@@ -247,13 +262,16 @@ struct AssetGrid: View {
                 self.target = nil
             }
         }
-        .simultaneousGesture(MagnifyGesture().updating($pinch) { value, pinch, _ in
-            pinch = min(max(value.magnification, 0.6), 1.6)
-        }.onEnded { value in
+        // the columns change while the fingers move, with no scaling in between: scaling a tall lazy grid jumped
+        .simultaneousGesture(MagnifyGesture().onChanged { value in
             let steps = Self.columnSteps
-            let current = steps.firstIndex(of: columns) ?? 1
-            let next = value.magnification > 1.15 ? current - 1 : value.magnification < 0.87 ? current + 1 : current
-            withAnimation(.snappy) { columns = steps[min(max(next, 0), steps.count - 1)] }
+            let base = pinchStart ?? steps.firstIndex(of: columns) ?? 1
+            pinchStart = base
+            let move = value.magnification > 2 ? -2 : value.magnification > 1.3 ? -1 : value.magnification < 0.5 ? 2 : value.magnification < 0.75 ? 1 : 0
+            let next = steps[min(max(base + move, 0), steps.count - 1)]
+            if next != columns { columns = next }
+        }.onEnded { _ in
+            pinchStart = nil
         })
     }
 
@@ -268,7 +286,7 @@ struct AssetGrid: View {
         set.contains(id) ? set.subtracting([id]) : set.union([id])
     }
 
-    private func dragSelect(_ value: DragGesture.Value, months: [Timeline.Month], spacing: CGFloat) {
+    private func dragSelect(start startPoint: CGPoint, location: CGPoint, months: [Timeline.Month], spacing: CGFloat) {
         guard let selection, gridWidth > 0 else { return }
         let cell = (gridWidth - spacing * CGFloat(columns - 1)) / CGFloat(columns) + spacing
         func index(_ point: CGPoint) -> Int {
@@ -277,13 +295,12 @@ struct AssetGrid: View {
         // every cell in grid order, nil where the month isn't loaded yet
         let flat = Array(repeating: nil, count: leadingBlanks(months)) + months.flatMap { month in month.assets.map { $0.map(Optional.some) } ?? Array(repeating: nil, count: month.count) }
         if drag == nil {
-            guard abs(value.translation.width) > abs(value.translation.height) else { return }
-            let start = index(value.startLocation)
+            let start = index(startPoint)
             let startID = (flat[safe: start] ?? nil)?.id
             drag = (start, selection, !(startID.map(selection.contains) ?? false))
         }
         guard let drag else { return }
-        let end = index(value.location)
+        let end = index(location)
         let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { (flat[safe: $0] ?? nil)?.id }
         self.selection = drag.adds ? drag.base.union(ids) : drag.base.subtracting(ids)
     }
@@ -695,5 +712,56 @@ struct DayMosaic: View {
         }
         .buttonStyle(ZoomPressStyle(scale: 0.97))
         .accessibilityLabel("Day \(tile.day)")
+    }
+}
+
+/// Two fingers dragging: reports where they started and where they are, once they have moved apart from a pinch.
+/// A change in the gap between the fingers means a pinch, and the drag gives up.
+struct TwoFingerDrag: UIGestureRecognizerRepresentable {
+    let moved: (_ start: CGPoint, _ location: CGPoint) -> Void
+    let ended: () -> Void
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var start = CGPoint.zero
+        var gap: CGFloat = 0
+        var state = Phase.waiting
+        enum Phase { case waiting, dragging, pinching }
+
+        /// Alongside the scroll view and the pinch, which decide for themselves.
+        func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.minimumNumberOfTouches = 2
+        pan.maximumNumberOfTouches = 2
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) {
+        let c = context.coordinator
+        func gap() -> CGFloat {
+            guard pan.numberOfTouches == 2 else { return c.gap }
+            let a = pan.location(ofTouch: 0, in: pan.view), b = pan.location(ofTouch: 1, in: pan.view)
+            return hypot(a.x - b.x, a.y - b.y)
+        }
+        switch pan.state {
+        case .began:
+            c.gap = gap()
+            c.state = .waiting
+            c.start = context.converter.localLocation
+        case .changed:
+            if c.state == .waiting {
+                if abs(gap() - c.gap) > 24 { c.state = .pinching }
+                else if hypot(pan.translation(in: pan.view).x, pan.translation(in: pan.view).y) > 20 { c.state = .dragging }
+            }
+            if c.state == .dragging { moved(c.start, context.converter.localLocation) }
+        default:
+            if c.state == .dragging { ended() }
+            c.state = .waiting
+        }
     }
 }

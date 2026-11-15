@@ -236,14 +236,15 @@ struct EditorView: View {
     }
 
     /// The bottom row: a glass X to leave, the tools in one glass bar like the viewer's, and Auto on Adjust.
+    /// The three are as tall as the bar (52 points) and apart, so the glass doesn't bridge between them.
     private var bottomRow: some View {
-        GlassEffectContainer(spacing: 12) {
+        GlassEffectContainer(spacing: 0) {
             HStack(spacing: 12) {
                 Button { cancel() } label: {
                     Image(systemName: "xmark").font(.title3.weight(.semibold)).frame(width: 52, height: 52)
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
+                .buttonStyle(.plain)
                 .accessibilityLabel("Cancel")
                 modeBar
                 Group {
@@ -252,9 +253,9 @@ struct EditorView: View {
                             if let source { applyAuto(edit.base(source)) }
                         } label: {
                             Image(systemName: "wand.and.stars").font(.title3.weight(.semibold)).frame(width: 52, height: 52)
+                                .glassEffect(.regular.interactive(), in: .circle)
                         }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
+                        .buttonStyle(.plain)
                         .accessibilityLabel("Auto")
                         .accessibilityHint("Sets exposure, black point, contrast and saturation from the photo")
                     } else {

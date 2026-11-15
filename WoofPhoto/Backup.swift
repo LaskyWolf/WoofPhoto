@@ -129,6 +129,8 @@ final class Backup {
         current = nil
         refreshPending()
         state = Task.isCancelled ? .idle : .finished
+        if !Task.isCancelled { UserDefaults.standard.set(Date.now, forKey: "backup.lastRun") }
+        WidgetSync.writeBackup()
         if !Task.isCancelled { await Gotify.backupEnded(uploaded: sent, errors: errors) }
     }
 

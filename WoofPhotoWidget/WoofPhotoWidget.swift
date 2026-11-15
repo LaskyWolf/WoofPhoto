@@ -32,7 +32,6 @@ struct PhotoProvider: TimelineProvider {
     }
 }
 
-@main
 struct WoofPhotoWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FeaturedPhotos", provider: PhotoProvider()) { entry in

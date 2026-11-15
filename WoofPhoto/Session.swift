@@ -57,6 +57,7 @@ final class Session {
         AccountButton.loaded = nil
         URLCache.shared.removeAllCachedResponses()
         OfflineFiles.removeAll()
+        WidgetSync.clear()
         Outbox.shared.clear()
         Task { await OfflineIndex.shared.clear() }
         SpatialCache.removeAll()

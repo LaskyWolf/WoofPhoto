@@ -368,11 +368,10 @@ struct StorageSettings: View {
                 Button("Clear Saved Thumbnails", systemImage: "trash", role: .destructive) {
                     URLCache.shared.removeAllCachedResponses()
                     try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: "originals"))
-                    SpatialCache.removeAll()
                     cacheSize = URLCache.shared.currentDiskUsage
                 }
             } footer: {
-                Text("Thumbnails, photos you opened and Spatial Scenes stay on this iPhone, so they show without a connection. Thumbnails use up to 512 MB.")
+                Text("Thumbnails and photos you opened stay on this iPhone, so they show without a connection. Thumbnails use up to 512 MB.")
             }
         }
         .navigationTitle("Storage")

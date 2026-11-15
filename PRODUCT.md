@@ -16,7 +16,7 @@ A native SwiftUI client for Immich with every feature of Immich and of the iOS 2
 
 ## Positioning
 
-A sibling of WoofMusic (the same developer's YouTube Music client): it carries WoofMusic's identity, while its gestures and structure stay familiar to Photos users. Spatial Scenes (M3) are planned as its own feature.
+A sibling of WoofMusic (the same developer's YouTube Music client): it carries WoofMusic's identity, while its gestures and structure stay familiar to Photos users.
 
 ## Operating Context
 

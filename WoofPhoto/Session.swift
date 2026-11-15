@@ -60,7 +60,6 @@ final class Session {
         WidgetSync.clear()
         Outbox.shared.clear()
         Task { await OfflineIndex.shared.clear() }
-        SpatialCache.removeAll()
         for folder in [ImmichClient.offlineFolder, FileManager.default.temporaryDirectory.appending(path: "originals"),
                        Featured.folder].compactMap({ $0 }) {
             try? FileManager.default.removeItem(at: folder)

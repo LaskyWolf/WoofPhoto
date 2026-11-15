@@ -42,8 +42,6 @@ struct Viewer: View {
     @State private var sharesLink = false
     @State private var picksTags = false
     @State private var playsSlideshow = false
-    @State private var spatial: AssetRef?
-    private static let spatialEnabled = true
     @State private var editing: AssetRef?
 
     init(timeline: Timeline, start: AssetRef) {
@@ -117,8 +115,6 @@ struct Viewer: View {
                 }
             }
             .scrollTargetLayout()
-            // the spatial scene draws the photo itself; the flat one under it would show around its edges
-            .opacity(spatial == nil ? 1 : 0)
         }
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: $current)
@@ -128,34 +124,17 @@ struct Viewer: View {
             progress.value = value
         }
         .scrollIndicators(.hidden)
-        .scrollDisabled(spatial != nil)
-        // picking another photo in the strip while Spatial is open shows that photo in Spatial;
-        // videos and photos only on this iPhone close it, like the button they don't have
-        .onChange(of: current) {
-            guard spatial != nil else { return }
-            spatial = shownAsset?.isImage == true && shownAsset?.localID == nil ? shownAsset : nil
-        }
         .ignoresSafeArea(edges: .top)
         // WoofTube's ambient mode: the photo itself, blurred, instead of black
         .background { ambient }
         // a swipe up shows the details under the photo, a swipe down puts it back, as in Photos
         .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
             let (x, y) = (value.translation.width, value.translation.height)
-            guard abs(y) > abs(x) * 2, spatial == nil else { return }
+            guard abs(y) > abs(x) * 2 else { return }
             if y < -80, !detailsShown { withAnimation(.snappy) { detailsShown = true } }
             if y > 80, detailsShown { withAnimation(.snappy) { detailsShown = false } }
         })
-        .overlay {
-            if let spatial {
-                SpatialView(asset: spatial)
-                    .environment(session)
-                    // a new photo gets a new scene; without the id SwiftUI kept the old one
-                    .id(spatial.id)
-                    .transition(.opacity)
-            }
-        }
-        // over the spatial scene too, where it's only the close button
-        .overlay(alignment: .top) { if !chromeHidden || spatial != nil { topBar.transition(.opacity) } }
+        .overlay(alignment: .top) { if !chromeHidden { topBar.transition(.opacity) } }
         .overlay {
             BottomCornersCover(radius: 16)
                 .fill(.black, style: FillStyle(eoFill: true))
@@ -176,36 +155,29 @@ struct Viewer: View {
     }
 
     /// Photos' top bar: back, the place and time in a capsule, and the More menu.
-    /// In Spatial only an X, where Back is, closes the scene.
     private var topBar: some View {
         let date = detail?.date ?? shownAsset?.date
         let exif = detail?.exifInfo
         let place = exif?.city ?? exif?.country ?? detail?.originalFileName
         return HStack(spacing: 12) {
-            if spatial != nil {
-                Button("Close Spatial Scene", systemImage: "xmark") { withAnimation(.easeOut(duration: 0.2)) { spatial = nil } }
-                    .contentTransition(.symbolEffect(.replace))
-                Spacer()
-            } else {
-                Button("Back", systemImage: "chevron.left") { OpenPhoto.shared.minimize() }
-                    .accessibilityHint("Keeps the photo in the floating card")
-                Spacer(minLength: 0)
-                VStack(spacing: 0) {
-                    if let place { Text(place).font(.subheadline.weight(.semibold)) }
-                    if let date {
-                        Text(date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()) + "  "
-                             + date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()))
-                            .font(.caption)
-                    }
+            Button("Back", systemImage: "chevron.left") { OpenPhoto.shared.minimize() }
+                .accessibilityHint("Keeps the photo in the floating card")
+            Spacer(minLength: 0)
+            VStack(spacing: 0) {
+                if let place { Text(place).font(.subheadline.weight(.semibold)) }
+                if let date {
+                    Text(date.formatted(Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()) + "  "
+                         + date.formatted(Date.FormatStyle(timeZone: .gmt).hour().minute()))
+                        .font(.caption)
                 }
-                .lineLimit(1)
-                .padding(.horizontal, 18)
-                .frame(minHeight: 44)
-                .glassEffect(.regular, in: .capsule)
-                .accessibilityElement(children: .combine)
-                Spacer(minLength: 0)
-                if shownAsset?.localID == nil, timeline.query?.isTrash != true { moreMenu } else { Color.clear.frame(width: 44, height: 44) }
             }
+            .lineLimit(1)
+            .padding(.horizontal, 18)
+            .frame(minHeight: 44)
+            .glassEffect(.regular, in: .capsule)
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            if shownAsset?.localID == nil, timeline.query?.isTrash != true { moreMenu } else { Color.clear.frame(width: 44, height: 44) }
         }
         .labelStyle(.iconOnly)
         .buttonBorderShape(.circle)
@@ -247,7 +219,7 @@ struct Viewer: View {
         if let current { strip.scrollTo(id: current, anchor: .center) }
     }
 
-    /// Photos' bottom: the strip, then Share on the left, Spatial, Favorite and Edit together, and Delete on the right.
+    /// Photos' bottom: the strip, then Share on the left, Favorite and Edit together, and Delete on the right.
     private var bottomBar: some View {
         VStack(spacing: 10) {
             if !detailsShown {
@@ -273,12 +245,6 @@ struct Viewer: View {
                             .disabled(shownAsset?.localID != nil)
                         Spacer()
                         HStack(spacing: 0) {
-                            if Self.spatialEnabled, let shownAsset, shownAsset.isImage, shownAsset.localID == nil {
-                                Button(spatial == nil ? "Spatial Scene" : "Flat Photo", systemImage: spatial == nil ? "cube" : "photo") {
-                                    withAnimation(.easeOut(duration: 0.2)) { spatial = spatial == nil ? shownAsset : nil }
-                                }
-                                .contentTransition(.symbolEffect(.replace))
-                            }
                             if shownAsset?.localID != nil {
                                 Button("Back Up", systemImage: "icloud.and.arrow.up") {
                                     if let client = session.client { Backup.shared.start(with: client) }

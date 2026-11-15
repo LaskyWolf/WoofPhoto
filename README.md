@@ -30,13 +30,3 @@ xcodegen generate && open WoofPhoto.xcodeproj
 2. Tap **Write Value for the Widget**, then add the **WoofPhoto Check** widget to the Home Screen. It passes when it shows the same time and group as the app.
 3. Open **Live Photo**. It passes when the photo plays while you touch and hold it.
 4. Open **AI Models** and run both. Write down the times and the peak memory.
-
-## Spatial Scenes prototype
-
-`prototype/spatial` is the web version of Spatial Scenes that M3 ports to the app. To run it:
-
-```bash
-python3 prototype/spatial/serve.py
-```
-
-Then open http://localhost:8765.

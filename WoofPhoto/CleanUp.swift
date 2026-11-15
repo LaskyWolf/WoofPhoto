@@ -3,7 +3,7 @@ import CoreML
 import SwiftUI
 import os
 
-/// Clean Up's photo in the editor: brush over something and LaMa, the model Spatial Scenes uses, paints it away.
+/// Clean Up's photo in the editor: brush over something and LaMa, paints it away.
 struct CleanUpCanvas: View {
     let image: CIImage
     /// Brush width in points on screen.
@@ -66,7 +66,7 @@ struct CleanUpCanvas: View {
                 status = nil
             }
             do {
-                guard Spatial.lamaFits else { throw CleanUp.Failure.memory }
+                guard Inpaint.lamaFits else { throw CleanUp.Failure.memory }
                 if !CoreMLModel.lama.isDownloaded {
                     status = "Downloading Clean Up (100 MB, once)…"
                 }
@@ -113,7 +113,7 @@ enum CleanUp {
         // Core Image counts from the bottom left
         let ciBox = CGRect(x: extent.minX + box.minX, y: extent.maxY - box.maxY, width: box.width, height: box.height)
 
-        let n = CGFloat(Spatial.lamaSize)
+        let n = CGFloat(Inpaint.lamaSize)
         let square = CGRect(x: 0, y: 0, width: n, height: n)
         let crop = image.cropped(to: ciBox)
             .transformed(by: CGAffineTransform(translationX: -ciBox.minX, y: -ciBox.minY))
@@ -139,16 +139,16 @@ enum CleanUp {
         }
         guard let cropImage = PhotoEdit.context.createCGImage(crop, from: square),
               let photo = Photo(UIImage(cgImage: cropImage)), let maskPhoto = Photo(maskImage),
-              photo.width == Spatial.lamaSize, photo.height == Spatial.lamaSize,
-              maskPhoto.width == Spatial.lamaSize, maskPhoto.height == Spatial.lamaSize else { throw Failure.render }
-        let mask = (0..<Spatial.lamaSize * Spatial.lamaSize).map { maskPhoto.rgba[$0 * 4] > 127 ? Float(1) : 0 }
+              photo.width == Inpaint.lamaSize, photo.height == Inpaint.lamaSize,
+              maskPhoto.width == Inpaint.lamaSize, maskPhoto.height == Inpaint.lamaSize else { throw Failure.render }
+        let mask = (0..<Inpaint.lamaSize * Inpaint.lamaSize).map { maskPhoto.rgba[$0 * 4] > 127 ? Float(1) : 0 }
 
-        let painted = try Spatial.lama(photo.rgb, mask: mask, model: model)
+        let painted = try Inpaint.lama(photo.rgb, mask: mask, model: model)
         var bytes = [UInt8](repeating: 255, count: mask.count * 4)
         for i in 0..<mask.count {
-            for c in 0..<3 { bytes[i * 4 + c] = Spatial.byte(painted[i * 3 + c]) }
+            for c in 0..<3 { bytes[i * 4 + c] = Inpaint.byte(painted[i * 3 + c]) }
         }
-        let size = Spatial.lamaSize
+        let size = Inpaint.lamaSize
         guard let provider = CGDataProvider(data: Data(bytes) as CFData),
               let paintedImage = CGImage(width: size, height: size, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: size * 4,
                                          space: CGColorSpace(name: CGColorSpace.sRGB)!,

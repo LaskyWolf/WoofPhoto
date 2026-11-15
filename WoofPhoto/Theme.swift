@@ -460,7 +460,8 @@ struct GridSkeleton: View {
     var body: some View {
         GeometryReader { geometry in
             let spacing: CGFloat = 2
-            let width = geometry.size.width - Tokens.screenPadding * 2
+            // the grid's own 2-point margin and gaps, and like the grid it starts from the bottom, where the newest photos are
+            let width = geometry.size.width - spacing * 2
             let side = max((width - spacing * CGFloat(columns - 1)) / CGFloat(columns), 1)
             let rows = Int(geometry.size.height / (side + spacing)) + 1
             let squares = VStack(spacing: spacing) {
@@ -470,7 +471,7 @@ struct GridSkeleton: View {
                     }
                 }
             }
-            ZStack {
+            ZStack(alignment: .bottom) {
                 squares.foregroundStyle(Color(.systemGray5))
                 if !reduceMotion {
                     TimelineView(.animation(minimumInterval: 1 / 30)) { context in
@@ -484,10 +485,9 @@ struct GridSkeleton: View {
                     .mask(squares)
                 }
             }
-            .frame(width: width, height: geometry.size.height, alignment: .top)
+            .frame(width: width, height: geometry.size.height, alignment: .bottom)
             .clipped()
-            .padding(.horizontal, Tokens.screenPadding)
-            .padding(.top, 8)
+            .padding(.horizontal, spacing)
         }
         .allowsHitTesting(false)
         .accessibilityLabel("Loading photos")

@@ -33,6 +33,8 @@ struct AssetGrid: View {
     @State private var pinchStart: Int?
     /// A one-finger drag that turned out to be a scroll: it stays one until the finger lifts.
     @State private var dragIgnored = false
+    /// True until the first touch of the scroll: until then the grid keeps itself at the newest photos while it fills in.
+    @State private var followsEnd = true
     /// The long-press menu's actions.
     @State private var actions = AssetActions()
 
@@ -247,6 +249,16 @@ struct AssetGrid: View {
             }
             .scrollDisabled(drag != nil)
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
+            // the anchor only holds for the first layout; the months filling in and the thumbnails loading move it
+            .onScrollPhaseChange { _, phase in if phase == .interacting { followsEnd = false } }
+            .onChange(of: months.reduce(0) { $0 + ($1.assets?.count ?? $1.count) }) { if followsEnd { scrollToEnd(months, proxy) } }
+            .task {
+                for delay in [0.0, 0.25, 0.6] {
+                    try? await Task.sleep(for: .seconds(delay))
+                    guard followsEnd else { return }
+                    scrollToEnd(months, proxy)
+                }
+            }
             // Photos opens at the newest, so tapping the tab again goes back down to it
             .onChange(of: reselects) {
                 guard title != nil, let last = months.last else { return }
@@ -273,6 +285,11 @@ struct AssetGrid: View {
         }.onEnded { _ in
             pinchStart = nil
         })
+    }
+
+    private func scrollToEnd(_ months: [Timeline.Month], _ proxy: ScrollViewProxy) {
+        guard hero == nil, let last = months.last else { return }
+        proxy.scrollTo("\(last.key)#\((last.assets?.count ?? last.count) - 1)", anchor: .bottom)
     }
 
     /// Empty cells before the oldest photo, so the newest row at the bottom is full, as in Photos.
@@ -567,17 +584,26 @@ struct Thumbnail: View {
         if asset.thumbhash != nil, placeholder == nil {
             timeline?.problem = "Failed to decode the thumbhash \(asset.thumbhash ?? "")"
         }
-        do {
-            let data = try await client.image(asset.id, size: size)
-            guard let image = UIImage(data: data) else {
-                timeline?.problem = "Failed to read a thumbnail: \(data.count) bytes that aren't an image"
+        // a weak connection drops some requests; asking again beats leaving a grey square until the next launch
+        for attempt in 0..<3 {
+            do {
+                let data = try await client.image(asset.id, size: size)
+                guard let image = UIImage(data: data) else {
+                    timeline?.problem = "Failed to read a thumbnail: \(data.count) bytes that aren't an image"
+                    return
+                }
+                let ready = await image.byPreparingForDisplay() ?? image
+                ImageCache.store(ready, for: asset.id, size: size)
+                loaded = ready
+                return
+            } catch let error as URLError where error.code != .cancelled && attempt < 2 {
+                do { try await Task.sleep(for: .seconds(Double(attempt + 1) * 1.5)) } catch { return }
+            } catch {
+                if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
+                    timeline?.report(error, while: "loading a thumbnail")
+                }
                 return
             }
-            let ready = await image.byPreparingForDisplay() ?? image
-            ImageCache.store(ready, for: asset.id, size: size)
-            loaded = ready
-        } catch {
-            timeline?.report(error, while: "loading a thumbnail")
         }
     }
 }

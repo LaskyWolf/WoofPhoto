@@ -149,7 +149,7 @@ extension ImmichClient {
         var request = request("/assets/\(id)/thumbnail", query: ["size": size])
         // no route: only a saved copy can answer, so a missing image fails now instead of after the timeout
         request.cachePolicy = Connection.shared.isOnline ? .returnCacheDataElseLoad : .returnCacheDataDontLoad
-        request.timeoutInterval = 10
+        request.timeoutInterval = 15
         // our own copy first: URLCache may have dropped it, and kept photos must open offline
         if let stored = OfflineFiles.image(id, size: size) { return stored }
         let (data, response) = try await Self.images.data(for: request)

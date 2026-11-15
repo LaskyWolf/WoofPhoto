@@ -39,6 +39,8 @@ struct Viewer: View {
     @State private var picksTags = false
     @State private var playsSlideshow = false
     @State private var spatial: AssetRef?
+    /// ponytail: Spatial Scenes are being reworked, so the button is hidden; set to true to bring it back.
+    private static let spatialEnabled = false
     @State private var editing: AssetRef?
 
     init(timeline: Timeline, start: AssetRef) {
@@ -267,7 +269,7 @@ struct Viewer: View {
                             .disabled(shownAsset?.localID != nil)
                         Spacer()
                         HStack(spacing: 0) {
-                            if let shownAsset, shownAsset.isImage, shownAsset.localID == nil {
+                            if Self.spatialEnabled, let shownAsset, shownAsset.isImage, shownAsset.localID == nil {
                                 Button(spatial == nil ? "Spatial Scene" : "Flat Photo", systemImage: spatial == nil ? "cube" : "photo") {
                                     withAnimation(.easeOut(duration: 0.2)) { spatial = spatial == nil ? shownAsset : nil }
                                 }

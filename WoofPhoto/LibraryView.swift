@@ -31,11 +31,6 @@ struct LibraryView: View {
                         }
                     }
                     .task(id: scenePhase) { if scenePhase == .active { await check() } }
-                    // on Wi-Fi, saves the months not scrolled to yet, so the whole library opens offline
-                    .task(id: timeline.months?.count) {
-                        guard scenePhase == .active, let client = session.client, let keys = timeline.months?.map(\.key) else { return }
-                        await client.saveMonthsForOffline(.library, keys: keys)
-                    }
             } else if let device {
                 AssetGrid(timeline: device, showsLevels: true, title: "Library")
             } else if denied {

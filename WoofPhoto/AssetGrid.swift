@@ -168,7 +168,8 @@ struct AssetGrid: View {
                 Button("Try Again") { Task { await reload() } }
             }
         } else {
-            ProgressView()
+            // WoofMusic's loading layout: the shape of the grid, with a light sweep, instead of a lone spinner
+            GridSkeleton(columns: columns)
         }
     }
 

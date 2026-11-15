@@ -13,6 +13,23 @@ import SwiftUI
 struct EditorView: View {
     enum Tool: String {
         case trim = "Trim", adjust = "Adjust", filters = "Filters", crop = "Crop", cleanUp = "Clean Up", markup = "Markup", live = "Live"
+
+        var symbol: String {
+            switch self {
+            case .trim: "scissors"
+            case .adjust: "slider.horizontal.3"
+            case .filters: "camera.filters"
+            case .crop: "crop.rotate"
+            case .cleanUp: "eraser"
+            case .markup: "pencil.tip.crop.circle"
+            case .live: "livephoto"
+            }
+        }
+    }
+
+    /// Crop's three angles, one slider at a time, like Photos' dial.
+    enum CropAngle: String, CaseIterable {
+        case straighten = "Straighten", vertical = "Vertical", horizontal = "Horizontal"
     }
 
     let asset: AssetRef
@@ -52,10 +69,13 @@ struct EditorView: View {
     /// Set for a photo on this iPhone that Photos can revert.
     @State private var hasDeviceEdits = false
     @State private var canPaste = EditRecipe.saved != nil
+    @State private var cropAngle = CropAngle.straighten
+    /// Each filter applied to a small copy of the photo, for the Filters strip. Keyed by the filter's name, "" for Original.
+    @State private var filterThumbs: [String: UIImage] = [:]
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
+            VStack(spacing: 12) {
                 if tool == .cleanUp, let source {
                     // the photo without the other edits, so a stroke lands on the pixels it covers
                     CleanUpCanvas(image: edit.base(source), brush: brush) { retouch($0) }
@@ -92,15 +112,14 @@ struct EditorView: View {
                 }
                 // Markup's tool picker takes the bottom, as in Photos; its own Cancel and Done lead back
                 if tool != .markup {
+                    Text(tool.rawValue)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.yellow)
                     controls
-                    Picker("Tool", selection: $tool) {
-                        ForEach(tools, id: \.self) { Text($0.rawValue) }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
+                    modeBar
                 }
             }
-            .padding(.bottom)
+            .padding(.bottom, 4)
             .background(.black)
             .foregroundStyle(.white)
             .overlay { if busy { ProgressView().controlSize(.large) } }
@@ -111,6 +130,7 @@ struct EditorView: View {
         }
         .task { await load() }
         .task(id: edit) { await render(original: false) }
+        .task(id: source == nil) { await makeFilterThumbs() }
         .task(id: framePosition) { await showFrame(at: framePosition) }
     }
 
@@ -134,14 +154,21 @@ struct EditorView: View {
         ToolbarItem(placement: .cancellationAction) {
             Button("Cancel", role: .cancel) { dismiss() }
         }
+        // Photos' centre of the bar: Undo and Redo once there is something to step through, and the Auto wand on Adjust
         ToolbarItem(placement: .principal) {
-            if !undo.isEmpty || !redo.isEmpty {
-                HStack(spacing: 16) {
+            HStack(spacing: 18) {
+                if !undo.isEmpty || !redo.isEmpty {
                     Button("Undo", systemImage: "arrow.uturn.backward") { stepBack() }.disabled(undo.isEmpty)
                     Button("Redo", systemImage: "arrow.uturn.forward") { stepForward() }.disabled(redo.isEmpty)
                 }
-                .labelStyle(.iconOnly)
+                if tool == .adjust {
+                    Button("Auto", systemImage: "wand.and.stars") {
+                        if let source { applyAuto(edit.base(source)) }
+                    }
+                    .accessibilityHint("Sets exposure, black point, contrast and saturation from the photo")
+                }
             }
+            .labelStyle(.iconOnly)
         }
         ToolbarItem(placement: .primaryAction) {
             Menu("Edit Options", systemImage: "ellipsis.circle") {
@@ -163,8 +190,77 @@ struct EditorView: View {
         }
         ToolbarItem(placement: .confirmationAction) {
             Button("Done", role: .confirm) { Task { await save() } }
+                .tint(.yellow)
                 .disabled(!changed || busy)
         }
+    }
+
+    /// Photos' bottom row: one round icon per tool, the chosen one in yellow.
+    private var modeBar: some View {
+        HStack(spacing: 0) {
+            ForEach(tools, id: \.self) { item in
+                Button { tool = item } label: {
+                    Image(systemName: item.symbol)
+                        .font(.title3)
+                        .foregroundStyle(tool == item ? Color.yellow : .white)
+                        .frame(width: 48, height: 48)
+                        .background(tool == item ? Color.white.opacity(0.18) : .clear, in: .circle)
+                        .frame(maxWidth: .infinity)
+                }
+                .accessibilityLabel(item.rawValue)
+                .accessibilityAddTraits(tool == item ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, 8)
+    }
+
+    /// How far a slider is from neutral, 0…1, for the ring around its icon.
+    private func amount(_ item: PhotoEdit.Slider) -> Double {
+        let span = max(item.range.upperBound - item.neutral, item.neutral - item.range.lowerBound)
+        return span == 0 ? 0 : min(1, abs(edit[item] - item.neutral) / span)
+    }
+
+    /// A round dial: the slider's icon, and a yellow ring that fills as the value moves away from neutral.
+    private func dial(_ item: PhotoEdit.Slider) -> some View {
+        Button { slider = item } label: {
+            ZStack {
+                Circle().stroke(.white.opacity(0.2), lineWidth: 2.5)
+                Circle()
+                    .trim(from: 0, to: amount(item))
+                    .stroke(.yellow, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: item.symbol)
+                    .font(.body)
+                    .foregroundStyle(slider == item ? Color.yellow : .white)
+            }
+            .frame(width: 46, height: 46)
+            .background(slider == item ? Color.white.opacity(0.14) : .clear, in: .circle)
+        }
+        .accessibilityLabel(item.rawValue)
+        .accessibilityValue(edit[item] == item.neutral ? "Not changed" : "Changed")
+    }
+
+    /// The slider's position as a signed number, like Photos: 0 at neutral, up to ±100.
+    private func valueText(_ item: PhotoEdit.Slider) -> String {
+        let span = max(item.range.upperBound - item.neutral, item.neutral - item.range.lowerBound)
+        let value = span == 0 ? 0 : Int(((edit[item] - item.neutral) / span * 100).rounded())
+        return value > 0 ? "+\(value)" : "\(value)"
+    }
+
+    /// The Filters strip's thumbnails: the photo, small, with each filter.
+    private func makeFilterThumbs() async {
+        guard let source else { return }
+        let base = edit.base(source)
+        let scale = min(1, 160 / max(base.extent.width, base.extent.height))
+        let small = base.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        var thumbs: [String: UIImage] = [:]
+        for filter in PhotoEdit.filters {
+            var look = PhotoEdit()
+            look.filter = filter.name
+            let image = small.applying(look, scale: scale)
+            if let cgImage = PhotoEdit.context.createCGImage(image, from: small.extent) { thumbs[filter.name ?? ""] = UIImage(cgImage: cgImage) }
+        }
+        filterThumbs = thumbs
     }
 
     private var changed: Bool { edit != PhotoEdit() || trim != 0...1 || muted }
@@ -191,78 +287,95 @@ struct EditorView: View {
             }
             .padding(.horizontal)
         case .adjust:
-            VStack {
-                Button("Auto", systemImage: "wand.and.stars") {
-                    if let source { applyAuto(edit.base(source)) }
-                }
-                .buttonStyle(.bordered)
-                .tint(.white)
-                .accessibilityHint("Sets exposure, black point, contrast and saturation from the photo")
+            VStack(spacing: 10) {
                 ScrollView(.horizontal) {
-                    HStack(spacing: 16) {
-                        ForEach(PhotoEdit.Slider.allCases, id: \.self) { item in
-                            Button {
-                                slider = item
-                            } label: {
-                                Image(systemName: item.symbol)
-                                    .frame(width: 44, height: 44)
-                                    .background(slider == item ? Color.white.opacity(0.25) : .clear, in: .circle)
-                                    .overlay {
-                                        if edit[item] != item.neutral { Circle().stroke(.yellow, lineWidth: 1.5) }
-                                    }
-                            }
-                            .accessibilityLabel(item.rawValue)
-                        }
+                    HStack(spacing: 14) {
+                        ForEach(PhotoEdit.Slider.allCases, id: \.self) { dial($0) }
                     }
                     .padding(.horizontal)
                 }
                 .scrollIndicators(.hidden)
-                HStack {
-                    Text(slider.rawValue).font(.subheadline)
+                VStack(spacing: 2) {
+                    HStack {
+                        Text(slider.rawValue).font(.subheadline.weight(.semibold))
+                        Text(valueText(slider)).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                        if edit[slider] != slider.neutral {
+                            Button("Reset") { edit[slider] = slider.neutral }.font(.caption.weight(.semibold)).tint(.yellow)
+                        }
+                    }
                     Slider(value: Binding { edit[slider] } set: { edit[slider] = $0 }, in: slider.range)
-                    Button("Reset") { edit[slider] = slider.neutral }.font(.caption)
+                        .tint(.yellow)
+                        .accessibilityLabel(slider.rawValue)
                 }
                 .padding(.horizontal)
             }
         case .filters:
             ScrollView(.horizontal) {
-                HStack(spacing: 12) {
-                    ForEach(PhotoEdit.filters, id: \.name) { filter in
-                        Button(filter.title) { edit.filter = filter.name }
-                            .buttonStyle(.bordered)
-                            .tint(edit.filter == filter.name ? .yellow : .white)
+                HStack(spacing: 10) {
+                    ForEach(PhotoEdit.filters, id: \.title) { filter in
+                        let chosen = edit.filter == filter.name
+                        Button { edit.filter = filter.name } label: {
+                            VStack(spacing: 5) {
+                                Group {
+                                    if let thumb = filterThumbs[filter.name ?? ""] {
+                                        Image(uiImage: thumb).resizable().scaledToFill()
+                                    } else {
+                                        Color.white.opacity(0.12)
+                                    }
+                                }
+                                .frame(width: 64, height: 64)
+                                .clipShape(.rect(cornerRadius: 8))
+                                .overlay { RoundedRectangle(cornerRadius: 8).stroke(chosen ? Color.yellow : .clear, lineWidth: 2) }
+                                Text(filter.title)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(chosen ? Color.yellow : .white.opacity(0.8))
+                            }
+                        }
+                        .accessibilityLabel(filter.title)
+                        .accessibilityAddTraits(chosen ? .isSelected : [])
                     }
                 }
                 .padding(.horizontal)
             }
+            .scrollIndicators(.hidden)
         case .crop:
-            VStack {
-                HStack(spacing: 20) {
+            VStack(spacing: 12) {
+                HStack(spacing: 22) {
                     Button("Rotate", systemImage: "rotate.left") { edit.quarterTurns = (edit.quarterTurns + 3) % 4 }
                     Button("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right") { edit.mirrored.toggle() }
-                    Picker("Aspect", selection: $edit.aspect) {
-                        ForEach(PhotoEdit.Aspect.allCases, id: \.self) { Text($0.rawValue) }
+                    Menu {
+                        Picker("Aspect", selection: $edit.aspect) {
+                            ForEach(PhotoEdit.Aspect.allCases, id: \.self) { Text($0.rawValue) }
+                        }
+                    } label: {
+                        Label(edit.aspect.rawValue, systemImage: "aspectratio")
+                            .labelStyle(.titleAndIcon)
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .frame(height: 34)
+                            .background(.white.opacity(0.15), in: .capsule)
                     }
-                    .tint(.white)
+                    .accessibilityLabel("Aspect Ratio")
                 }
                 .labelStyle(.iconOnly)
                 .font(.title3)
-                HStack {
-                    Text("Straighten").font(.subheadline)
-                    Slider(value: $edit.straighten, in: -45...45, step: 0.5)
-                    Text("\(edit.straighten, specifier: "%.1f")°").monospacedDigit().font(.caption)
+                Picker("Angle", selection: $cropAngle) {
+                    ForEach(CropAngle.allCases, id: \.self) { Text($0.rawValue) }
                 }
+                .pickerStyle(.segmented)
                 .padding(.horizontal)
                 HStack {
-                    Text("Vertical").font(.subheadline)
-                    Slider(value: $edit.perspectiveV, in: -1...1)
-                        .accessibilityLabel("Vertical Perspective")
-                }
-                .padding(.horizontal)
-                HStack {
-                    Text("Horizontal").font(.subheadline)
-                    Slider(value: $edit.perspectiveH, in: -1...1)
-                        .accessibilityLabel("Horizontal Perspective")
+                    switch cropAngle {
+                    case .straighten:
+                        Slider(value: $edit.straighten, in: -45...45, step: 0.5).tint(.yellow)
+                        Text("\(edit.straighten, specifier: "%.1f")°").font(.caption.monospacedDigit()).frame(width: 48)
+                    case .vertical:
+                        Slider(value: $edit.perspectiveV, in: -1...1).tint(.yellow).accessibilityLabel("Vertical Perspective")
+                        Text("\(Int((edit.perspectiveV * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
+                    case .horizontal:
+                        Slider(value: $edit.perspectiveH, in: -1...1).tint(.yellow).accessibilityLabel("Horizontal Perspective")
+                        Text("\(Int((edit.perspectiveH * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
+                    }
                 }
                 .padding(.horizontal)
             }

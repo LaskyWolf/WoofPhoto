@@ -20,6 +20,7 @@ final class Timeline {
     /// The last failure, shown under the grid until tapped.
     var problem: String?
     private var loading: Set<String> = []
+    private var saving: Task<Void, Never>?
 
     init(_ query: TimelineQuery) {
         self.query = query
@@ -50,10 +51,24 @@ final class Timeline {
         for (key, assets) in local { counts[key, default: 0] += assets.count }
         // keep months already loaded, so a reload after an edit doesn't blank the screen
         let old = Dictionary(uniqueKeysWithValues: (months ?? []).map { ($0.key, $0) })
+        // nothing new on the server: leave the grid alone, so it doesn't redraw for the same answer
+        if let months, months.count == counts.count, months.allSatisfy({ counts[$0.key] == $0.count }) {
+            startSavingForOffline(client)
+            return
+        }
         months = counts.keys.sorted().map { key in
             let kept = old[key].flatMap { $0.count == counts[key] ? $0.assets : nil }
             return Month(key: key, count: counts[key] ?? 0, assets: kept)
         }
+        startSavingForOffline(client)
+    }
+
+    /// On Wi-Fi, in the background, saves the months not scrolled to yet so the whole library opens offline.
+    /// Off the main actor, so scrolling never waits for it, and started once per reload, not once per change in the grid.
+    private func startSavingForOffline(_ client: ImmichClient) {
+        guard query == .library, let keys = months?.map(\.key) else { return }
+        saving?.cancel()
+        saving = Task.detached(priority: .utility) { await client.saveMonthsForOffline(.library, keys: keys) }
     }
 
     func loadMonth(_ key: String, with client: ImmichClient) async {

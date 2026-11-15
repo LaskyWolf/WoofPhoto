@@ -450,3 +450,46 @@ private struct DetailBarTitle: ViewModifier {
             .toolbarTitleDisplayMode(.inline)
     }
 }
+
+/// The photo grid before its photos arrive: gray squares in the grid's own layout with a light sweep over them,
+/// like WoofMusic's loading screens. Reduce Motion keeps the squares still.
+struct GridSkeleton: View {
+    let columns: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { geometry in
+            let spacing: CGFloat = 2
+            let width = geometry.size.width - Tokens.screenPadding * 2
+            let side = max((width - spacing * CGFloat(columns - 1)) / CGFloat(columns), 1)
+            let rows = Int(geometry.size.height / (side + spacing)) + 1
+            let squares = VStack(spacing: spacing) {
+                ForEach(0..<rows, id: \.self) { _ in
+                    HStack(spacing: spacing) {
+                        ForEach(0..<columns, id: \.self) { _ in Rectangle().frame(width: side, height: side) }
+                    }
+                }
+            }
+            ZStack {
+                squares.foregroundStyle(Color(.systemGray5))
+                if !reduceMotion {
+                    TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+                        let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6) / 1.6
+                        LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .white.opacity(0.35), location: 0.5),
+                                               .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: width * 1.5)
+                            .offset(x: CGFloat(phase * 2 - 1) * width)
+                            .frame(width: width, alignment: .center)
+                    }
+                    .mask(squares)
+                }
+            }
+            .frame(width: width, height: geometry.size.height, alignment: .top)
+            .clipped()
+            .padding(.horizontal, Tokens.screenPadding)
+            .padding(.top, 8)
+        }
+        .allowsHitTesting(false)
+        .accessibilityLabel("Loading photos")
+    }
+}

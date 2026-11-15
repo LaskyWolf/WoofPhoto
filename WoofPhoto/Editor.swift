@@ -32,8 +32,27 @@ struct EditorView: View {
         case straighten = "Straighten", vertical = "Vertical", horizontal = "Horizontal"
     }
 
+    /// Markup's pens, as the buttons in its controls.
+    enum Ink: String, CaseIterable {
+        case pen = "Pen", marker = "Marker", pencil = "Pencil", eraser = "Eraser"
+
+        var symbol: String {
+            switch self {
+            case .pen: "pencil.tip"
+            case .marker: "highlighter"
+            case .pencil: "pencil"
+            case .eraser: "eraser"
+            }
+        }
+    }
+
     let asset: AssetRef
     var onSaved: () -> Void
+
+    /// The controls keep one height for every tool, so the photo above doesn't jump when the tool changes.
+    private static let controlsHeight: CGFloat = 156
+    /// Room around the picture in Crop, so a corner handle can be grabbed at the very corner.
+    private static let cropInset: CGFloat = 24
 
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
@@ -70,107 +89,123 @@ struct EditorView: View {
     @State private var hasDeviceEdits = false
     @State private var canPaste = EditRecipe.saved != nil
     @State private var cropAngle = CropAngle.straighten
+    @State private var cropAspect = PhotoEdit.Aspect.free
+    /// A locked ratio turned the other way: 3:4 instead of 4:3.
+    @State private var cropFlipped = false
+    /// True once the preview shows the whole picture, so the crop frame doesn't sit on a cropped one.
+    @State private var previewUncropped = false
+    @State private var confirmsCancel = false
+    @State private var ink = Ink.pen
+    @State private var inkColor = Color.yellow
+    @State private var inkWidth = 8.0
     /// Each filter applied to a small copy of the photo, for the Filters strip. Keyed by the filter's name, "" for Original.
     @State private var filterThumbs: [String: UIImage] = [:]
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
-                if tool == .cleanUp, let source {
-                    // the photo without the other edits, so a stroke lands on the pixels it covers
-                    CleanUpCanvas(image: edit.base(source), brush: brush) { retouch($0) }
-                        .frame(maxHeight: .infinity)
-                } else if tool == .markup, let source {
-                    MarkupCanvas(image: edit.base(source), canvas: canvas)
-                        .frame(maxHeight: .infinity)
-                        // ponytail: room for PencilKit's tool picker, about this tall on iPhone; read its frame if it covers the photo
-                        .padding(.bottom, 90)
-                } else {
-                    ZStack {
-                        if let preview {
-                            Image(uiImage: preview).resizable().scaledToFit()
-                        } else {
-                            ProgressView()
-                        }
-                    }
+            VStack(spacing: 0) {
+                canvasArea
                     .frame(maxHeight: .infinity)
-                    .overlay(alignment: .top) {
-                        if comparing {
-                            Text("Original")
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 12).padding(.vertical, 6)
-                                .background(.black.opacity(0.6), in: .capsule)
+                VStack(spacing: 8) {
+                    HStack(spacing: 12) {
+                        Text(tool.rawValue)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.yellow)
+                        if tool == .crop, edit.crop != PhotoEdit.unit {
+                            Button("Reset") { edit.crop = PhotoEdit.unit; cropAspect = .free; cropFlipped = false }
+                                .font(.footnote.weight(.semibold))
+                                .tint(.yellow)
                         }
                     }
-                    .onLongPressGesture(minimumDuration: 0.1, maximumDistance: 50) {
-                    } onPressingChanged: { pressing in
-                        // touch and hold shows the original, as in Photos
-                        comparing = pressing
-                        Task { await render(original: pressing) }
-                    }
-                    .accessibilityHint("Touch and hold to compare with the original")
-                }
-                // Markup's tool picker takes the bottom, as in Photos; its own Cancel and Done lead back
-                if tool != .markup {
-                    Text(tool.rawValue)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.yellow)
                     controls
-                    modeBar
                 }
+                .padding(.top, 8)
+                .frame(height: Self.controlsHeight, alignment: .top)
+                bottomRow
             }
             .padding(.bottom, 4)
             .background(.black)
             .foregroundStyle(.white)
             .overlay { if busy { ProgressView().controlSize(.large) } }
-            .toolbar {
-                if tool == .markup { markupToolbar } else { editorToolbar }
-            }
+            .toolbar { editorToolbar }
             .messageAlert($error)
+            .confirmationDialog("Discard your edits?", isPresented: $confirmsCancel, titleVisibility: .visible) {
+                Button("Discard Edits", role: .destructive) { dismiss() }
+            }
         }
         .sensoryFeedback(.selection, trigger: tool)
         .sensoryFeedback(.selection, trigger: edit.filter)
         .sensoryFeedback(.selection, trigger: slider)
         // the detent: a slider coming back to its neutral value
         .sensoryFeedback(trigger: edit[slider] == slider.neutral) { _, atZero in atZero ? .impact(weight: .light) : nil }
+        .onChange(of: tool) { old, new in
+            // Markup's strokes join the photo when you leave it
+            if old == .markup { commitMarkup() }
+            if new == .markup { applyInk() }
+        }
+        .onChange(of: ink) { applyInk() }
+        .onChange(of: inkColor) { applyInk() }
+        .onChange(of: inkWidth) { applyInk() }
         .task { await load() }
-        .task(id: edit) { await render(original: false) }
+        // a moving crop frame doesn't render again: the picture under it stays the same
+        .task(id: RenderKey(edit: edit.withoutCrop, cropping: tool == .crop)) { await render(original: false) }
         .task(id: source == nil) { await makeFilterThumbs() }
         .task(id: framePosition) { await showFrame(at: framePosition) }
     }
 
-    @ToolbarContentBuilder private var markupToolbar: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel", role: .cancel) {
-                canvas.drawing = PKDrawing()
-                tool = .adjust
+    private struct RenderKey: Equatable {
+        var edit: PhotoEdit
+        var cropping: Bool
+    }
+
+    /// The photo, or the tool's own canvas.
+    @ViewBuilder private var canvasArea: some View {
+        if tool == .cleanUp, let source {
+            // the photo without the other edits, so a stroke lands on the pixels it covers
+            CleanUpCanvas(image: edit.base(source), brush: brush) { retouch($0) }
+        } else if tool == .markup, let source {
+            MarkupCanvas(image: edit.base(source), canvas: canvas)
+        } else if let preview {
+            if tool == .crop {
+                ZStack {
+                    Image(uiImage: preview).resizable().scaledToFit().padding(Self.cropInset)
+                    if previewUncropped {
+                        CropOverlay(crop: $edit.crop, imageAspect: preview.size.width / max(preview.size.height, 1), ratio: cropRatio, inset: Self.cropInset)
+                    }
+                }
+            } else {
+                // pinch and two fingers move the photo to look closer at an edit; one finger held shows the original
+                ZoomPreview(image: preview) { holding in
+                    comparing = holding
+                    Task { await render(original: holding) }
+                }
+                .overlay(alignment: .top) {
+                    if comparing {
+                        Text("Original")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(.black.opacity(0.6), in: .capsule)
+                            .padding(.top, 8)
+                    }
+                }
+                .accessibilityHint("Pinch to zoom, two fingers to move, touch and hold to compare with the original")
             }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-            Button("Done", role: .confirm) {
-                if let source, let marked = MarkupCanvas.flatten(canvas, onto: edit.base(source)) { retouch(marked) }
-                canvas.drawing = PKDrawing()
-                tool = .adjust
-            }
+        } else {
+            ProgressView()
         }
     }
 
+    private func cancel() {
+        if changed || !canvas.drawing.strokes.isEmpty { confirmsCancel = true } else { dismiss() }
+    }
+
     @ToolbarContentBuilder private var editorToolbar: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel", role: .cancel) { dismiss() }
-        }
-        // Photos' centre of the bar: Undo and Redo once there is something to step through, and the Auto wand on Adjust
+        // Photos' centre of the bar: Undo and Redo once there is something to step through
         ToolbarItem(placement: .principal) {
             HStack(spacing: 18) {
                 if !undo.isEmpty || !redo.isEmpty {
                     Button("Undo", systemImage: "arrow.uturn.backward") { stepBack() }.disabled(undo.isEmpty)
                     Button("Redo", systemImage: "arrow.uturn.forward") { stepForward() }.disabled(redo.isEmpty)
-                }
-                if tool == .adjust {
-                    Button("Auto", systemImage: "wand.and.stars") {
-                        if let source { applyAuto(edit.base(source)) }
-                    }
-                    .accessibilityHint("Sets exposure, black point, contrast and saturation from the photo")
                 }
             }
             .labelStyle(.iconOnly)
@@ -200,7 +235,40 @@ struct EditorView: View {
         }
     }
 
-    /// Photos' bottom row: one round icon per tool, the chosen one in yellow.
+    /// The bottom row: a glass X to leave, the tools in one glass bar like the viewer's, and Auto on Adjust.
+    private var bottomRow: some View {
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 12) {
+                Button { cancel() } label: {
+                    Image(systemName: "xmark").font(.title3.weight(.semibold)).frame(width: 52, height: 52)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("Cancel")
+                modeBar
+                Group {
+                    if tool == .adjust {
+                        Button {
+                            if let source { applyAuto(edit.base(source)) }
+                        } label: {
+                            Image(systemName: "wand.and.stars").font(.title3.weight(.semibold)).frame(width: 52, height: 52)
+                        }
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.circle)
+                        .accessibilityLabel("Auto")
+                        .accessibilityHint("Sets exposure, black point, contrast and saturation from the photo")
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(width: 52, height: 52)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+
+    /// One glass bar with a round icon per tool, the chosen one in yellow.
     private var modeBar: some View {
         HStack(spacing: 0) {
             ForEach(tools, id: \.self) { item in
@@ -208,15 +276,119 @@ struct EditorView: View {
                     Image(systemName: item.symbol)
                         .font(.title3)
                         .foregroundStyle(tool == item ? Color.yellow : .white)
-                        .frame(width: 48, height: 48)
-                        .background(tool == item ? Color.white.opacity(0.18) : .clear, in: .circle)
                         .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(tool == item ? Color.white.opacity(0.18) : .clear, in: .capsule)
+                        .contentShape(.capsule)
                 }
+                .buttonStyle(.plain)
                 .accessibilityLabel(item.rawValue)
                 .accessibilityAddTraits(tool == item ? .isSelected : [])
             }
         }
-        .padding(.horizontal, 8)
+        .padding(4)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    // MARK: Crop
+
+    private func cropIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol).font(.title3).foregroundStyle(.white).frame(width: 40, height: 40).background(Color.white.opacity(0.15), in: .circle)
+    }
+
+    private var imageAspect: CGFloat { preview.map { $0.size.width / max($0.size.height, 1) } ?? 1 }
+
+    /// The frame's width over its height while a shape is locked; nil for Free.
+    private var cropRatio: CGFloat? {
+        switch cropAspect {
+        case .free: return nil
+        case .original: return imageAspect
+        case .square: return 1
+        default:
+            let landscape = cropAspect.ratio ?? 1
+            return (imageAspect < 1) != cropFlipped ? 1 / landscape : landscape
+        }
+    }
+
+    private func chooseAspect(_ aspect: PhotoEdit.Aspect) {
+        if aspect == cropAspect, aspect.ratio != nil { cropFlipped.toggle() } else { cropAspect = aspect; cropFlipped = false }
+        guard let ratio = cropRatio else { return }
+        // the largest frame of that shape, in the middle
+        let k = imageAspect / ratio
+        let width = min(1, 1 / k), height = width * k
+        withAnimation(.snappy) { edit.crop = CGRect(x: (1 - width) / 2, y: (1 - height) / 2, width: width, height: height) }
+    }
+
+    /// Turns the photo a quarter to the left, and the frame with it.
+    private func rotateCrop() {
+        let c = edit.crop
+        edit.quarterTurns = (edit.quarterTurns + 1) % 4
+        edit.crop = CGRect(x: c.minY, y: 1 - c.maxX, width: c.height, height: c.width)
+    }
+
+    /// The mirrored orientations flip sideways on an upright photo and top to bottom on a turned one.
+    private func mirrorCrop() {
+        let c = edit.crop
+        edit.mirrored.toggle()
+        edit.crop = edit.quarterTurns % 2 == 1 ? CGRect(x: c.minX, y: 1 - c.maxY, width: c.width, height: c.height)
+                                               : CGRect(x: 1 - c.maxX, y: c.minY, width: c.width, height: c.height)
+    }
+
+    // MARK: Markup
+
+    /// The strokes drawn so far become part of the photo.
+    private func commitMarkup() {
+        if let source, let marked = MarkupCanvas.flatten(canvas, onto: edit.base(source)) { retouch(marked) }
+        canvas.drawing = PKDrawing()
+    }
+
+    private func applyInk() {
+        switch ink {
+        case .pen: canvas.tool = PKInkingTool(.pen, color: UIColor(inkColor), width: inkWidth)
+        case .marker: canvas.tool = PKInkingTool(.marker, color: UIColor(inkColor), width: inkWidth * 3)
+        case .pencil: canvas.tool = PKInkingTool(.pencil, color: UIColor(inkColor), width: inkWidth)
+        case .eraser: canvas.tool = PKEraserTool(.bitmap)
+        }
+    }
+
+    /// Markup's own tools, in the place the sliders have on the other tools.
+    private var markupControls: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(Ink.allCases, id: \.self) { kind in
+                    Button { ink = kind } label: {
+                        Image(systemName: kind.symbol)
+                            .font(.title3)
+                            .foregroundStyle(ink == kind ? Color.yellow : .white)
+                            .frame(width: 44, height: 44)
+                            .background(ink == kind ? Color.white.opacity(0.18) : .clear, in: .circle)
+                    }
+                    .accessibilityLabel(kind.rawValue)
+                    .accessibilityAddTraits(ink == kind ? .isSelected : [])
+                }
+                Spacer(minLength: 0)
+                Button("Undo Stroke", systemImage: "arrow.uturn.backward") { canvas.undoManager?.undo() }
+                Button("Redo Stroke", systemImage: "arrow.uturn.forward") { canvas.undoManager?.redo() }
+            }
+            .labelStyle(.iconOnly)
+            .font(.title3)
+            if ink != .eraser {
+                HStack(spacing: 10) {
+                    ForEach([Color.black, .white, .red, .orange, .yellow, .green, .blue], id: \.self) { color in
+                        Button { inkColor = color } label: {
+                            Circle().fill(color).frame(width: 26, height: 26)
+                                .overlay { Circle().stroke(.white.opacity(0.35), lineWidth: 1) }
+                                .overlay { if inkColor == color { Circle().stroke(Color.yellow, lineWidth: 2).padding(-4) } }
+                                .frame(width: 34, height: 34)
+                        }
+                        .accessibilityLabel(color.description)
+                    }
+                    ColorPicker("Color", selection: $inkColor, supportsOpacity: false).labelsHidden()
+                }
+                Slider(value: $inkWidth, in: 2...30).tint(.yellow).accessibilityLabel("Stroke Width")
+            }
+        }
+        .padding(.horizontal)
     }
 
     /// How far a slider is from neutral, 0…1, for the ring around its icon.
@@ -292,14 +464,8 @@ struct EditorView: View {
             }
             .padding(.horizontal)
         case .adjust:
-            VStack(spacing: 10) {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 14) {
-                        ForEach(PhotoEdit.Slider.allCases, id: \.self) { dial($0) }
-                    }
-                    .padding(.horizontal)
-                }
-                .scrollIndicators(.hidden)
+            VStack(spacing: 6) {
+                // the slider on top, the dials under it, as in Photos
                 VStack(spacing: 2) {
                     HStack {
                         Text(slider.rawValue).font(.subheadline.weight(.semibold))
@@ -313,6 +479,15 @@ struct EditorView: View {
                         .accessibilityLabel(slider.rawValue)
                 }
                 .padding(.horizontal)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 14) {
+                        ForEach(PhotoEdit.Slider.allCases, id: \.self) { dial($0) }
+                    }
+                    .padding(.horizontal)
+                    // room for the ring's stroke, which the scroll view would cut off at the top and bottom
+                    .padding(.vertical, 4)
+                }
+                .scrollIndicators(.hidden)
             }
         case .filters:
             ScrollView(.horizontal) {
@@ -344,26 +519,29 @@ struct EditorView: View {
             }
             .scrollIndicators(.hidden)
         case .crop:
-            VStack(spacing: 12) {
-                HStack(spacing: 22) {
-                    Button("Rotate", systemImage: "rotate.left") { edit.quarterTurns = (edit.quarterTurns + 3) % 4 }
-                    Button("Mirror", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right") { edit.mirrored.toggle() }
-                    Menu {
-                        Picker("Aspect", selection: $edit.aspect) {
-                            ForEach(PhotoEdit.Aspect.allCases, id: \.self) { Text($0.rawValue) }
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button { rotateCrop() } label: { cropIcon("rotate.left") }.accessibilityLabel("Rotate")
+                    Button { mirrorCrop() } label: { cropIcon("arrow.left.and.right.righttriangle.left.righttriangle.right") }.accessibilityLabel("Mirror")
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(PhotoEdit.Aspect.allCases, id: \.self) { aspect in
+                                let chosen = cropAspect == aspect
+                                Button { chooseAspect(aspect) } label: {
+                                    Text(aspect.rawValue)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(chosen ? Color.black : .white)
+                                        .padding(.horizontal, 14)
+                                        .frame(height: 36)
+                                        .background(chosen ? Color.yellow : Color.white.opacity(0.15), in: .capsule)
+                                }
+                                .accessibilityAddTraits(chosen ? .isSelected : [])
+                            }
                         }
-                    } label: {
-                        Label(edit.aspect.rawValue, systemImage: "aspectratio")
-                            .labelStyle(.titleAndIcon)
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .frame(height: 34)
-                            .background(.white.opacity(0.15), in: .capsule)
                     }
-                    .accessibilityLabel("Aspect Ratio")
+                    .scrollIndicators(.hidden)
                 }
-                .labelStyle(.iconOnly)
-                .font(.title3)
+                .padding(.horizontal)
                 Picker("Angle", selection: $cropAngle) {
                     ForEach(CropAngle.allCases, id: \.self) { Text($0.rawValue) }
                 }
@@ -397,7 +575,7 @@ struct EditorView: View {
             }
             .padding(.horizontal)
         case .markup:
-            EmptyView()
+            markupControls
         case .live:
             VStack {
                 Toggle("Live", isOn: Binding { !edit.motionOff } set: { edit.motionOff = !$0 })
@@ -557,12 +735,16 @@ struct EditorView: View {
     /// Renders a screen-sized preview of the edit.
     private func render(original: Bool) async {
         guard let source else { return }
-        let base = original ? source : edit.base(source)
+        // Crop shows the whole picture with the frame over it
+        let cropping = tool == .crop && !original
+        let shown = cropping ? edit.withoutCrop : edit
+        let base = original ? source : shown.base(source)
         let scale = min(1, 1600 / max(base.extent.width, base.extent.height))
         let small = base.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let image = original ? small : small.applying(edit, scale: scale)
+        let image = original ? small : small.applying(shown, scale: scale)
         guard let cgImage = PhotoEdit.context.createCGImage(image, from: image.extent) else { return }
         preview = UIImage(cgImage: cgImage)
+        previewUncropped = cropping || edit.crop == PhotoEdit.unit
     }
 
     private func chooseKeyFrame(_ motion: AVURLAsset) async {
@@ -576,6 +758,7 @@ struct EditorView: View {
     // MARK: Saving
 
     private func save() async {
+        commitMarkup()
         busy = true
         defer { busy = false }
         // what History's undo removes: the new copy, the Immich edit, or the edit in Photos
@@ -797,18 +980,23 @@ struct PhotoEdit: Equatable {
         }
     }
 
+    /// The crop frame's shape: Free moves each side alone, Original keeps the photo's own shape, the rest are landscape
+    /// ratios that turn upright on a portrait photo (tap the chosen one again to turn it).
     enum Aspect: String, CaseIterable {
-        case original = "Original", square = "Square", fourThree = "4:3", sixteenNine = "16:9"
+        case free = "Free", original = "Original", square = "Square", fourThree = "4:3", threeTwo = "3:2", sixteenNine = "16:9"
 
         var ratio: CGFloat? {
             switch self {
-            case .original: nil
-            case .square: 1
+            case .free, .original, .square: nil
             case .fourThree: 4 / 3
+            case .threeTwo: 3 / 2
             case .sixteenNine: 16 / 9
             }
         }
     }
+
+    /// The whole picture, in 0…1 with the origin at the top left.
+    static let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     static let filters: [(name: String?, title: String)] = [
         (nil, "Original"), ("CIPhotoEffectChrome", "Vivid"), ("CIPhotoEffectFade", "Fade"), ("CIPhotoEffectInstant", "Instant"),
@@ -826,7 +1014,8 @@ struct PhotoEdit: Equatable {
     /// Vertical and horizontal perspective, -1…1.
     var perspectiveV = 0.0
     var perspectiveH = 0.0
-    var aspect = Aspect.original
+    /// The part kept, in 0…1 of the picture after rotating, straightening and perspective; the origin is the top left.
+    var crop = PhotoEdit.unit
     var motionOff = false
     var keyFrame: CIImage?
     /// The photo after Clean Up and Markup, in place of the original's pixels.
@@ -839,7 +1028,7 @@ struct PhotoEdit: Equatable {
 
     static func == (a: PhotoEdit, b: PhotoEdit) -> Bool {
         a.values == b.values && a.filter == b.filter && a.quarterTurns == b.quarterTurns && a.mirrored == b.mirrored
-            && a.straighten == b.straighten && a.perspectiveV == b.perspectiveV && a.perspectiveH == b.perspectiveH && a.aspect == b.aspect && a.motionOff == b.motionOff && a.keyFrame === b.keyFrame
+            && a.straighten == b.straighten && a.perspectiveV == b.perspectiveV && a.perspectiveH == b.perspectiveH && a.crop == b.crop && a.motionOff == b.motionOff && a.keyFrame === b.keyFrame
             && a.retouched === b.retouched
     }
 
@@ -853,26 +1042,32 @@ struct PhotoEdit: Equatable {
     }
 
     /// Only crop, rotate and mirror: Immich can store these without new pixels.
-    var isGeometryOnly: Bool { values.isEmpty && filter == nil && straighten == 0 && perspectiveV == 0 && perspectiveH == 0 && keyFrame == nil && retouched == nil && !motionOff }
+    /// A crop of a turned photo is baked into new pixels: the server's crop works on the photo as it was shot.
+    var isGeometryOnly: Bool {
+        values.isEmpty && filter == nil && straighten == 0 && perspectiveV == 0 && perspectiveH == 0 && keyFrame == nil && retouched == nil && !motionOff
+            && (crop == Self.unit || quarterTurns == 0)
+    }
+
+    /// The same edit with the whole picture kept, which is what the Crop tool shows while the frame moves.
+    var withoutCrop: PhotoEdit {
+        var copy = self
+        copy.crop = Self.unit
+        return copy
+    }
 
     /// Immich edits, applied by the server in this order: crop on the original pixels, then rotate, then mirror.
     func serverEdits(width: Int, height: Int) -> [[String: Any]] {
         var edits: [[String: Any]] = []
-        if let ratio = aspect.ratio {
-            // after an odd number of quarter turns the long side swaps, so the crop uses the inverse ratio
-            let target = quarterTurns % 2 == 1 ? 1 / ratio : ratio
-            let rect = Self.centerCrop(CGSize(width: width, height: height), ratio: target)
-            edits.append(["action": "crop", "parameters": ["x": Int(rect.minX), "y": Int(rect.minY), "width": Int(rect.width), "height": Int(rect.height)]])
+        if crop != Self.unit {
+            // isGeometryOnly keeps this to photos that aren't turned; a mirror flips the frame sideways
+            let x = mirrored ? 1 - crop.maxX : crop.minX
+            edits.append(["action": "crop", "parameters": ["x": Int((x * CGFloat(width)).rounded()), "y": Int((crop.minY * CGFloat(height)).rounded()),
+                                                           "width": Int((crop.width * CGFloat(width)).rounded()), "height": Int((crop.height * CGFloat(height)).rounded())]])
         }
         if quarterTurns != 0 { edits.append(["action": "rotate", "parameters": ["angle": (4 - quarterTurns) % 4 * 90]]) }
-        if mirrored { edits.append(["action": "mirror", "parameters": ["axis": "horizontal"]]) }
+        // on a turned photo the mirrored orientations flip top to bottom
+        if mirrored { edits.append(["action": "mirror", "parameters": ["axis": quarterTurns % 2 == 1 ? "vertical" : "horizontal"]]) }
         return edits
-    }
-
-    static func centerCrop(_ size: CGSize, ratio: CGFloat) -> CGRect {
-        let width = min(size.width, size.height * ratio)
-        let height = width / ratio
-        return CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2, width: width, height: height)
     }
 }
 
@@ -968,8 +1163,10 @@ extension CIImage {
             // ponytail: this inset hides the empty corners for one axis; with both sliders far out a sliver may show
             image = (f.outputImage ?? image).cropped(to: e.insetBy(dx: max(top, bottom), dy: max(left, right)))
         }
-        if let ratio = edit.aspect.ratio {
-            image = image.cropped(to: PhotoEdit.centerCrop(image.extent.size, ratio: ratio).offsetBy(dx: image.extent.minX, dy: image.extent.minY))
+        if edit.crop != PhotoEdit.unit {
+            let e = image.extent, c = edit.crop
+            // Core Image's y runs upward, the crop's runs downward
+            image = image.cropped(to: CGRect(x: e.minX + c.minX * e.width, y: e.minY + (1 - c.maxY) * e.height, width: c.width * e.width, height: c.height * e.height))
         }
         return image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))
     }
@@ -1021,5 +1218,220 @@ struct TrimBar: View {
         .accessibilityElement()
         .accessibilityLabel("Trim")
         .accessibilityValue("\(Int(range.lowerBound * 100))% to \(Int(range.upperBound * 100))%")
+    }
+}
+
+// MARK: - Crop frame
+
+/// Crop's frame over the whole picture: drag a corner or a side to resize it, the inside to move it.
+/// `inset` is the room the picture leaves around it, where a finger on a corner can still land.
+struct CropOverlay: View {
+    @Binding var crop: CGRect
+    let imageAspect: CGFloat
+    /// The frame's width over its height while a shape is locked.
+    let ratio: CGFloat?
+    let inset: CGFloat
+
+    private struct Edges: OptionSet {
+        let rawValue: Int
+        static let left = Edges(rawValue: 1), right = Edges(rawValue: 2), top = Edges(rawValue: 4), bottom = Edges(rawValue: 8)
+    }
+
+    private struct Grab {
+        var edges: Edges
+        var start: CGRect
+    }
+
+    @State private var grab: Grab?
+    /// The smallest side of the frame, in 0…1 of the picture.
+    private static let minSide: CGFloat = 0.08
+
+    var body: some View {
+        GeometryReader { geometry in
+            let fit = pictureRect(in: geometry.size)
+            let frame = CGRect(x: fit.minX + crop.minX * fit.width, y: fit.minY + crop.minY * fit.height,
+                               width: crop.width * fit.width, height: crop.height * fit.height)
+            ZStack {
+                // the part that goes is dimmed
+                Path { path in
+                    path.addRect(fit)
+                    path.addRect(frame)
+                }
+                .fill(.black.opacity(0.55), style: FillStyle(eoFill: true))
+                // thirds
+                Path { path in
+                    for step in [1.0 / 3, 2.0 / 3] {
+                        path.move(to: CGPoint(x: frame.minX + frame.width * step, y: frame.minY))
+                        path.addLine(to: CGPoint(x: frame.minX + frame.width * step, y: frame.maxY))
+                        path.move(to: CGPoint(x: frame.minX, y: frame.minY + frame.height * step))
+                        path.addLine(to: CGPoint(x: frame.maxX, y: frame.minY + frame.height * step))
+                    }
+                }
+                .stroke(.white.opacity(0.35), lineWidth: 0.5)
+                Path { $0.addRect(frame) }.stroke(.white, lineWidth: 1)
+                // corners and the middle of each side
+                Path { path in
+                    let long: CGFloat = 22
+                    for (corner, dx, dy) in [(CGPoint(x: frame.minX, y: frame.minY), 1.0, 1.0), (CGPoint(x: frame.maxX, y: frame.minY), -1.0, 1.0),
+                                             (CGPoint(x: frame.minX, y: frame.maxY), 1.0, -1.0), (CGPoint(x: frame.maxX, y: frame.maxY), -1.0, -1.0)] {
+                        path.move(to: CGPoint(x: corner.x, y: corner.y + dy * long))
+                        path.addLine(to: corner)
+                        path.addLine(to: CGPoint(x: corner.x + dx * long, y: corner.y))
+                    }
+                }
+                .stroke(.white, style: StrokeStyle(lineWidth: 4, lineCap: .square, lineJoin: .miter))
+                Path { path in
+                    let half: CGFloat = 12
+                    for x in [frame.minX, frame.maxX] {
+                        path.move(to: CGPoint(x: x, y: frame.midY - half)); path.addLine(to: CGPoint(x: x, y: frame.midY + half))
+                    }
+                    for y in [frame.minY, frame.maxY] {
+                        path.move(to: CGPoint(x: frame.midX - half, y: y)); path.addLine(to: CGPoint(x: frame.midX + half, y: y))
+                    }
+                }
+                .stroke(.white, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                if grab == nil {
+                    guard let held = grabbed(at: value.startLocation, in: frame) else { return }
+                    grab = Grab(edges: held, start: crop)
+                }
+                guard let grab else { return }
+                crop = moved(grab, dx: value.translation.width / fit.width, dy: value.translation.height / fit.height)
+            }.onEnded { _ in
+                grab = nil
+            })
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Crop frame")
+    }
+
+    /// Where the picture sits: the largest of its shape inside the view, less the inset.
+    private func pictureRect(in size: CGSize) -> CGRect {
+        let room = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
+        let width = min(room.width, room.height * imageAspect)
+        let height = width / imageAspect
+        return CGRect(x: room.midX - width / 2, y: room.midY - height / 2, width: width, height: height)
+    }
+
+    /// Which sides a touch at `point` holds: two for a corner, one for a side, none to move the whole frame; nil outside.
+    private func grabbed(at point: CGPoint, in frame: CGRect) -> Edges? {
+        let reach: CGFloat = 32
+        let inX = point.x > frame.minX - reach && point.x < frame.maxX + reach
+        let inY = point.y > frame.minY - reach && point.y < frame.maxY + reach
+        var edges: Edges = []
+        if inY {
+            let toLeft = abs(point.x - frame.minX), toRight = abs(point.x - frame.maxX)
+            if min(toLeft, toRight) < reach { edges.insert(toLeft < toRight ? .left : .right) }
+        }
+        if inX {
+            let toTop = abs(point.y - frame.minY), toBottom = abs(point.y - frame.maxY)
+            if min(toTop, toBottom) < reach { edges.insert(toTop < toBottom ? .top : .bottom) }
+        }
+        if !edges.isEmpty { return edges }
+        return frame.contains(point) ? [] : nil
+    }
+
+    /// The frame after a drag of `dx`, `dy` (in 0…1 of the picture) from where the grab began.
+    private func moved(_ grab: Grab, dx: CGFloat, dy: CGFloat) -> CGRect {
+        let s = grab.start, edges = grab.edges
+        if edges.isEmpty {
+            return CGRect(x: min(max(s.minX + dx, 0), 1 - s.width), y: min(max(s.minY + dy, 0), 1 - s.height), width: s.width, height: s.height)
+        }
+        let m = Self.minSide
+        var minX = s.minX, maxX = s.maxX, minY = s.minY, maxY = s.maxY
+        if edges.contains(.left) { minX = min(max(s.minX + dx, 0), s.maxX - m) }
+        if edges.contains(.right) { maxX = max(min(s.maxX + dx, 1), s.minX + m) }
+        if edges.contains(.top) { minY = min(max(s.minY + dy, 0), s.maxY - m) }
+        if edges.contains(.bottom) { maxY = max(min(s.maxY + dy, 1), s.minY + m) }
+        guard let ratio else { return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY) }
+        // a locked shape: the width (or the height, when only top or bottom moves) leads, the other side follows,
+        // and the opposite corner or side stays where it was
+        let k = imageAspect / ratio
+        let leadsByWidth = edges.contains(.left) || edges.contains(.right)
+        var width = leadsByWidth ? maxX - minX : (maxY - minY) / k
+        let anchorX = edges.contains(.left) ? s.maxX : edges.contains(.right) ? s.minX : s.midX
+        let anchorY = edges.contains(.top) ? s.maxY : edges.contains(.bottom) ? s.minY : s.midY
+        let roomX = edges.contains(.left) ? anchorX : edges.contains(.right) ? 1 - anchorX : 2 * min(anchorX, 1 - anchorX)
+        let roomY = edges.contains(.top) ? anchorY : edges.contains(.bottom) ? 1 - anchorY : 2 * min(anchorY, 1 - anchorY)
+        width = min(max(width, m), roomX, roomY / k)
+        let height = width * k
+        return CGRect(x: edges.contains(.left) ? anchorX - width : edges.contains(.right) ? anchorX : anchorX - width / 2,
+                      y: edges.contains(.top) ? anchorY - height : edges.contains(.bottom) ? anchorY : anchorY - height / 2,
+                      width: width, height: height)
+    }
+}
+
+// MARK: - Zoom
+
+/// The editor's photo: pinch to zoom and two fingers to move it, so an edit can be looked at closely.
+/// One finger is left free: holding it shows the original.
+struct ZoomPreview: UIViewRepresentable {
+    let image: UIImage
+    var onHold: (Bool) -> Void
+
+    func makeUIView(context: Context) -> ZoomPane { ZoomPane() }
+
+    func updateUIView(_ pane: ZoomPane, context: Context) {
+        pane.onHold = onHold
+        pane.show(image)
+    }
+}
+
+final class ZoomPane: UIScrollView, UIScrollViewDelegate {
+    var onHold: (Bool) -> Void = { _ in }
+    private let imageView = UIImageView()
+
+    init() {
+        super.init(frame: .zero)
+        delegate = self
+        maximumZoomScale = 8
+        showsHorizontalScrollIndicator = false
+        showsVerticalScrollIndicator = false
+        contentInsetAdjustmentBehavior = .never
+        panGestureRecognizer.minimumNumberOfTouches = 2
+        imageView.contentMode = .scaleAspectFit
+        addSubview(imageView)
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.minimumPressDuration = 0.1
+        hold.numberOfTouchesRequired = 1
+        addGestureRecognizer(hold)
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        doubleTap.numberOfTapsRequired = 2
+        addGestureRecognizer(doubleTap)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func show(_ image: UIImage) {
+        guard imageView.image !== image else { return }
+        // a different shape (a crop, a turn) starts again from the whole photo
+        if let old = imageView.image, abs(old.size.width / max(old.size.height, 1) - image.size.width / max(image.size.height, 1)) > 0.01 {
+            zoomScale = 1
+        }
+        imageView.image = image
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if zoomScale == minimumZoomScale {
+            imageView.frame = bounds
+            contentSize = bounds.size
+        }
+    }
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+
+    @objc private func held(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began: onHold(true)
+        case .ended, .cancelled, .failed: onHold(false)
+        default: break
+        }
+    }
+
+    @objc private func doubleTapped() {
+        setZoomScale(zoomScale > minimumZoomScale ? minimumZoomScale : 3, animated: true)
     }
 }

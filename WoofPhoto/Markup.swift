@@ -41,32 +41,17 @@ struct MarkupCanvas: View {
     }
 }
 
-/// The PencilKit canvas with the system tool picker, which brings its own undo and redo.
+/// The PencilKit canvas. The editor's own controls pick the pen, the colour and the width.
 private struct MarkupInk: UIViewRepresentable {
     let canvas: PKCanvasView
-
-    func makeCoordinator() -> PKToolPicker { PKToolPicker() }
 
     func makeUIView(context: Context) -> PKCanvasView {
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.drawingPolicy = .anyInput
         canvas.overrideUserInterfaceStyle = .light
-        let picker = context.coordinator
-        picker.colorUserInterfaceStyle = .light
-        picker.setVisible(true, forFirstResponder: canvas)
-        picker.addObserver(canvas)
-        // the picker appears once the canvas is in a window and first responder
-        Task { @MainActor in canvas.becomeFirstResponder() }
         return canvas
     }
 
     func updateUIView(_ canvas: PKCanvasView, context: Context) {}
-
-    // leaving Markup hides the picker; the editor reuses the same canvas next time
-    static func dismantleUIView(_ canvas: PKCanvasView, coordinator: PKToolPicker) {
-        coordinator.setVisible(false, forFirstResponder: canvas)
-        coordinator.removeObserver(canvas)
-        canvas.resignFirstResponder()
-    }
 }

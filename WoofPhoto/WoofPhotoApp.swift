@@ -109,10 +109,7 @@ struct MainTabs: View {
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         // things that finish while the screen is elsewhere
-        .sensoryFeedback(trigger: Backup.shared.state) { old, new in
-            new == .finished && old != .finished ? .success : nil
-        }
-        .sensoryFeedback(trigger: OfflineDownloads.shared.isRunning) { old, new in old && !new ? .success : nil }
+        .modifier(FinishHaptics())
         .environment(\.photoZoom, zoom)
         .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
         .overlay { MiniViewer(zoom: zoom) }
@@ -128,6 +125,17 @@ struct MainTabs: View {
                     .environment(session)
             }
         }
+    }
+}
+
+/// A tap when a backup or a Keep Offline download finishes while the screen is elsewhere.
+private struct FinishHaptics: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .sensoryFeedback(trigger: Backup.shared.state) { old, new in
+                new == .finished && old != .finished ? .success : nil
+            }
+            .sensoryFeedback(trigger: OfflineDownloads.shared.isRunning) { old, new in old && !new ? .success : nil }
     }
 }
 

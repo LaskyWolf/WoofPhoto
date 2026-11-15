@@ -23,7 +23,7 @@ struct ImportFilesView: View {
                 Text("Sends files from Files, iCloud Drive or another app to your Immich server as new photos and videos. A file the server already has is skipped.")
             }
         }
-        .sensoryFeedback(.success, trigger: busy) { old, new in old && !new && failures.isEmpty ? .success : nil }
+        .sensoryFeedback(trigger: busy) { old, new in old && !new && failures.isEmpty ? .success : nil }
         .navigationTitle("Import from Files")
         .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $picking, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { result in

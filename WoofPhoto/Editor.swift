@@ -50,7 +50,7 @@ struct EditorView: View {
     var onSaved: () -> Void
 
     /// The controls keep one height for every tool, so the photo above doesn't jump when the tool changes.
-    private static let controlsHeight: CGFloat = 156
+    private static let controlsHeight: CGFloat = 176
     /// Room around the picture in Crop, so a corner handle can be grabbed at the very corner.
     private static let cropInset: CGFloat = 24
 
@@ -372,18 +372,20 @@ struct EditorView: View {
         }
     }
 
-    /// Markup's own tools, in the place the sliders have on the other tools.
+    /// Markup's own tools, in the place the sliders have on the other tools: the pens drawn like the system picker's,
+    /// rising from the bottom edge, the chosen one raised.
     private var markupControls: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 8) {
+        VStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 14) {
                 ForEach(Ink.allCases, id: \.self) { kind in
                     Button { ink = kind } label: {
-                        Image(systemName: kind.symbol)
-                            .font(.title3)
-                            .foregroundStyle(ink == kind ? Color.yellow : .white)
-                            .frame(width: 44, height: 44)
-                            .background(ink == kind ? Color.white.opacity(0.18) : .clear, in: .circle)
+                        PenArt(kind: kind, color: inkColor)
+                            .offset(y: ink == kind ? 0 : 16)
+                            .animation(.snappy, value: ink)
+                            .frame(width: 40, height: 62, alignment: .top)
+                            .clipped()
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel(kind.rawValue)
                     .accessibilityAddTraits(ink == kind ? .isSelected : [])
                 }
@@ -393,6 +395,7 @@ struct EditorView: View {
             }
             .labelStyle(.iconOnly)
             .font(.title3)
+            .padding(.horizontal)
             if ink != .eraser {
                 HStack(spacing: 10) {
                     ForEach([Color.black, .white, .red, .orange, .yellow, .green, .blue], id: \.self) { color in
@@ -406,10 +409,10 @@ struct EditorView: View {
                     }
                     ColorPicker("Color", selection: $inkColor, supportsOpacity: false).labelsHidden()
                 }
-                Slider(value: $inkWidth, in: 2...30).tint(.yellow).accessibilityLabel("Stroke Width")
+                .padding(.horizontal)
+                Slider(value: $inkWidth, in: 2...30).tint(.yellow).accessibilityLabel("Stroke Width").padding(.horizontal)
             }
         }
-        .padding(.horizontal)
     }
 
     /// How far a slider is from neutral, 0…1, for the ring around its icon.
@@ -541,6 +544,26 @@ struct EditorView: View {
             .scrollIndicators(.hidden)
         case .crop:
             VStack(spacing: 8) {
+                // the slider on top, then which angle it turns, then the other tools, as on Adjust
+                HStack {
+                    switch cropAngle {
+                    case .straighten:
+                        Slider(value: $edit.straighten, in: -45...45, step: 0.5).tint(.yellow)
+                        Text("\(edit.straighten, specifier: "%.1f")°").font(.caption.monospacedDigit()).frame(width: 48)
+                    case .vertical:
+                        Slider(value: $edit.perspectiveV, in: -1...1).tint(.yellow).accessibilityLabel("Vertical Perspective")
+                        Text("\(Int((edit.perspectiveV * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
+                    case .horizontal:
+                        Slider(value: $edit.perspectiveH, in: -1...1).tint(.yellow).accessibilityLabel("Horizontal Perspective")
+                        Text("\(Int((edit.perspectiveH * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
+                    }
+                }
+                .padding(.horizontal)
+                Picker("Angle", selection: $cropAngle) {
+                    ForEach(CropAngle.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
                 HStack(spacing: 8) {
                     Button { rotateCrop() } label: { cropIcon("rotate.left") }.accessibilityLabel("Rotate")
                     Button { mirrorCrop() } label: { cropIcon("arrow.left.and.right.righttriangle.left.righttriangle.right") }.accessibilityLabel("Mirror")
@@ -561,25 +584,6 @@ struct EditorView: View {
                         }
                     }
                     .scrollIndicators(.hidden)
-                }
-                .padding(.horizontal)
-                Picker("Angle", selection: $cropAngle) {
-                    ForEach(CropAngle.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                HStack {
-                    switch cropAngle {
-                    case .straighten:
-                        Slider(value: $edit.straighten, in: -45...45, step: 0.5).tint(.yellow)
-                        Text("\(edit.straighten, specifier: "%.1f")°").font(.caption.monospacedDigit()).frame(width: 48)
-                    case .vertical:
-                        Slider(value: $edit.perspectiveV, in: -1...1).tint(.yellow).accessibilityLabel("Vertical Perspective")
-                        Text("\(Int((edit.perspectiveV * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
-                    case .horizontal:
-                        Slider(value: $edit.perspectiveH, in: -1...1).tint(.yellow).accessibilityLabel("Horizontal Perspective")
-                        Text("\(Int((edit.perspectiveH * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
-                    }
                 }
                 .padding(.horizontal)
             }
@@ -1475,5 +1479,60 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
 
     @objc private func doubleTapped() {
         setZoomScale(zoomScale > minimumZoomScale ? minimumZoomScale : 3, animated: true)
+    }
+}
+
+// MARK: - Pens
+
+/// A pen, marker, pencil or eraser drawn upright with the tip up and shaded like a cylinder, as the system picker draws them.
+struct PenArt: View {
+    let kind: EditorView.Ink
+    let color: Color
+
+    private struct Tip: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { path in
+                path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+                path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+                path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+                path.closeSubpath()
+            }
+        }
+    }
+
+    /// Light in the middle, dark at the sides, over a base colour.
+    private func barrel(_ base: Color) -> some View {
+        Rectangle().fill(base).overlay {
+            LinearGradient(stops: [.init(color: .black.opacity(0.4), location: 0), .init(color: .white.opacity(0.55), location: 0.35),
+                                   .init(color: .white.opacity(0.1), location: 0.65), .init(color: .black.opacity(0.45), location: 1)],
+                           startPoint: .leading, endPoint: .trailing)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            switch kind {
+            case .pen:
+                Tip().fill(color).frame(width: 12, height: 18)
+                barrel(Color(white: 0.55)).frame(width: 24, height: 6)
+                barrel(Color(white: 0.85)).frame(width: 24, height: 60).clipShape(.rect(topLeadingRadius: 0, bottomLeadingRadius: 6, bottomTrailingRadius: 6, topTrailingRadius: 0))
+            case .marker:
+                Tip().fill(color).frame(width: 18, height: 14)
+                barrel(color).frame(width: 30, height: 10)
+                barrel(Color(white: 0.85)).frame(width: 30, height: 60).clipShape(.rect(topLeadingRadius: 0, bottomLeadingRadius: 6, bottomTrailingRadius: 6, topTrailingRadius: 0))
+            case .pencil:
+                Tip().fill(Color(red: 0.9, green: 0.75, blue: 0.55)).frame(width: 22, height: 20)
+                    .overlay(alignment: .top) { Tip().fill(color).frame(width: 7, height: 8) }
+                barrel(Color(red: 0.95, green: 0.8, blue: 0.2)).frame(width: 24, height: 66)
+                    .clipShape(.rect(topLeadingRadius: 0, bottomLeadingRadius: 4, bottomTrailingRadius: 4, topTrailingRadius: 0))
+            case .eraser:
+                RoundedRectangle(cornerRadius: 8).fill(Color(red: 1, green: 0.62, blue: 0.7))
+                    .overlay { LinearGradient(colors: [.white.opacity(0.5), .clear, .black.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing) }
+                    .frame(width: 30, height: 34)
+                barrel(Color(white: 0.8)).frame(width: 30, height: 46)
+            }
+        }
+        .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+        .accessibilityHidden(true)
     }
 }

@@ -583,6 +583,7 @@ enum ImageCache {
 
     /// Drops every saved image of an asset after an edit changed it, in memory and on disk.
     static func forget(_ id: String, client: ImmichClient) {
+        OfflineFiles.forget(id)
         for size in ["thumbnail", "preview", "fullsize"] {
             images.removeObject(forKey: "\(size):\(id)" as NSString)
             URLCache.shared.removeCachedResponse(for: client.request("/assets/\(id)/thumbnail", query: ["size": size]))

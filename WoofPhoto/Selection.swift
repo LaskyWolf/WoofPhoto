@@ -59,6 +59,14 @@ final class AssetActions {
         }
     }
 
+    /// Downloads the originals in the background; progress is in Settings > Storage.
+    func keepOffline(_ client: ImmichClient?) {
+        guard let client else { return }
+        OfflineDownloads.shared.add(ids, client: client)
+        message = "Keeping \(ids.count) items on this iPhone. Progress is in Settings > Storage."
+        done()
+    }
+
     func save(_ client: ImmichClient?) async {
         guard let client else { return }
         busy = true
@@ -105,6 +113,7 @@ struct AssetMenuItems: View {
                     Button("Unfavorite", systemImage: "heart.slash") { act { actions.setFavorite(false, client) } }
                 }
                 Button("Save to iPhone", systemImage: "square.and.arrow.down") { act { Task { await actions.save(client) } } }
+                Button("Keep Offline", systemImage: "arrow.down.circle") { act { actions.keepOffline(client) } }
                 Button("Share Link…", systemImage: "link") { act { actions.sharesLink = true } }
                 Button("Tag…", systemImage: "tag") { act { actions.picksTags = true } }
                 if (2...9).contains(ids.count) {

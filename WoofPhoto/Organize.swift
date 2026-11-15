@@ -64,6 +64,7 @@ extension ImmichClient {
             assets += response.assets.items
             cursor = response.assets.nextCursor
         } while cursor != nil && assets.count < limit
+        await OfflineIndex.shared.learn(assets)
         return assets
     }
 
@@ -72,6 +73,7 @@ extension ImmichClient {
     func searchAssets(matching text: String, filter: [String: Any], limit: Int = 300) async throws -> [Asset] {
         let response: FilteredSearch = try await fetch("POST", "/search/smart",
                                                        body: ["query": text, "filter": filter, "size": min(limit, 1000), "withExif": false])
+        await OfflineIndex.shared.learn(response.assets.items)
         return response.assets.items
     }
 

@@ -1,6 +1,7 @@
 import AuthenticationServices
 import AVFoundation
 import BackgroundTasks
+import CoreSpotlight
 import SwiftUI
 
 @main
@@ -54,6 +55,14 @@ struct WoofPhotoApp: App {
                 if url.host() == "asset", let id = url.pathComponents.last {
                     let asset = AssetRef(id: id)
                     OpenPhoto.shared.open(asset, in: Timeline(assets: [asset]))
+                } else {
+                    Router.shared.handle(url)
+                }
+            }
+            // a Spotlight result: its identifier is the woofphoto:// link made in Spotlight.index
+            .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                if let link = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String, let url = URL(string: link) {
+                    Router.shared.handle(url)
                 }
             }
             .onChange(of: scenePhase) { _, phase in
@@ -62,8 +71,10 @@ struct WoofPhotoApp: App {
                 if phase == .active, let client = session.client { Task { await FeaturedPhotos.refreshIfStale(client: client) } }
                 if phase == .background { backup.scheduleBackground() }
             }
+            // not only in debug builds: this keeps the thumbnail folder under its limit
+            .task { Task.detached(priority: .utility) { OfflineFiles.trimThumbs() } }
             #if DEBUG
-            .task { ImmichClient.selfCheck(); FoldersView.selfCheck(); GlyphScript.selfCheck(); FileLog.selfCheck(); AppUpdate.selfCheck() }
+            .task { ImmichClient.selfCheck(); Connection.selfCheck(); OfflineIndex.selfCheck(); FoldersView.selfCheck(); GlyphScript.selfCheck(); FileLog.selfCheck(); AppUpdate.selfCheck() }
             #endif
         }
     }
@@ -74,8 +85,12 @@ struct MainTabs: View {
     @Environment(Session.self) private var session
     @Bindable private var open = OpenPhoto.shared
     @Namespace private var zoom
-    @State private var tab = 0
+    @Bindable private var router = Router.shared
     @State private var libraryReselects = 0
+    private var tab: Int {
+        get { router.tab }
+        nonmutating set { router.tab = newValue }
+    }
 
     var body: some View {
         TabView(selection: Binding(get: { tab }, set: { selected in
@@ -95,6 +110,11 @@ struct MainTabs: View {
         .environment(\.photoZoom, zoom)
         .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
         .overlay { MiniViewer(zoom: zoom) }
+        // a collection asked for by a widget, Spotlight or Shortcuts
+        .sheet(item: $router.shelf) { shelf in
+            NavigationStack { shelf.destination }
+                .environment(session)
+        }
         .fullScreenCover(isPresented: $open.isExpanded) {
             if let timeline = open.timeline, let asset = open.asset {
                 Viewer(timeline: timeline, start: asset)

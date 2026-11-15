@@ -8,6 +8,7 @@ struct LibraryView: View {
     @State private var denied = false
     @State private var unreachable = false
     @State private var checking = false
+    @State private var noNetwork = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -21,7 +22,7 @@ struct LibraryView: View {
                     }
                     .overlay(alignment: .top) {
                         if unreachable {
-                            OfflinePill(checking: checking, tailscale: ImmichClient.isTailscale(session.client?.server.host() ?? "")) {
+                            OfflinePill(checking: checking, noNetwork: noNetwork, waiting: Outbox.shared.items.count, tailscale: ImmichClient.isTailscale(session.client?.server.host() ?? "")) {
                                 Task { await check() }
                             }
                             // ponytail: fixed drop below the header; measure TabHeader if its height changes
@@ -30,6 +31,11 @@ struct LibraryView: View {
                         }
                     }
                     .task(id: scenePhase) { if scenePhase == .active { await check() } }
+                    // on Wi-Fi, saves the months not scrolled to yet, so the whole library opens offline
+                    .task(id: timeline.months?.count) {
+                        guard scenePhase == .active, let client = session.client, let keys = timeline.months?.map(\.key) else { return }
+                        await client.saveMonthsForOffline(.library, keys: keys)
+                    }
             } else if let device {
                 AssetGrid(timeline: device, showsLevels: true, title: "Library")
             } else if denied {
@@ -61,11 +67,19 @@ struct LibraryView: View {
     private func check() async {
         guard let client = session.client else { return }
         checking = true
-        // the local address first, so the check below asks the address requests will use
-        await ImmichClient.chooseAddress()
-        let reachable = await client.isReachable()
+        // iOS already knows there is no route: say so now instead of after the server's 8 s wait
+        let reachable: Bool
+        if Connection.shared.isOnline {
+            // the local address first, so the check below asks the address requests will use
+            await ImmichClient.chooseAddress()
+            reachable = await client.isReachable()
+        } else {
+            reachable = false
+        }
+        noNetwork = !Connection.shared.isOnline
         checking = false
         withAnimation(reduceMotion ? .default : .spring(duration: 0.6, bounce: 0.45)) { unreachable = !reachable }
+        if reachable { await Outbox.shared.flush(with: client) }
         if reachable, timeline.problem != nil { try? await timeline.reload(with: client) }
     }
 }
@@ -74,12 +88,18 @@ struct LibraryView: View {
 /// For a server on Tailscale, it says the VPN may be off and opens the Tailscale app.
 private struct OfflinePill: View {
     let checking: Bool
+    let noNetwork: Bool
+    /// Changes made offline that haven't reached the server.
+    let waiting: Int
     let tailscale: Bool
     let onRetry: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openURL) private var openURL
 
-    private var title: String { tailscale ? "Tailscale may be off" : "Immich is unreachable" }
+    private var title: String {
+        let base = noNetwork ? "No connection · saved photos" : tailscale ? "Tailscale may be off" : "Immich is unreachable"
+        return waiting > 0 ? base + " · \(waiting) \(waiting == 1 ? "change" : "changes") waiting" : base
+    }
 
     var body: some View {
         HStack(spacing: 8) {

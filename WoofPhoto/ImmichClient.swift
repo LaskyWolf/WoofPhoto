@@ -8,30 +8,84 @@ extension ImmichClient {
         try await send(request(path, query: query))
     }
 
-    /// Saves every answer; without a connection, returns the last saved one so the library still opens offline.
+    /// Saves every answer. With a saved copy, a weak or missing connection costs at most a few seconds, and then nothing:
+    /// offline, or just after a timeout, the saved copy is returned without asking the server.
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
         let file = offlineFile(request)
+        let saved = try? Data(contentsOf: file)
+        if let saved, !Connection.shared.isUsable { return try JSONDecoder().decode(T.self, from: saved) }
+        guard saved != nil || Connection.shared.isOnline else { throw URLError(.notConnectedToInternet) }
+        var request = request
+        if saved != nil { request.timeoutInterval = 4 }
         let data: Data
         do {
             let (fresh, response) = try await URLSession.shared.data(for: request)
             try Self.check(response, fresh)
+            Connection.shared.markFast()
             data = fresh
             try? fresh.write(to: file, options: .completeFileProtection)
-        } catch let error as URLError {
-            guard let saved = try? Data(contentsOf: file) else { throw error }
+        } catch let error as URLError where Connection.isUnreachable(error) {
+            Connection.shared.markSlow()
+            guard let saved else { throw error }
             data = saved
         }
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    static let offlineFolder = URL.cachesDirectory.appending(path: "api")
+    /// Application Support, not Caches: iOS empties Caches when storage runs low, and this is the offline library.
+    static let offlineFolder = URL.applicationSupportDirectory.appending(path: "api")
 
     /// Named after the main address even when the local one answered, so either finds the same saved copy.
-    private func offlineFile(_ request: URLRequest) -> URL {
-        try? FileManager.default.createDirectory(at: Self.offlineFolder, withIntermediateDirectories: true)
+    func offlineFile(_ request: URLRequest) -> URL {
+        if !FileManager.default.fileExists(atPath: Self.offlineFolder.path) {
+            try? FileManager.default.createDirectory(at: Self.offlineFolder, withIntermediateDirectories: true)
+            // the server has these answers; a device backup needn't carry them
+            var folder = Self.offlineFolder
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? folder.setResourceValues(values)
+        }
         let key = request.url!.absoluteString.replacingOccurrences(of: address.absoluteString, with: server.absoluteString)
         let name = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
         return Self.offlineFolder.appending(path: name + ".json")
+    }
+
+    /// Saves every month of a timeline, newest first, so the whole library opens offline, not only the months scrolled to.
+    /// Each month is one request through `send`, which keeps the answer. Months saved in the last day are read from disk, not asked again.
+    /// ponytail: one day-long refresh for every month; the server's sync API would fetch only what changed.
+    func saveMonthsForOffline(_ query: TimelineQuery, keys: [String]) async {
+        // 90% of the thumbnail limit, so the launch cleanup has nothing to remove
+        var budget = OfflineFiles.thumbCap * 9 / 10 - OfflineFiles.bytes(in: OfflineFiles.thumbs)
+        for key in keys.sorted(by: >) {
+            guard !Task.isCancelled, Connection.shared.isCheap, Connection.shared.isUsable else { return }
+            let file = offlineFile(request("/timeline/bucket", query: query.params.merging(["timeBucket": key, "order": "asc"]) { $1 }))
+            let saved = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            var month: BucketAssets?
+            if let saved, saved > .now - 86400, let data = try? Data(contentsOf: file) {
+                // saved today: read from disk, but its photos may still need their thumbnails
+                month = try? JSONDecoder().decode(BucketAssets.self, from: data)
+            }
+            if month == nil { month = try? await bucket(key, query, order: "asc") }
+            guard let month else { continue }
+            guard await saveThumbnails(month.id, budget: &budget) else { return }
+        }
+    }
+
+    /// Fetches the thumbnails not on this iPhone yet, a few at a time. Returns false when the space limit is reached.
+    /// `image` writes each one into the offline folder.
+    private func saveThumbnails(_ ids: [String], budget: inout Int64) async -> Bool {
+        let missing = ids.filter { !OfflineFiles.hasThumbnail($0) }
+        for start in stride(from: 0, to: missing.count, by: 6) {
+            guard !Task.isCancelled, budget > 0, Connection.shared.isCheap, Connection.shared.isUsable else { return budget > 0 }
+            let bytes = await withTaskGroup(of: Int.self) { group in
+                for id in missing[start..<min(start + 6, missing.count)] {
+                    group.addTask { (try? await self.image(id))?.count ?? 0 }
+                }
+                return await group.reduce(0, +)
+            }
+            budget -= Int64(bytes)
+        }
+        return true
     }
 
     // MARK: Endpoints
@@ -46,7 +100,10 @@ extension ImmichClient {
         request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
         guard let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
-        return (response as? HTTPURLResponse)?.statusCode == 200
+        let answered = (response as? HTTPURLResponse)?.statusCode == 200
+        // Retry and the return to the foreground end the saved-copy-only pause
+        if answered { Connection.shared.markFast() }
+        return answered
     }
 
     func login(email: String, password: String) async throws -> String {
@@ -90,19 +147,52 @@ extension ImmichClient {
     /// A cached copy wins: an asset's images change only when it is edited, and editing gives a new asset.
     func image(_ id: String, size: String = "thumbnail") async throws -> Data {
         var request = request("/assets/\(id)/thumbnail", query: ["size": size])
-        request.cachePolicy = .returnCacheDataElseLoad
+        // no route: only a saved copy can answer, so a missing image fails now instead of after the timeout
+        request.cachePolicy = Connection.shared.isOnline ? .returnCacheDataElseLoad : .returnCacheDataDontLoad
+        request.timeoutInterval = 10
+        // our own copy first: URLCache may have dropped it, and kept photos must open offline
+        if let stored = OfflineFiles.image(id, size: size) { return stored }
         let (data, response) = try await Self.images.data(for: request)
         try Self.check(response, data)
+        OfflineFiles.save(data, id: id, size: size)
         return data
     }
 
     func asset(_ id: String) async throws -> Asset {
-        try await get("/assets/\(id)")
+        let asset: Asset = try await get("/assets/\(id)")
+        await OfflineIndex.shared.learn([asset])
+        return asset
+    }
+
+    /// Keeps a photo or video on this iPhone: the original, its details, thumbnail and preview, and a Live Photo's motion.
+    func keepOffline(_ id: String) async throws {
+        let detail = try await asset(id)
+        try await downloadOriginal(id, keep: true)
+        if let motion = detail.livePhotoVideoId { try await downloadOriginal(motion, keep: true) }
+        for size in ["thumbnail", "preview"] { _ = try await image(id, size: size) }
+    }
+
+    /// A change made without a connection waits in the Outbox and goes out when the server answers again.
+    private func changeOrQueue(_ method: String, _ path: String, _ body: [String: Any]) async throws {
+        if Connection.shared.isUsable {
+            do {
+                try await call(method, path, body: body)
+                return
+            } catch let error as URLError where Connection.isUnreachable(error) {
+                Connection.shared.markSlow()
+            }
+        }
+        await Outbox.shared.add(method, path, body: try JSONSerialization.data(withJSONObject: body))
+        // the slow pause lasts 30 s; try again just after it, in case the server was reachable all along
+        Task {
+            try? await Task.sleep(for: .seconds(31))
+            await Outbox.shared.flush(with: self)
+        }
     }
 
     /// Changes the same fields on several assets: isFavorite, visibility, description, dateTimeOriginal, latitude…
     func updateAssets(_ ids: [String], _ fields: [String: Any]) async throws {
-        try await call("PUT", "/assets", body: fields.merging(["ids": ids]) { $1 })
+        try await changeOrQueue("PUT", "/assets", fields.merging(["ids": ids]) { $1 })
         let kind: HistoryEntry.Kind? = switch (fields["isFavorite"] as? Bool, fields["visibility"] as? String) {
         case (true?, _): .favorited
         case (false?, _): .unfavorited
@@ -117,7 +207,7 @@ extension ImmichClient {
 
     /// Moves to Recently Deleted, or deletes for good with `force`.
     func deleteAssets(_ ids: [String], force: Bool = false) async throws {
-        try await call("DELETE", "/assets", body: ["ids": ids, "force": force])
+        try await changeOrQueue("DELETE", "/assets", ["ids": ids, "force": force])
         await History.shared.record(force ? .deletedForGood : .deleted, ids)
     }
 
@@ -127,14 +217,19 @@ extension ImmichClient {
 
     /// The server transcodes videos to a format every iPhone plays.
     func video(_ id: String) -> AVURLAsset {
+        if let kept = OfflineFiles.original(id) { return AVURLAsset(url: kept) }
         // the token and any proxy headers, as every other request sends them
         let request = request("/assets/\(id)/video/playback")
         return AVURLAsset(url: request.url!, options: ["AVURLAssetHTTPHeaderFieldsKey": request.allHTTPHeaderFields ?? [:]])
     }
 
     /// Downloads the original file once and keeps the server's file name, so its extension says what it is.
-    func downloadOriginal(_ id: String) async throws -> URL {
-        let folder = FileManager.default.temporaryDirectory.appending(path: "originals/\(id)")
+    /// `keep` puts it in the offline folder, which iOS doesn't empty; otherwise it goes to the temporary folder.
+    @discardableResult
+    func downloadOriginal(_ id: String, keep: Bool = false) async throws -> URL {
+        if let kept = OfflineFiles.original(id) { return kept }
+        if keep { OfflineFiles.prepare() }
+        let folder = keep ? OfflineFiles.originals.appending(path: id) : FileManager.default.temporaryDirectory.appending(path: "originals/\(id)")
         if let existing = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first {
             return existing
         }

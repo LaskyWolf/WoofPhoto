@@ -1130,6 +1130,7 @@ struct InfoSheet: View {
                         }
                     }
                     .card()
+                    stars(asset.exifInfo?.rating?.value ?? 0)
                     if let exif = asset.exifInfo, let latitude = exif.latitude, let longitude = exif.longitude {
                         place(exif, CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
                     }
@@ -1167,6 +1168,41 @@ struct InfoSheet: View {
             } catch {
                 self.error = error.explanation
             }
+        }
+    }
+
+    /// Five stars; tapping the one already set clears it.
+    /// ponytail: 0 clears a rating; if the server wants null or -1, change `setRating`.
+    private func stars(_ rating: Int) -> some View {
+        HStack(spacing: 4) {
+            ForEach(1...5, id: \.self) { star in
+                Button {
+                    Task { await setRating(star == rating ? 0 : star) }
+                } label: {
+                    Image(systemName: star <= rating ? "star.fill" : "star")
+                        .font(.title3)
+                        .foregroundStyle(star <= rating ? Color.yellow : Color.secondary)
+                        .frame(minWidth: 36, minHeight: 36)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Rating")
+        .accessibilityValue("\(rating) of 5 stars")
+        .accessibilityAdjustableAction { direction in
+            Task { await setRating(direction == .increment ? min(rating + 1, 5) : max(rating - 1, 0)) }
+        }
+        .card()
+    }
+
+    private func setRating(_ value: Int) async {
+        do {
+            try await session.client?.updateAssets([id], ["rating": value])
+            asset = try await session.client?.asset(id)
+        } catch {
+            self.error = error.explanation
         }
     }
 

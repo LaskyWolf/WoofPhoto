@@ -7,6 +7,7 @@ struct AlbumsView: View {
     @Environment(Session.self) private var session
     @State private var albums: [Album]?
     @State private var naming = false
+    @State private var reordering = false
     @State private var newName = ""
     @State private var error: String?
 
@@ -24,7 +25,14 @@ struct AlbumsView: View {
         }
         .navigationTitle(shared ? "Shared Albums" : "Albums")
         .toolbar {
+            Menu("More", systemImage: "ellipsis.circle") {
+                Button("Reorder Albums", systemImage: "arrow.up.arrow.down") { reordering = true }
+                    .disabled((albums?.count ?? 0) < 2)
+            }
             Button("New Album", systemImage: "plus") { naming = true }
+        }
+        .sheet(isPresented: $reordering) {
+            AlbumOrderSheet(albums: albums ?? []) { albums = AlbumOrder.sorted(albums ?? []) }
         }
         .alert("New Album", isPresented: $naming) {
             TextField("Title", text: $newName)
@@ -36,8 +44,7 @@ struct AlbumsView: View {
 
     private func load() async {
         do {
-            albums = try await session.client?.albums().filter { ($0.shared == true) == shared }
-                .sorted { $0.albumName.localizedStandardCompare($1.albumName) == .orderedAscending }
+            albums = AlbumOrder.sorted(try await session.client?.albums().filter { ($0.shared == true) == shared } ?? [])
         } catch {
             self.error = error.explanation
         }
@@ -52,6 +59,75 @@ struct AlbumsView: View {
             await load()
         } catch {
             self.error = error.explanation
+        }
+    }
+}
+
+/// Immich stores no album order, so the order the user picks lives on this iPhone. Albums not placed yet follow, by name.
+enum AlbumOrder {
+    private static let key = "albums.order"
+    static var ids: [String] { UserDefaults.standard.stringArray(forKey: key) ?? [] }
+
+    static func sorted(_ albums: [Album]) -> [Album] {
+        let position = Dictionary(ids.enumerated().map { ($0.element, $0.offset) }) { $1 }
+        return albums.sorted { a, b in
+            switch (position[a.id], position[b.id]) {
+            case let (x?, y?): x < y
+            case (_?, nil): true
+            case (nil, _?): false
+            default: a.albumName.localizedStandardCompare(b.albumName) == .orderedAscending
+            }
+        }
+    }
+
+    /// Puts `albums` first in this order, keeping the places of albums not in the list (the other of Albums and Shared Albums).
+    static func save(_ albums: [Album]) {
+        let new = albums.map(\.id)
+        UserDefaults.standard.set(new + ids.filter { !new.contains($0) }, forKey: key)
+    }
+
+    static func reset(_ albums: [Album]) {
+        let old = Set(albums.map(\.id))
+        UserDefaults.standard.set(ids.filter { !old.contains($0) }, forKey: key)
+    }
+}
+
+/// Drag the rows into the order wanted; Sort by Name forgets it.
+private struct AlbumOrderSheet: View {
+    @State private var albums: [Album]
+    let onDone: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    init(albums: [Album], onDone: @escaping () -> Void) {
+        _albums = State(initialValue: albums)
+        self.onDone = onDone
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(albums) { Text($0.albumName) }
+                    .onMove { albums.move(fromOffsets: $0, toOffset: $1) }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Reorder Albums")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Sort by Name") {
+                        AlbumOrder.reset(albums)
+                        onDone()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        AlbumOrder.save(albums)
+                        onDone()
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }
@@ -215,6 +291,11 @@ struct AlbumView: View {
                 Button("Rename", systemImage: "pencil") {
                     newName = name
                     renaming = true
+                }
+                if let client = session.client, !timeline.assets.isEmpty {
+                    Button("Keep Album Offline", systemImage: "arrow.down.circle") {
+                        OfflineDownloads.shared.add(timeline.assets.compactMap { $0.localID == nil ? $0.id : nil }, client: client)
+                    }
                 }
                 Section {
                     Button("Share Link…", systemImage: "link") { sharesLink = true }

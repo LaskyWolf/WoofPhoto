@@ -68,6 +68,8 @@ struct Exif: Decodable {
     var state: String?
     var country: String?
     var description: String?
+    /// 1 to 5 stars; nil or 0 when not rated.
+    var rating: Lossy<Int>?
     var fileSizeInByte: Lossy<Int>?
     var exifImageWidth: Lossy<Int>?
     var exifImageHeight: Lossy<Int>?

@@ -36,6 +36,38 @@ struct PhotoProvider: TimelineProvider {
 struct WoofPhotoWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FeaturedPhotos", provider: PhotoProvider()) { entry in
+            WidgetBody(entry: entry)
+        }
+        .configurationDisplayName("Featured Photos")
+        .description("A different photo from your Immich library every hour.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular, .accessoryCircular, .accessoryInline])
+        .contentMarginsDisabled()
+    }
+}
+
+/// The Home Screen widget shows the photo with its month; the Lock Screen ones show it small, in the system's tint, or only the month.
+private struct WidgetBody: View {
+    let entry: PhotoEntry
+    @Environment(\.widgetFamily) private var family
+
+    private var month: String? { entry.item?.date?.formatted(.dateTime.month(.wide).year()) }
+
+    var body: some View {
+        switch family {
+        case .accessoryInline:
+            Label(month ?? "WoofPhoto", systemImage: "photo.on.rectangle")
+                .widgetURL(entry.item.map { URL(string: "woofphoto://asset/\($0.id)")! })
+        case .accessoryCircular, .accessoryRectangular:
+            ZStack {
+                if let image = entry.image {
+                    Image(uiImage: image).resizable().scaledToFill().widgetAccentable()
+                } else {
+                    Image(systemName: "photo.on.rectangle")
+                }
+            }
+            .containerBackground(.clear, for: .widget)
+            .widgetURL(entry.item.map { URL(string: "woofphoto://asset/\($0.id)")! })
+        default:
             ZStack(alignment: .bottomLeading) {
                 if let image = entry.image {
                     Image(uiImage: image).resizable().scaledToFill()
@@ -58,9 +90,5 @@ struct WoofPhotoWidget: Widget {
             .containerBackground(.fill.tertiary, for: .widget)
             .widgetURL(entry.item.map { URL(string: "woofphoto://asset/\($0.id)")! })
         }
-        .configurationDisplayName("Featured Photos")
-        .description("A different photo from your Immich library every hour.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
-        .contentMarginsDisabled()
     }
 }

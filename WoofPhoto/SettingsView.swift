@@ -22,6 +22,7 @@ struct SettingsView: View {
             }
             Section("Backup & Storage") {
                 SettingsRow("Backup", icon: "icloud.and.arrow.up") { BackupView() }
+                SettingsRow("Import from Files", icon: "square.and.arrow.down.on.square") { ImportFilesView() }
                 SettingsRow("Storage", icon: "internaldrive") { StorageSettings() }
             }
             Section("Server") {
@@ -245,11 +246,32 @@ struct LibrarySettings: View {
     var body: some View {
         List {
             TimelineSettings()
+            SpotlightSettings()
             ViewerSettings()
             HistorySettings()
         }
         .navigationTitle("Library & Viewer")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Album and person names in iOS search, and the Shortcuts actions. Names leave the app only when this is on.
+struct SpotlightSettings: View {
+    @Environment(Session.self) private var session
+    @AppStorage(Spotlight.key) private var enabled = false
+
+    var body: some View {
+        Section {
+            Toggle(isOn: $enabled) { Label("Show in Spotlight", systemImage: "magnifyingglass") }
+        } header: {
+            Text("Search")
+        } footer: {
+            Text("Album and person names can be found from the iPhone's search. Off by default. Shortcuts actions work either way.")
+        }
+        .onChange(of: enabled) { _, on in
+            guard on, let client = session.client else { return Spotlight.removeAll() }
+            Task { await Spotlight.index(albums: (try? await client.albums()) ?? [], people: (try? await client.people()) ?? []) }
+        }
     }
 }
 
@@ -319,9 +341,33 @@ struct HistorySettings: View {
 
 struct StorageSettings: View {
     @State private var cacheSize = URLCache.shared.currentDiskUsage
+    @State private var thumbsSize: Int64 = 0
+    @State private var keptSize: Int64 = 0
+    private var downloads: OfflineDownloads { .shared }
 
     var body: some View {
         List {
+            Section {
+                LabeledContent("Thumbnails", value: thumbsSize.formatted(.byteCount(style: .file)))
+                LabeledContent("Kept Offline", value: keptSize.formatted(.byteCount(style: .file)))
+                if downloads.isRunning {
+                    ProgressView(value: Double(downloads.done), total: Double(max(downloads.total, 1))) {
+                        Text("Downloading \(downloads.done) of \(downloads.total)")
+                    }
+                    Button("Stop Downloading", role: .cancel) { downloads.cancel() }
+                } else if downloads.failed > 0 {
+                    Text("\(downloads.failed) items could not be downloaded. Select them again and choose Keep Offline.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Button("Remove Kept Photos", systemImage: "trash", role: .destructive) {
+                    OfflineFiles.removeOriginals()
+                    keptSize = 0
+                }
+            } header: {
+                Text("Offline")
+            } footer: {
+                Text("On Wi-Fi, WoofPhoto saves every thumbnail, up to 2 GB, so the Library opens without a connection. Select photos and choose Keep Offline, or use an album's menu, to save the full photos and videos too.")
+            }
             Section {
                 LabeledContent("Saved Thumbnails", value: Int64(cacheSize).formatted(.byteCount(style: .file)))
                 Button("Clear Saved Thumbnails", systemImage: "trash", role: .destructive) {
@@ -336,6 +382,10 @@ struct StorageSettings: View {
         }
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: downloads.done) {
+            thumbsSize = OfflineFiles.bytes(in: OfflineFiles.thumbs)
+            keptSize = OfflineFiles.bytes(in: OfflineFiles.originals)
+        }
     }
 }
 

@@ -45,6 +45,13 @@ struct EditorView: View {
     @State private var undo: [CIImage?] = []
     /// Markup's drawing, kept while switching away and back until Done or Cancel.
     @State private var canvas = PKCanvasView()
+    /// Pixel states stepped back by Undo, for Redo; cleared by any new retouch.
+    @State private var redo: [CIImage?] = []
+    /// True while the finger holds the preview, which then shows the original.
+    @State private var comparing = false
+    /// Set for a photo on this iPhone that Photos can revert.
+    @State private var hasDeviceEdits = false
+    @State private var canPaste = EditRecipe.saved != nil
 
     var body: some View {
         NavigationStack {
@@ -67,11 +74,21 @@ struct EditorView: View {
                         }
                     }
                     .frame(maxHeight: .infinity)
+                    .overlay(alignment: .top) {
+                        if comparing {
+                            Text("Original")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(.black.opacity(0.6), in: .capsule)
+                        }
+                    }
                     .onLongPressGesture(minimumDuration: 0.1, maximumDistance: 50) {
                     } onPressingChanged: { pressing in
                         // touch and hold shows the original, as in Photos
+                        comparing = pressing
                         Task { await render(original: pressing) }
                     }
+                    .accessibilityHint("Touch and hold to compare with the original")
                 }
                 // Markup's tool picker takes the bottom, as in Photos; its own Cancel and Done lead back
                 if tool != .markup {
@@ -118,8 +135,30 @@ struct EditorView: View {
             Button("Cancel", role: .cancel) { dismiss() }
         }
         ToolbarItem(placement: .principal) {
-            if hasServerEdits {
-                Button("Revert") { Task { await revert() } }.tint(.red)
+            if !undo.isEmpty || !redo.isEmpty {
+                HStack(spacing: 16) {
+                    Button("Undo", systemImage: "arrow.uturn.backward") { stepBack() }.disabled(undo.isEmpty)
+                    Button("Redo", systemImage: "arrow.uturn.forward") { stepForward() }.disabled(redo.isEmpty)
+                }
+                .labelStyle(.iconOnly)
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Menu("Edit Options", systemImage: "ellipsis.circle") {
+                Button("Copy Edits", systemImage: "doc.on.doc") {
+                    EditRecipe(edit).save()
+                    canPaste = true
+                }
+                .disabled(edit.values.isEmpty && edit.filter == nil)
+                Button("Paste Edits", systemImage: "doc.on.clipboard") {
+                    EditRecipe.saved?.apply(to: &edit)
+                }
+                .disabled(!canPaste)
+                if hasServerEdits || hasDeviceEdits {
+                    Button("Revert to Original", systemImage: "arrow.uturn.backward.circle", role: .destructive) {
+                        Task { await revert() }
+                    }
+                }
             }
         }
         ToolbarItem(placement: .confirmationAction) {
@@ -153,6 +192,12 @@ struct EditorView: View {
             .padding(.horizontal)
         case .adjust:
             VStack {
+                Button("Auto", systemImage: "wand.and.stars") {
+                    if let source { applyAuto(edit.base(source)) }
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .accessibilityHint("Sets exposure, black point, contrast and saturation from the photo")
                 ScrollView(.horizontal) {
                     HStack(spacing: 16) {
                         ForEach(PhotoEdit.Slider.allCases, id: \.self) { item in
@@ -208,6 +253,18 @@ struct EditorView: View {
                     Text("\(edit.straighten, specifier: "%.1f")°").monospacedDigit().font(.caption)
                 }
                 .padding(.horizontal)
+                HStack {
+                    Text("Vertical").font(.subheadline)
+                    Slider(value: $edit.perspectiveV, in: -1...1)
+                        .accessibilityLabel("Vertical Perspective")
+                }
+                .padding(.horizontal)
+                HStack {
+                    Text("Horizontal").font(.subheadline)
+                    Slider(value: $edit.perspectiveH, in: -1...1)
+                        .accessibilityLabel("Horizontal Perspective")
+                }
+                .padding(.horizontal)
             }
         case .cleanUp:
             VStack {
@@ -238,7 +295,7 @@ struct EditorView: View {
     }
 
     private var undoButton: some View {
-        Button("Undo", systemImage: "arrow.uturn.backward") { setPixels(undo.removeLast()) }
+        Button("Undo", systemImage: "arrow.uturn.backward") { stepBack() }
             .labelStyle(.iconOnly)
             .font(.title3)
             .disabled(undo.isEmpty)
@@ -247,7 +304,61 @@ struct EditorView: View {
     /// A Clean Up stroke or a Markup drawing replaces the photo's pixels; Undo steps back one.
     private func retouch(_ image: CIImage) {
         undo.append(edit.keyFrame ?? edit.retouched)
+        redo = []
         setPixels(image)
+    }
+
+    private func stepBack() {
+        guard let pixels = undo.popLast() else { return }
+        redo.append(edit.keyFrame ?? edit.retouched)
+        setPixels(pixels)
+    }
+
+    private func stepForward() {
+        guard let pixels = redo.popLast() else { return }
+        undo.append(edit.keyFrame ?? edit.retouched)
+        setPixels(pixels)
+    }
+
+    /// Auto: exposure, black point, contrast and saturation chosen from the photo's tones.
+    private func applyAuto(_ image: CIImage) {
+        let found = Self.autoValues(image)
+        for slider in [PhotoEdit.Slider.exposure, .blackPoint, .contrast, .saturation] {
+            edit[slider] = found[slider] ?? slider.neutral
+        }
+    }
+
+    /// Reads a 64-pixel copy: mean brightness sets exposure, the darkest 1% sets the black point,
+    /// a narrow tonal spread adds contrast and dull colours add saturation.
+    private static func autoValues(_ image: CIImage) -> [PhotoEdit.Slider: Double] {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0 else { return [:] }
+        let scale = 64 / max(extent.width, extent.height)
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let rect = small.extent.integral
+        let width = Int(rect.width), height = Int(rect.height)
+        guard width > 0, height > 0 else { return [:] }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        PhotoEdit.context.render(small, toBitmap: &pixels, rowBytes: width * 4, bounds: rect, format: .RGBA8,
+                                 colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        var lumas: [Double] = []
+        var saturation = 0.0
+        for index in 0..<(width * height) {
+            let r = Double(pixels[index * 4]) / 255, g = Double(pixels[index * 4 + 1]) / 255, b = Double(pixels[index * 4 + 2]) / 255
+            lumas.append(0.299 * r + 0.587 * g + 0.114 * b)
+            let top = max(r, g, b)
+            if top > 0 { saturation += (top - min(r, g, b)) / top }
+        }
+        lumas.sort()
+        let mean = lumas.reduce(0, +) / Double(lumas.count)
+        let low = lumas[lumas.count / 100], high = lumas[lumas.count * 99 / 100]
+        saturation /= Double(lumas.count)
+        var result: [PhotoEdit.Slider: Double] = [:]
+        result[.exposure] = min(max(log2(0.45 / max(mean, 0.02)) * 0.6, -1), 1)
+        result[.blackPoint] = min(max(low * 0.8, 0), 0.2)
+        result[.contrast] = 1 + min(max(0.8 - (high - low), 0) * 0.5, 0.3)
+        result[.saturation] = saturation < 0.35 ? 1.15 : 1.05
+        return result
     }
 
     /// A picked key photo stays the key photo, so saving still replaces the Live Photo's still.
@@ -263,6 +374,7 @@ struct EditorView: View {
                 guard let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject,
                       let input = await Self.editingInput(phAsset) else { throw EditError.load }
                 self.input = input
+                hasDeviceEdits = PHAssetResource.assetResources(for: phAsset).contains { $0.type == .adjustmentData }
                 if asset.isImage {
                     source = input.fullSizeImageURL.flatMap { CIImage(contentsOf: $0, options: [.applyOrientationProperty: true]) }
                 } else {
@@ -340,6 +452,7 @@ struct EditorView: View {
         edit.keyFrame = CIImage(cgImage: frame)
         // the strokes were on the old still
         undo = []
+        redo = []
     }
 
     // MARK: Saving
@@ -476,10 +589,21 @@ struct EditorView: View {
     }
 
     private func revert() async {
-        guard let client = session.client else { return }
         busy = true
         defer { busy = false }
         do {
+            if input != nil {
+                // Photos keeps the original of an edited item and puts it back
+                guard let localID = asset.localID,
+                      let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject else { throw EditError.load }
+                try await PHPhotoLibrary.shared().performChanges {
+                    PHAssetChangeRequest(for: phAsset).revertAssetContentToOriginal()
+                }
+                onSaved()
+                dismiss()
+                return
+            }
+            guard let client = session.client else { return }
             try await client.call("DELETE", "/assets/\(asset.id)/edits")
             ImageCache.forget(asset.id, client: client)
             onSaved()
@@ -508,13 +632,17 @@ private struct ServerEdits: Decodable {
 /// Every setting of one edit. Equatable, so the preview re-renders only when something changes.
 struct PhotoEdit: Equatable {
     enum Slider: String, CaseIterable {
-        case exposure = "Exposure", highlights = "Highlights", shadows = "Shadows", contrast = "Contrast"
-        case brightness = "Brightness", saturation = "Saturation", vibrance = "Vibrance", warmth = "Warmth"
-        case tint = "Tint", sharpness = "Sharpness", vignette = "Vignette"
+        case exposure = "Exposure", brilliance = "Brilliance", highlights = "Highlights", shadows = "Shadows", contrast = "Contrast"
+        case brightness = "Brightness", blackPoint = "Black Point", saturation = "Saturation", vibrance = "Vibrance", warmth = "Warmth"
+        case tint = "Tint", sharpness = "Sharpness", definition = "Definition", noiseReduction = "Noise Reduction", vignette = "Vignette"
 
         var symbol: String {
             switch self {
             case .exposure: "plusminus.circle"
+            case .brilliance: "sparkle"
+            case .blackPoint: "circle.fill"
+            case .definition: "triangle.lefthalf.filled"
+            case .noiseReduction: "waveform"
             case .highlights: "circle.lefthalf.filled.righthalf.striped.horizontal"
             case .shadows: "circle.righthalf.filled"
             case .contrast: "circle.lefthalf.filled"
@@ -535,7 +663,8 @@ struct PhotoEdit: Equatable {
             case .contrast: 0.5...1.5
             case .saturation: 0...2
             case .brightness: -0.3...0.3
-            case .sharpness, .vignette: 0...1
+            case .blackPoint: -0.2...0.2
+            case .sharpness, .definition, .noiseReduction, .vignette: 0...1
             default: -1...1
             }
         }
@@ -574,6 +703,9 @@ struct PhotoEdit: Equatable {
     var quarterTurns = 0
     var mirrored = false
     var straighten = 0.0
+    /// Vertical and horizontal perspective, -1…1.
+    var perspectiveV = 0.0
+    var perspectiveH = 0.0
     var aspect = Aspect.original
     var motionOff = false
     var keyFrame: CIImage?
@@ -587,7 +719,7 @@ struct PhotoEdit: Equatable {
 
     static func == (a: PhotoEdit, b: PhotoEdit) -> Bool {
         a.values == b.values && a.filter == b.filter && a.quarterTurns == b.quarterTurns && a.mirrored == b.mirrored
-            && a.straighten == b.straighten && a.aspect == b.aspect && a.motionOff == b.motionOff && a.keyFrame === b.keyFrame
+            && a.straighten == b.straighten && a.perspectiveV == b.perspectiveV && a.perspectiveH == b.perspectiveH && a.aspect == b.aspect && a.motionOff == b.motionOff && a.keyFrame === b.keyFrame
             && a.retouched === b.retouched
     }
 
@@ -601,7 +733,7 @@ struct PhotoEdit: Equatable {
     }
 
     /// Only crop, rotate and mirror: Immich can store these without new pixels.
-    var isGeometryOnly: Bool { values.isEmpty && filter == nil && straighten == 0 && keyFrame == nil && retouched == nil && !motionOff }
+    var isGeometryOnly: Bool { values.isEmpty && filter == nil && straighten == 0 && perspectiveV == 0 && perspectiveH == 0 && keyFrame == nil && retouched == nil && !motionOff }
 
     /// Immich edits, applied by the server in this order: crop on the original pixels, then rotate, then mirror.
     func serverEdits(width: Int, height: Int) -> [[String: Any]] {
@@ -628,14 +760,32 @@ extension CIImage {
     /// The image with every setting of the edit. `scale` shrinks distance-based effects for a smaller preview.
     func applying(_ edit: PhotoEdit, scale: CGFloat) -> CIImage {
         var image = self
+        if let level = edit.values[.noiseReduction] {
+            // first, before the other steps stretch the noise
+            let f = CIFilter.noiseReduction(); f.inputImage = image; f.noiseLevel = Float(level * 0.06); f.sharpness = 0.4
+            image = f.outputImage ?? image
+        }
         if let ev = edit.values[.exposure] {
             let f = CIFilter.exposureAdjust(); f.inputImage = image; f.ev = Float(ev); image = f.outputImage ?? image
         }
-        if edit.values[.highlights] != nil || edit.values[.shadows] != nil {
+        if let black = edit.values[.blackPoint] {
+            // out = (in - black) / (1 - black): a positive point darkens the shadows, a negative one lifts them
+            let gain = CGFloat(1 / (1 - black)), bias = CGFloat(-black / (1 - black))
+            let f = CIFilter.colorMatrix()
+            f.inputImage = image
+            f.rVector = CIVector(x: gain, y: 0, z: 0, w: 0)
+            f.gVector = CIVector(x: 0, y: gain, z: 0, w: 0)
+            f.bVector = CIVector(x: 0, y: 0, z: gain, w: 0)
+            f.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            f.biasVector = CIVector(x: bias, y: bias, z: bias, w: 0)
+            image = f.outputImage ?? image
+        }
+        if edit.values[.highlights] != nil || edit.values[.shadows] != nil || edit.values[.brilliance] != nil {
             let f = CIFilter.highlightShadowAdjust()
             f.inputImage = image
-            f.highlightAmount = Float(1 + edit[.highlights])
-            f.shadowAmount = Float(edit[.shadows])
+            // Brilliance opens the shadows and calms the highlights at once
+            f.highlightAmount = Float(min(max(1 + edit[.highlights] - edit[.brilliance] * 0.3, 0), 1))
+            f.shadowAmount = Float(min(max(edit[.shadows] + edit[.brilliance] * 0.5, -1), 1))
             image = f.outputImage ?? image
         }
         if edit.values[.contrast] != nil || edit.values[.brightness] != nil || edit.values[.saturation] != nil {
@@ -659,6 +809,11 @@ extension CIImage {
         if let sharpness = edit.values[.sharpness] {
             let f = CIFilter.sharpenLuminance(); f.inputImage = image; f.sharpness = Float(sharpness); image = f.outputImage ?? image
         }
+        if let amount = edit.values[.definition] {
+            // local contrast: an unsharp mask with a wide radius, which is in pixels so it follows the preview's scale
+            let f = CIFilter.unsharpMask(); f.inputImage = image; f.radius = Float(30 * scale); f.intensity = Float(amount * 0.8)
+            image = f.outputImage ?? image
+        }
         if let name = edit.filter, let f = CIFilter(name: name) {
             f.setValue(image, forKey: kCIInputImageKey)
             image = f.outputImage ?? image
@@ -678,6 +833,21 @@ extension CIImage {
         }
         let orientations: [CGImagePropertyOrientation] = edit.mirrored ? [.upMirrored, .leftMirrored, .downMirrored, .rightMirrored] : [.up, .left, .down, .right]
         image = image.oriented(orientations[edit.quarterTurns % 4])
+        if edit.perspectiveV != 0 || edit.perspectiveH != 0 {
+            let e = image.extent
+            let v = CGFloat(edit.perspectiveV), h = CGFloat(edit.perspectiveH)
+            let top = max(v, 0) * e.width * 0.15, bottom = max(-v, 0) * e.width * 0.15
+            let left = max(h, 0) * e.height * 0.15, right = max(-h, 0) * e.height * 0.15
+            let f = CIFilter.perspectiveTransform()
+            f.inputImage = image
+            // Core Image's y runs upward
+            f.topLeft = CGPoint(x: e.minX + top, y: e.maxY - left)
+            f.topRight = CGPoint(x: e.maxX - top, y: e.maxY - right)
+            f.bottomLeft = CGPoint(x: e.minX + bottom, y: e.minY + left)
+            f.bottomRight = CGPoint(x: e.maxX - bottom, y: e.minY + right)
+            // ponytail: this inset hides the empty corners for one axis; with both sliders far out a sliver may show
+            image = (f.outputImage ?? image).cropped(to: e.insetBy(dx: max(top, bottom), dy: max(left, right)))
+        }
         if let ratio = edit.aspect.ratio {
             image = image.cropped(to: PhotoEdit.centerCrop(image.extent.size, ratio: ratio).offsetBy(dx: image.extent.minX, dy: image.extent.minY))
         }

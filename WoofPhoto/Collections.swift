@@ -354,8 +354,11 @@ struct CollectionsView: View {
             async let partners = client.partners()
             async let memories = client.memories()
             async let markers = client.mapMarkers()
-            self.albums = try await albums.sorted { ($0.endDate ?? "") > ($1.endDate ?? "") }
+            // the newest first, until the user orders them (Albums > Reorder)
+            let all = try await albums
+            self.albums = AlbumOrder.ids.isEmpty ? all.sorted { ($0.endDate ?? "") > ($1.endDate ?? "") } : AlbumOrder.sorted(all)
             self.people = try await people
+            if Spotlight.isEnabled { Task { await Spotlight.index(albums: all, people: self.people) } }
             self.partners = (try? await partners) ?? []
             self.memories = (try? await memories) ?? []
             self.markers = (try? await markers) ?? []

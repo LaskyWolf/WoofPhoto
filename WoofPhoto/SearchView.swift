@@ -14,6 +14,8 @@ struct SearchView: View {
     @State private var showsFilters = false
     @State private var results: Timeline?
     @State private var searching = false
+    /// The results come from this iPhone's saved photos, not the server.
+    @State private var savedOnly = false
     @State private var error: String?
     @State private var people: [Person] = []
     @State private var albums: [Album] = []
@@ -43,6 +45,13 @@ struct SearchView: View {
             .task { await loadSuggestions() }
         }
         .searchable(text: $query, prompt: "Photos, people, places")
+        // from a Shortcuts action or a link: take the words once, then clear them
+        .onChange(of: Router.shared.searchText, initial: true) {
+            if let text = Router.shared.searchText {
+                query = text
+                Router.shared.searchText = nil
+            }
+        }
         .autocorrectionDisabled()
         .onSubmit(of: .search) { remember(query) }
     }
@@ -153,6 +162,13 @@ struct SearchView: View {
                 }
                 .scrollIndicators(.hidden)
             }
+            if savedOnly, results != nil {
+                Label("No connection · searching saved photos", systemImage: "wifi.slash")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Tokens.screenPadding)
+                    .padding(.vertical, 6)
+            }
             if let results, results.count > 0 {
                 AssetGrid(timeline: results)
             } else if searching {
@@ -232,6 +248,9 @@ struct SearchView: View {
         searching = true
         defer { searching = false }
         error = nil
+        // no connection, or a server that just timed out: the words match what this iPhone has saved
+        if !Connection.shared.isUsable { return await searchSaved(text) }
+        savedOnly = false
         do {
             var filter = filters.filter
             let assets: [Asset]
@@ -249,9 +268,19 @@ struct SearchView: View {
             }
             guard !Task.isCancelled else { return }
             results = Timeline(assets: assets.reversed().map(\.ref))
+        } catch let error as URLError where Connection.isUnreachable(error) {
+            Connection.shared.markSlow()
+            if !Task.isCancelled { await searchSaved(text) }
         } catch {
             if !Task.isCancelled { self.error = error.explanation }
         }
+    }
+
+    private func searchSaved(_ text: String) async {
+        let found = await OfflineIndex.shared.search(text)
+        guard !Task.isCancelled else { return }
+        savedOnly = true
+        results = Timeline(assets: found)
     }
 
     private func loadSuggestions() async {

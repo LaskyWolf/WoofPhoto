@@ -123,6 +123,7 @@ extension ImmichClient {
             guard response.assets.nextPage != nil else { break }
             page += 1
         }
+        await OfflineIndex.shared.learn(assets)
         return assets
     }
 
@@ -137,6 +138,7 @@ extension ImmichClient {
             guard response.assets.nextPage != nil else { break }
             page += 1
         }
+        await OfflineIndex.shared.learn(assets)
         return assets
     }
 

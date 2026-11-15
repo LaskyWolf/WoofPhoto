@@ -384,10 +384,12 @@ enum Spatial {
             }
         }
         if out.dataType == .float16 { read(Float16.self) } else { read(Float.self) }
+        // distance (far = more, all within a narrow band like 0.8–1.1) to nearness stretched over 0…1: the farthest 1%
+        // sets 0 and the nearest 1% sets 1, so a few stray pixels don't flatten the rest. Dividing by the nearest
+        // alone left everything between 0.75 and 1, and the whole photo flat.
         var near = distance.map { 1 / max($0, 1e-3) }
-        // the nearest 1% sets 1, so a few stray pixels don't flatten everything else
-        let top = max(near.sorted()[near.count * 99 / 100], .leastNonzeroMagnitude)
-        near = near.map { min(1, $0 / top) }
+        let sorted = near.sorted(), lo = sorted[near.count / 100], hi = sorted[near.count * 99 / 100]
+        near = near.map { min(1, max(0, ($0 - lo) / max(hi - lo, 1e-6))) }
         var result = resize(near, w, 1, region: (0, 0, w, h), to: photo.width, photo.height)
         if let subject {
             let on = zip(result, subject).filter { $0.1 > 0 }.map(\.0), off = zip(result, subject).filter { $0.1 == 0 }.map(\.0)

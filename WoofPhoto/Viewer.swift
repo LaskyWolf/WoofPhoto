@@ -43,8 +43,7 @@ struct Viewer: View {
     @State private var picksTags = false
     @State private var playsSlideshow = false
     @State private var spatial: AssetRef?
-    /// ponytail: Spatial Scenes are being reworked, so the button is hidden; set to true to bring it back.
-    private static let spatialEnabled = false
+    private static let spatialEnabled = true
     @State private var editing: AssetRef?
 
     init(timeline: Timeline, start: AssetRef) {
@@ -404,6 +403,12 @@ struct Viewer: View {
         guard let current else { return }
         // the last page's date and place go at once; this page's come from the saved details, or when they arrive
         detail = details[current]
+        // the blurs of the pages around first, from what is in memory (a thumbhash at least), before any network
+        if let index = timeline.assets.firstIndex(where: { $0.id == current }) {
+            let around = (index - 3...index + 3).filter(timeline.assets.indices.contains).map { shown(timeline.assets[$0]) }
+            await Still.prepareBlurs(around)
+            neighboursLoaded += 1
+        }
         defer {
             // Hidden stays behind Face ID, so its photos stay out of History
             if !Task.isCancelled, timeline.query != .hidden {
@@ -990,17 +995,26 @@ enum Still {
     }
 
     private static let blurCache = NSCache<NSString, UIImage>()
+    /// The newest blur of each photo by its id alone: the lookup a frame of the swipe makes, with nothing to build.
+    private static let latestBlur = NSCache<NSString, UIImage>()
 
     /// At sign-out and when Hidden locks, so no blurred copy outlives them.
-    static func forgetBlurs() { blurCache.removeAllObjects() }
+    static func forgetBlurs() {
+        blurCache.removeAllObjects()
+        latestBlur.removeAllObjects()
+    }
     private static let blurContext = CIContext()
 
     /// A small, blurred and saturated copy of the photo for the viewer's background, made once per image.
     static func blurred(_ asset: AssetRef, make: Bool = true) -> UIImage? {
+        if !make, let image = latestBlur.object(forKey: asset.id as NSString) { return image }
         guard let source = cached(asset) else { return nil }
         // a thumbhash and a thumbnail differ in size, so the real image replaces the placeholder's blur
         let key = "\(asset.id)-\(Int(source.size.width))" as NSString
-        if let image = blurCache.object(forKey: key) { return image }
+        if let image = blurCache.object(forKey: key) {
+            latestBlur.setObject(image, forKey: asset.id as NSString)
+            return image
+        }
         guard make else { return nil }
         let small = UIGraphicsImageRenderer(size: CGSize(width: 48, height: 48 * source.size.height / max(source.size.width, 1)))
             .image { context in source.draw(in: context.format.bounds) }
@@ -1012,6 +1026,7 @@ enum Still {
         guard let cgImage = blurContext.createCGImage(output, from: input.extent) else { return nil }
         let image = UIImage(cgImage: cgImage)
         blurCache.setObject(image, forKey: key)
+        latestBlur.setObject(image, forKey: asset.id as NSString)
         return image
     }
 
@@ -1068,8 +1083,8 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
         imageView.accessibilityLabel = "Photo"
         imageView.accessibilityTraits = .image
         imageView.addInteraction(analysis)
-        // Live Text's button a little above the photo's bottom edge
-        analysis.supplementaryInterfaceContentInsets = UIEdgeInsets(top: 0, left: 0, bottom: 8, right: 0)
+        // no Live Text button over the photo; text is still selected by touching and holding it
+        analysis.isSupplementaryInterfaceHidden = true
         addSubview(imageView)
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:)))

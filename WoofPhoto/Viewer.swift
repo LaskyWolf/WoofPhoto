@@ -125,8 +125,10 @@ struct Viewer: View {
         }
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
-        // WoofTube's ambient mode: the photo itself, blurred, instead of black
-        .background { ambient }
+        // WoofTube's ambient mode: the photo itself, blurred, instead of black.
+        // It reaches up by the safe area's height, so it fills the strip under the status bar and the Dynamic Island
+        // even where the scroll view's own frame starts below it.
+        .background(alignment: .top) { ambient.padding(.top, -Self.topInset) }
         // a swipe up shows the details under the photo, a swipe down puts it back, as in Photos
         .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
             let (x, y) = (value.translation.width, value.translation.height)
@@ -144,6 +146,11 @@ struct Viewer: View {
     }
 
     private static let stripHeight: CGFloat = 46
+
+    /// The height of the status bar area at the top of the screen.
+    private static var topInset: CGFloat {
+        (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.keyWindow?.safeAreaInsets.top ?? 0
+    }
 
     private var ambient: some View {
         AmbientBackground(assets: timeline.assets, progress: progress, version: neighboursLoaded, shown: shown)

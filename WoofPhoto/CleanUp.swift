@@ -3,54 +3,32 @@ import CoreML
 import SwiftUI
 import os
 
-/// Clean Up's photo in the editor: brush over something and LaMa, paints it away.
-struct CleanUpCanvas: View {
+/// Clean Up's layer on the editor's photo: brush over something and LaMa paints it away.
+struct CleanUpLayer: View {
     let image: CIImage
     /// Brush width in points on screen.
     let brush: CGFloat
+    /// The stage's zoom: the layer is drawn unzoomed, so the brush is divided by it to keep its size on screen.
+    let zoom: CGFloat
+    @Binding var status: String?
+    @Binding var error: String?
     var onErased: (CIImage) -> Void
 
-    @State private var display: UIImage?
     /// The stroke being drawn, in points over the shown photo; it stays while LaMa works on it.
     @State private var stroke: [CGPoint] = []
-    @State private var status: String?
-    @State private var error: String?
 
     var body: some View {
-        ZStack {
-            if let display {
-                Image(uiImage: display)
-                    .resizable()
-                    .scaledToFit()
-                    .overlay {
-                        GeometryReader { geometry in
-                            Path { $0.addLines(stroke) }
-                                .stroke(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: brush, lineCap: .round, lineJoin: .round))
-                                .contentShape(.rect)
-                                .gesture(DragGesture(minimumDistance: 0)
-                                    .onChanged { stroke.append($0.location) }
-                                    .onEnded { _ in erase(shownWidth: geometry.size.width) })
-                        }
-                    }
-                    .allowsHitTesting(status == nil)
-                    .accessibilityLabel("Photo to clean up")
-                    .accessibilityHint("Brush over something to remove it.")
-            } else {
-                ProgressView()
-            }
+        GeometryReader { geometry in
+            Path { $0.addLines(stroke) }
+                .stroke(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: brush / zoom, lineCap: .round, lineJoin: .round))
+                .contentShape(.rect)
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { stroke.append($0.location) }
+                    .onEnded { _ in erase(shownWidth: geometry.size.width) })
         }
-        .overlay(alignment: .bottom) {
-            if let status {
-                Label { Text(status) } icon: { ProgressView() }
-                    .font(.footnote)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .glassEffect(.regular, in: .capsule)
-                    .padding()
-            }
-        }
-        .task(id: ObjectIdentifier(image)) { display = image.screenImage }
-        .messageAlert($error)
+        .allowsHitTesting(status == nil)
+        .accessibilityLabel("Photo to clean up")
+        .accessibilityHint("Brush over something to remove it.")
     }
 
     private func erase(shownWidth: CGFloat) {
@@ -58,7 +36,7 @@ struct CleanUpCanvas: View {
         // from points on screen to the photo's own pixels
         let scale = image.extent.width / shownWidth
         let points = stroke.map { CGPoint(x: $0.x * scale, y: $0.y * scale) }
-        let radius = brush / 2 * scale
+        let radius = brush / zoom / 2 * scale
         let image = image
         Task {
             defer {

@@ -27,9 +27,9 @@ struct EditorView: View {
         }
     }
 
-    /// Crop's three angles, one slider at a time, like Photos' dial.
+    /// Crop's two angles, one slider at a time: turning the picture level, and tilting it up or down.
     enum CropAngle: String, CaseIterable {
-        case straighten = "Straighten", vertical = "Vertical", horizontal = "Horizontal"
+        case straighten = "Straighten", vertical = "Vertical"
     }
 
     /// Markup's pens, as the buttons in its controls.
@@ -102,6 +102,11 @@ struct EditorView: View {
     @State private var inkWidth = 8.0
     /// Each filter applied to a small copy of the photo, for the Filters strip. Keyed by the filter's name, "" for Original.
     @State private var filterThumbs: [String: UIImage] = [:]
+    /// The photo without the other edits, for Clean Up and Markup, whose strokes land on its own pixels.
+    @State private var baseDisplay: UIImage?
+    /// The stage's zoom, so Clean Up's brush keeps its size on screen.
+    @State private var stageZoom: CGFloat = 1
+    @State private var cleanStatus: String?
 
     var body: some View {
         NavigationStack {
@@ -113,8 +118,15 @@ struct EditorView: View {
                         Text(tool.rawValue)
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(.yellow)
-                        if tool == .crop, edit.crop != PhotoEdit.unit {
-                            Button("Reset") { edit.crop = PhotoEdit.unit; cropAspect = .free; cropFlipped = false }
+                        if tool == .crop, edit.crop != PhotoEdit.unit || edit.straighten != 0 || edit.perspectiveV != 0 || edit.perspectiveH != 0 {
+                            Button("Reset") {
+                                edit.crop = PhotoEdit.unit
+                                edit.straighten = 0
+                                edit.perspectiveV = 0
+                                edit.perspectiveH = 0
+                                cropAspect = .free
+                                cropFlipped = false
+                            }
                                 .font(.footnote.weight(.semibold))
                                 .tint(.yellow)
                         }
@@ -151,7 +163,9 @@ struct EditorView: View {
         .onChange(of: inkWidth) { applyInk() }
         .task { await load() }
         // a moving crop frame doesn't render again: the picture under it stays the same
-        .task(id: RenderKey(edit: edit.withoutCrop, cropping: tool == .crop)) { await render(original: false) }
+        // in Crop the straighten angle turns the shown picture under the frame instead, so it isn't in the render
+        .task(id: RenderKey(edit: tool == .crop ? edit.withoutCrop.untilted : edit.withoutCrop, cropping: tool == .crop)) { await render(original: false) }
+        .task(id: source.map { ObjectIdentifier(edit.base($0)) }) { baseDisplay = source.map { edit.base($0) }?.screenImage }
         .task(id: source == nil) { await makeFilterThumbs() }
         .task(id: framePosition) { await showFrame(at: framePosition) }
     }
@@ -161,47 +175,77 @@ struct EditorView: View {
         var cropping: Bool
     }
 
-    /// The photo, or the tool's own canvas.
+    /// The photo, the same for every tool: where you zoomed and moved it stays when the tool changes.
+    /// The tool's own layer (the crop frame, Clean Up's brush, the Markup canvas) sits on it and moves with it.
     @ViewBuilder private var canvasArea: some View {
-        if tool == .cleanUp, let source {
-            // the photo without the other edits, so a stroke lands on the pixels it covers
-            CleanUpCanvas(image: edit.base(source), brush: brush) { retouch($0) }
-        } else if tool == .markup, let source {
-            MarkupCanvas(image: edit.base(source), canvas: canvas)
-        } else if let preview {
-            if tool == .crop {
-                ZStack {
-                    Image(uiImage: preview).resizable().scaledToFit().padding(Self.cropInset)
-                    if previewUncropped {
-                        CropOverlay(crop: $edit.crop, imageAspect: preview.size.width / max(preview.size.height, 1), ratio: cropRatio, inset: Self.cropInset)
-                    }
-                }
-                // two fingers turning the photo straighten it, as in Photos
-                .simultaneousGesture(RotateGesture().onChanged { twist($0.rotation.degrees) }.onEnded { _ in twist(nil) })
-            } else {
-                // pinch and two fingers move the photo to look closer at an edit; one finger held shows the original
-                ZoomPreview(image: preview, onHold: { holding in
-                    comparing = holding
-                    Task { await render(original: holding) }
-                }, onTwist: { twist($0) })
-                .overlay(alignment: .top) {
-                    if comparing {
-                        Text("Original")
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(.black.opacity(0.6), in: .capsule)
-                            .padding(.top, 8)
-                    }
-                }
-                .accessibilityHint("Pinch to zoom, two fingers to move, touch and hold to compare with the original")
-            }
+        if let image = stageImage {
+            EditorStage(image: image, inset: Self.cropInset, overlayCoversStage: tool == .crop, overlay: stageOverlay,
+                        canvas: tool == .markup ? canvas : nil, tilt: cropTilt, viewing: viewsOriginal, twisting: tool == .crop,
+                        onHold: { holding in
+                            comparing = holding
+                            Task { await render(original: holding) }
+                        },
+                        onTwist: { twist($0) },
+                        onZoom: { zoom in Task { @MainActor in if abs(stageZoom - zoom) > 0.001 { stageZoom = zoom } } })
+                .overlay(alignment: .top) { originalLabel }
+                .overlay(alignment: .bottom) { cleanStatusLabel }
+                .accessibilityHint("Pinch to zoom, two fingers to move")
         } else {
             ProgressView()
         }
     }
 
+    /// Clean Up and Markup work on the photo's own pixels; the other tools show the edit.
+    private var stageImage: UIImage? {
+        tool == .cleanUp || tool == .markup ? baseDisplay ?? preview : preview
+    }
+
+    /// One finger held shows the original, on the tools that leave the photo alone.
+    private var viewsOriginal: Bool { [.trim, .adjust, .filters, .live].contains(tool) }
+
+    private var stageOverlay: AnyView? {
+        if tool == .crop, previewUncropped {
+            return AnyView(CropOverlay(crop: $edit.crop, imageAspect: imageAspect, ratio: cropRatio, inset: Self.cropInset))
+        }
+        if tool == .cleanUp, let source {
+            return AnyView(CleanUpLayer(image: edit.base(source), brush: brush, zoom: stageZoom, status: $cleanStatus, error: $error) { retouch($0) })
+        }
+        return nil
+    }
+
+    /// Straighten turns the picture under the fixed frame, enlarged just enough that its corners never come inside the frame.
+    private var cropTilt: (degrees: Double, scale: CGFloat) {
+        guard tool == .crop, edit.straighten != 0 else { return (0, 1) }
+        let aspect = Double(imageAspect)
+        let angle = abs(edit.straighten) * .pi / 180
+        let scale = cos(angle) + sin(angle) * max(aspect, 1 / aspect)
+        // the mirrored orientations turn the other way
+        return (edit.mirrored ? -edit.straighten : edit.straighten, CGFloat(scale))
+    }
+
+    @ViewBuilder private var originalLabel: some View {
+        if comparing {
+            Text("Original")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.black.opacity(0.6), in: .capsule)
+                .padding(.top, 8)
+        }
+    }
+
+    @ViewBuilder private var cleanStatusLabel: some View {
+        if let cleanStatus {
+            Label { Text(cleanStatus) } icon: { ProgressView() }
+                .font(.footnote)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .glassEffect(.regular, in: .capsule)
+                .padding()
+        }
+    }
+
     /// Two fingers turning the photo: `degrees` clockwise since they started, nil when they lift.
-    /// It sets the straighten angle (up to 45 either way; the Rotate button turns by quarters), and sticks at 0.
+    /// It sets the straighten angle in Crop (up to 45 either way; the Rotate button turns by quarters), and sticks at 0.
     private func twist(_ degrees: Double?) {
         guard let degrees else {
             twistStart = nil
@@ -317,6 +361,28 @@ struct EditorView: View {
         Image(systemName: symbol).font(.title3).foregroundStyle(.white).frame(width: 40, height: 40).background(Color.white.opacity(0.15), in: .circle)
     }
 
+    /// The frame's shapes in a pop-up; the chosen one has a check, and choosing it again turns it.
+    private var aspectMenu: some View {
+        Menu {
+            ForEach(PhotoEdit.Aspect.allCases, id: \.self) { aspect in
+                Button { chooseAspect(aspect) } label: {
+                    if cropAspect == aspect { Label(aspect.rawValue, systemImage: "checkmark") } else { Text(aspect.rawValue) }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(cropAspect.rawValue).font(.subheadline.weight(.semibold))
+                Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.bold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .frame(height: 40)
+            .background(Color.white.opacity(0.15), in: .capsule)
+        }
+        .accessibilityLabel("Frame shape")
+        .accessibilityValue(cropAspect.rawValue)
+    }
+
     private var imageAspect: CGFloat { preview.map { $0.size.width / max($0.size.height, 1) } ?? 1 }
 
     /// The frame's width over its height while a shape is locked; nil for Free.
@@ -380,7 +446,7 @@ struct EditorView: View {
                 ForEach(Ink.allCases, id: \.self) { kind in
                     Button { ink = kind } label: {
                         PenArt(kind: kind, color: inkColor)
-                            .offset(y: ink == kind ? 0 : 16)
+                            .offset(y: ink == kind ? 6 : 22)
                             .animation(.snappy, value: ink)
                             .frame(width: 40, height: 62, alignment: .top)
                             .clipped()
@@ -514,11 +580,15 @@ struct EditorView: View {
                 .scrollIndicators(.hidden)
             }
         case .filters:
+            VStack(spacing: 6) {
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     ForEach(PhotoEdit.filters, id: \.title) { filter in
                         let chosen = edit.filter == filter.name
-                        Button { edit.filter = filter.name } label: {
+                        Button {
+                            if edit.filter != filter.name { edit.filterAmount = 1 }
+                            edit.filter = filter.name
+                        } label: {
                             VStack(spacing: 5) {
                                 Group {
                                     if let thumb = filterThumbs[filter.name ?? ""] {
@@ -532,6 +602,9 @@ struct EditorView: View {
                                 .overlay { RoundedRectangle(cornerRadius: 8).stroke(chosen ? Color.yellow : .clear, lineWidth: 2) }
                                 Text(filter.title)
                                     .font(.caption2.weight(.medium))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .frame(width: 64)
                                     .foregroundStyle(chosen ? Color.yellow : .white.opacity(0.8))
                             }
                         }
@@ -542,20 +615,26 @@ struct EditorView: View {
                 .padding(.horizontal)
             }
             .scrollIndicators(.hidden)
+            // how much of the look is applied
+            HStack {
+                Slider(value: $edit.filterAmount, in: 0...1).tint(.yellow).accessibilityLabel("Filter Intensity")
+                Text("\(Int((edit.filterAmount * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 40)
+            }
+            .padding(.horizontal)
+            .disabled(edit.filter == nil)
+            .opacity(edit.filter == nil ? 0.35 : 1)
+            }
         case .crop:
-            VStack(spacing: 8) {
-                // the slider on top, then which angle it turns, then the other tools, as on Adjust
+            VStack(spacing: 10) {
+                // the slider on top, then which angle it turns, then the buttons and the shape of the frame
                 HStack {
                     switch cropAngle {
                     case .straighten:
-                        Slider(value: $edit.straighten, in: -45...45, step: 0.5).tint(.yellow)
+                        Slider(value: $edit.straighten, in: -45...45, step: 0.5).tint(.yellow).accessibilityLabel("Straighten")
                         Text("\(edit.straighten, specifier: "%.1f")°").font(.caption.monospacedDigit()).frame(width: 48)
                     case .vertical:
                         Slider(value: $edit.perspectiveV, in: -1...1).tint(.yellow).accessibilityLabel("Vertical Perspective")
                         Text("\(Int((edit.perspectiveV * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
-                    case .horizontal:
-                        Slider(value: $edit.perspectiveH, in: -1...1).tint(.yellow).accessibilityLabel("Horizontal Perspective")
-                        Text("\(Int((edit.perspectiveH * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 48)
                     }
                 }
                 .padding(.horizontal)
@@ -564,26 +643,11 @@ struct EditorView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     Button { rotateCrop() } label: { cropIcon("rotate.left") }.accessibilityLabel("Rotate")
-                    Button { mirrorCrop() } label: { cropIcon("arrow.left.and.right.righttriangle.left.righttriangle.right") }.accessibilityLabel("Mirror")
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            ForEach(PhotoEdit.Aspect.allCases, id: \.self) { aspect in
-                                let chosen = cropAspect == aspect
-                                Button { chooseAspect(aspect) } label: {
-                                    Text(aspect.rawValue)
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(chosen ? Color.black : .white)
-                                        .padding(.horizontal, 14)
-                                        .frame(height: 36)
-                                        .background(chosen ? Color.yellow : Color.white.opacity(0.15), in: .capsule)
-                                }
-                                .accessibilityAddTraits(chosen ? .isSelected : [])
-                            }
-                        }
-                    }
-                    .scrollIndicators(.hidden)
+                    Button { mirrorCrop() } label: { cropIcon("arrow.left.and.right.righttriangle.left.righttriangle.right") }.accessibilityLabel("Flip")
+                    Spacer(minLength: 0)
+                    aspectMenu
                 }
                 .padding(.horizontal)
             }
@@ -762,7 +826,7 @@ struct EditorView: View {
         guard let source else { return }
         // Crop shows the whole picture with the frame over it
         let cropping = tool == .crop && !original
-        let shown = cropping ? edit.withoutCrop : edit
+        let shown = cropping ? edit.withoutCrop.untilted : edit
         let base = original ? source : shown.base(source)
         let scale = min(1, 1600 / max(base.extent.width, base.extent.height))
         let small = base.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
@@ -1023,16 +1087,21 @@ struct PhotoEdit: Equatable {
     /// The whole picture, in 0…1 with the origin at the top left.
     static let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
 
+    /// The Filters strip: the name is what `filter` holds. The first ones are made here; "CIPhotoEffect…" are Core Image's own.
     static let filters: [(name: String?, title: String)] = [
-        (nil, "Original"), ("CIPhotoEffectChrome", "Vivid"), ("CIPhotoEffectFade", "Fade"), ("CIPhotoEffectInstant", "Instant"),
-        ("CIPhotoEffectProcess", "Cool"), ("CIPhotoEffectTransfer", "Warm"), ("CIPhotoEffectMono", "Mono"),
-        ("CIPhotoEffectTonal", "Silvertone"), ("CIPhotoEffectNoir", "Noir"),
+        (nil, "Original"), ("Vivid", "Vivid"), ("Vivid Warm", "Vivid Warm"), ("Vivid Cool", "Vivid Cool"),
+        ("Dramatic", "Dramatic"), ("Dramatic Warm", "Dramatic Warm"), ("Dramatic Cool", "Dramatic Cool"),
+        ("Matte", "Matte"), ("Film", "Film"), ("CIPhotoEffectFade", "Fade"), ("CIPhotoEffectInstant", "Instant"),
+        ("CIPhotoEffectChrome", "Chrome"), ("CIPhotoEffectProcess", "Process"), ("CIPhotoEffectTransfer", "Transfer"),
+        ("CIPhotoEffectMono", "Mono"), ("CIPhotoEffectTonal", "Silvertone"), ("CIPhotoEffectNoir", "Noir"),
     ]
 
     static let context = CIContext()
 
     var values: [Slider: Double] = [:]
     var filter: String?
+    /// How much of the filter is applied, 0…1.
+    var filterAmount = 1.0
     var quarterTurns = 0
     var mirrored = false
     var straighten = 0.0
@@ -1052,7 +1121,7 @@ struct PhotoEdit: Equatable {
     }
 
     static func == (a: PhotoEdit, b: PhotoEdit) -> Bool {
-        a.values == b.values && a.filter == b.filter && a.quarterTurns == b.quarterTurns && a.mirrored == b.mirrored
+        a.values == b.values && a.filter == b.filter && a.filterAmount == b.filterAmount && a.quarterTurns == b.quarterTurns && a.mirrored == b.mirrored
             && a.straighten == b.straighten && a.perspectiveV == b.perspectiveV && a.perspectiveH == b.perspectiveH && a.crop == b.crop && a.motionOff == b.motionOff && a.keyFrame === b.keyFrame
             && a.retouched === b.retouched
     }
@@ -1077,6 +1146,13 @@ struct PhotoEdit: Equatable {
     var withoutCrop: PhotoEdit {
         var copy = self
         copy.crop = Self.unit
+        return copy
+    }
+
+    /// The same edit without the straighten angle: Crop turns the shown picture itself instead.
+    var untilted: PhotoEdit {
+        var copy = self
+        copy.straighten = 0
         return copy
     }
 
@@ -1154,10 +1230,7 @@ extension CIImage {
             let f = CIFilter.unsharpMask(); f.inputImage = image; f.radius = Float(30 * scale); f.intensity = Float(amount * 0.8)
             image = f.outputImage ?? image
         }
-        if let name = edit.filter, let f = CIFilter(name: name) {
-            f.setValue(image, forKey: kCIInputImageKey)
-            image = f.outputImage ?? image
-        }
+        if let name = edit.filter { image = image.looked(name, amount: edit.filterAmount) }
         if let intensity = edit.values[.vignette] {
             let f = CIFilter.vignette()
             f.inputImage = image
@@ -1194,6 +1267,80 @@ extension CIImage {
             image = image.cropped(to: CGRect(x: e.minX + c.minX * e.width, y: e.minY + (1 - c.maxY) * e.height, width: c.width * e.width, height: c.height * e.height))
         }
         return image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))
+    }
+}
+
+extension CIImage {
+    /// A look from the Filters strip, `amount` (0…1) of the way from the photo to the full look.
+    func looked(_ name: String, amount: Double) -> CIImage {
+        let extent = self.extent
+        let styled: CIImage
+        switch name {
+        case "Vivid": styled = vivid
+        case "Vivid Warm": styled = vivid.lookWarmed(0.35)
+        case "Vivid Cool": styled = vivid.lookWarmed(-0.35)
+        case "Dramatic": styled = dramatic
+        case "Dramatic Warm": styled = dramatic.lookWarmed(0.3)
+        case "Dramatic Cool": styled = dramatic.lookWarmed(-0.3)
+        case "Matte": styled = lookLifted(black: 0.08, white: 0.95).lookTuned(saturation: 0.88, contrast: 0.95)
+        case "Film": styled = lookTuned(saturation: 0.9, contrast: 1.05).lookWarmed(0.2).lookLifted(black: 0.04, white: 0.97).lookVignetted(0.5)
+        default:
+            // a Core Image photo effect, or a name from an older save
+            guard let f = CIFilter(name: name) else { return self }
+            f.setValue(self, forKey: kCIInputImageKey)
+            styled = f.outputImage ?? self
+        }
+        guard amount < 1 else { return styled }
+        let blend = CIFilter.dissolveTransition()
+        blend.inputImage = self
+        blend.targetImage = styled
+        blend.time = Float(max(amount, 0))
+        return (blend.outputImage ?? styled).cropped(to: extent)
+    }
+
+    private var vivid: CIImage { lookTuned(saturation: 1.15, contrast: 1.06).lookVibrant(0.5) }
+    private var dramatic: CIImage { lookTuned(saturation: 0.85, contrast: 1.25).lookShadowed(shadows: -0.35, highlights: 0.7).lookVignetted(0.7) }
+
+    private func lookTuned(saturation: Double = 1, contrast: Double = 1) -> CIImage {
+        let f = CIFilter.colorControls(); f.inputImage = self; f.saturation = Float(saturation); f.contrast = Float(contrast)
+        return f.outputImage ?? self
+    }
+
+    private func lookVibrant(_ amount: Double) -> CIImage {
+        let f = CIFilter.vibrance(); f.inputImage = self; f.amount = Float(amount)
+        return f.outputImage ?? self
+    }
+
+    /// Positive is warmer, negative cooler.
+    private func lookWarmed(_ amount: Double) -> CIImage {
+        let f = CIFilter.temperatureAndTint()
+        f.inputImage = self
+        f.neutral = CIVector(x: 6500, y: 0)
+        f.targetNeutral = CIVector(x: 6500 - amount * 2500, y: 0)
+        return f.outputImage ?? self
+    }
+
+    /// Blacks raised to `black` and whites lowered to `white`: the faded, matte look.
+    private func lookLifted(black: Double, white: Double) -> CIImage {
+        let gain = CGFloat(white - black), bias = CGFloat(black)
+        let f = CIFilter.colorMatrix()
+        f.inputImage = self
+        f.rVector = CIVector(x: gain, y: 0, z: 0, w: 0)
+        f.gVector = CIVector(x: 0, y: gain, z: 0, w: 0)
+        f.bVector = CIVector(x: 0, y: 0, z: gain, w: 0)
+        f.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        f.biasVector = CIVector(x: bias, y: bias, z: bias, w: 0)
+        return f.outputImage ?? self
+    }
+
+    private func lookShadowed(shadows: Double, highlights: Double) -> CIImage {
+        let f = CIFilter.highlightShadowAdjust(); f.inputImage = self; f.shadowAmount = Float(shadows); f.highlightAmount = Float(highlights)
+        return f.outputImage ?? self
+    }
+
+    private func lookVignetted(_ intensity: Double) -> CIImage {
+        let f = CIFilter.vignette(); f.inputImage = self; f.intensity = Float(intensity); f.radius = 1.5
+        return f.outputImage ?? self
     }
 }
 
@@ -1279,7 +1426,8 @@ struct CropOverlay: View {
             ZStack {
                 // the part that goes is dimmed
                 Path { path in
-                    path.addRect(fit)
+                    // the whole stage, so a picture turned past its frame is dimmed too
+                    path.addRect(CGRect(origin: .zero, size: geometry.size))
                     path.addRect(frame)
                 }
                 .fill(.black.opacity(0.55), style: FillStyle(eoFill: true))
@@ -1388,100 +1536,6 @@ struct CropOverlay: View {
     }
 }
 
-// MARK: - Zoom
-
-/// The editor's photo: pinch to zoom and two fingers to move it, so an edit can be looked at closely.
-/// One finger is left free: holding it shows the original.
-struct ZoomPreview: UIViewRepresentable {
-    let image: UIImage
-    var onHold: (Bool) -> Void
-    /// Degrees turned clockwise since two fingers started; nil when they lift.
-    var onTwist: (Double?) -> Void = { _ in }
-
-    func makeUIView(context: Context) -> ZoomPane { ZoomPane() }
-
-    func updateUIView(_ pane: ZoomPane, context: Context) {
-        pane.onHold = onHold
-        pane.onTwist = onTwist
-        pane.show(image)
-    }
-}
-
-final class ZoomPane: UIScrollView, UIScrollViewDelegate {
-    var onHold: (Bool) -> Void = { _ in }
-    var onTwist: (Double?) -> Void = { _ in }
-    private let imageView = UIImageView()
-    private let together = Together()
-
-    /// Lets the twist run beside the pinch and the two-finger move.
-    private final class Together: NSObject, UIGestureRecognizerDelegate {
-        func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
-    }
-
-    init() {
-        super.init(frame: .zero)
-        delegate = self
-        maximumZoomScale = 8
-        showsHorizontalScrollIndicator = false
-        showsVerticalScrollIndicator = false
-        contentInsetAdjustmentBehavior = .never
-        panGestureRecognizer.minimumNumberOfTouches = 2
-        imageView.contentMode = .scaleAspectFit
-        addSubview(imageView)
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
-        hold.minimumPressDuration = 0.1
-        hold.numberOfTouchesRequired = 1
-        addGestureRecognizer(hold)
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
-        doubleTap.numberOfTapsRequired = 2
-        addGestureRecognizer(doubleTap)
-        let twist = UIRotationGestureRecognizer(target: self, action: #selector(twisted(_:)))
-        twist.delegate = together
-        addGestureRecognizer(twist)
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    func show(_ image: UIImage) {
-        guard imageView.image !== image else { return }
-        // a different shape (a crop, a turn) starts again from the whole photo
-        if let old = imageView.image, abs(old.size.width / max(old.size.height, 1) - image.size.width / max(image.size.height, 1)) > 0.01 {
-            zoomScale = 1
-        }
-        imageView.image = image
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        if zoomScale == minimumZoomScale {
-            imageView.frame = bounds
-            contentSize = bounds.size
-        }
-    }
-
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
-
-    @objc private func held(_ gesture: UILongPressGestureRecognizer) {
-        switch gesture.state {
-        case .began: onHold(true)
-        case .ended, .cancelled, .failed: onHold(false)
-        default: break
-        }
-    }
-
-    @objc private func twisted(_ gesture: UIRotationGestureRecognizer) {
-        switch gesture.state {
-        case .changed: onTwist(Double(gesture.rotation) * 180 / .pi)
-        case .ended, .cancelled, .failed: onTwist(nil)
-        default: break
-        }
-    }
-
-    @objc private func doubleTapped() {
-        setZoomScale(zoomScale > minimumZoomScale ? minimumZoomScale : 3, animated: true)
-    }
-}
-
 // MARK: - Pens
 
 /// A pen, marker, pencil or eraser drawn upright with the tip up, shaded like a cylinder.
@@ -1523,8 +1577,8 @@ struct PenArt: View {
         VStack(spacing: 0) {
             switch kind {
             case .pen:
-                Taper(top: 3).fill(Color(white: 0.82)).overlay { shade.mask { Taper(top: 3) } }.frame(width: 26, height: 22)
-                    .overlay(alignment: .top) { Taper(top: 3).fill(color).frame(width: 7, height: 9) }
+                Taper(top: 1).fill(Color(white: 0.82)).overlay { shade.mask { Taper(top: 1) } }.frame(width: 26, height: 22)
+                    .overlay(alignment: .top) { Taper(top: 1).fill(color).frame(width: 7, height: 9) }
                 band(Color(white: 0.3), height: 5)
                 body(Color(white: 0.9), height: 64)
             case .marker:
@@ -1532,8 +1586,8 @@ struct PenArt: View {
                 band(Color(white: 0.3), height: 5)
                 body(Color(white: 0.9), height: 66)
             case .pencil:
-                Taper(top: 3).fill(Color(red: 0.93, green: 0.78, blue: 0.58)).overlay { shade.mask { Taper(top: 3) } }.frame(width: 26, height: 26)
-                    .overlay(alignment: .top) { Taper(top: 3).fill(color).frame(width: 8, height: 10) }
+                Taper(top: 1).fill(Color(red: 0.93, green: 0.78, blue: 0.58)).overlay { shade.mask { Taper(top: 1) } }.frame(width: 26, height: 26)
+                    .overlay(alignment: .top) { Taper(top: 1).fill(color).frame(width: 8, height: 10) }
                 body(Color(red: 0.98, green: 0.78, blue: 0.2), height: 64)
             case .eraser:
                 UnevenRoundedRectangle(topLeadingRadius: 13, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 13)

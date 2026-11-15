@@ -5,12 +5,14 @@ import Foundation
 struct EditRecipe: Codable {
     var values: [String: Double]
     var filter: String?
+    var filterAmount: Double?
 
     private static let key = "copiedEdit"
 
     init(_ edit: PhotoEdit) {
         values = Dictionary(uniqueKeysWithValues: edit.values.map { ($0.key.rawValue, $0.value) })
         filter = edit.filter
+        filterAmount = edit.filterAmount
     }
 
     func apply(to edit: inout PhotoEdit) {
@@ -19,6 +21,7 @@ struct EditRecipe: Codable {
             if let slider = PhotoEdit.Slider(rawValue: name) { edit[slider] = value }
         }
         edit.filter = filter
+        edit.filterAmount = filterAmount ?? 1
     }
 
     static var saved: EditRecipe? {

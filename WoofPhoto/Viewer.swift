@@ -30,6 +30,8 @@ struct Viewer: View {
     @State private var progress = PageProgress()
     /// Goes up when a neighbour's thumbnail arrives, so the ambient blur picks it up.
     @State private var neighboursLoaded = 0
+    /// Details of the photos already opened or about to be: the top bar's place shows at once when swiping to them.
+    @State private var details: [String: Asset] = [:]
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @State private var confirmsDelete = false
     @State private var sharing: SharedFile?
@@ -166,8 +168,7 @@ struct Viewer: View {
     private static let stripHeight: CGFloat = 46
 
     private var ambient: some View {
-        AmbientBackground(assets: timeline.assets, progress: progress, shown: shown)
-            .id(neighboursLoaded)
+        AmbientBackground(assets: timeline.assets, progress: progress, version: neighboursLoaded, shown: shown)
             // up under the status bar only; below, the bars sit on black
             .ignoresSafeArea(edges: .top)
             // the blur spills past the photos; the tools under them stay black
@@ -401,8 +402,8 @@ struct Viewer: View {
 
     private func currentChanged() async {
         guard let current else { return }
-        // the last page's date and place go at once, not when this page's details arrive
-        detail = nil
+        // the last page's date and place go at once; this page's come from the saved details, or when they arrive
+        detail = details[current]
         defer {
             // Hidden stays behind Face ID, so its photos stay out of History
             if !Task.isCancelled, timeline.query != .hidden {
@@ -410,23 +411,37 @@ struct Viewer: View {
             }
         }
         guard let client = session.client, currentAsset?.localID == nil else { return }
-        detail = try? await client.asset(current)
-        if let detail { fillIn(current, from: detail) }
+        if detail == nil { detail = try? await client.asset(current) }
+        if let detail {
+            details[current] = detail
+            fillIn(current, from: detail)
+        }
         await timeline.loadNeighbours(of: current, with: client)
         // the ambient blur of the pages either side, ready before the swipe starts
         if let index = timeline.assets.firstIndex(where: { $0.id == current }) {
             for neighbour in [index - 1, index + 1] where timeline.assets.indices.contains(neighbour) {
                 let asset = shown(timeline.assets[neighbour])
-                if asset.localID == nil, ImageCache.image(asset.id, size: "thumbnail") == nil,
-                   await Still.load(asset.id, size: "thumbnail", client: client) != nil {
-                    neighboursLoaded += 1
+                if asset.localID == nil, ImageCache.image(asset.id, size: "thumbnail") == nil {
+                    _ = await Still.load(asset.id, size: "thumbnail", client: client)
                 }
             }
+            // the blurs of the pages around, made here, off the main thread, so the swipe only reads them
+            let around = (index - 2...index + 2).filter(timeline.assets.indices.contains).map { shown(timeline.assets[$0]) }
+            await Still.prepareBlurs(around)
+            neighboursLoaded += 1
         }
         if let stackID = currentAsset?.stackID {
             if stack?.id != stackID { stack = try? await client.stack(stackID) }
         } else {
             stack = nil
+        }
+        // the details of the photos either side, so their place is there when the swipe lands
+        if let index = timeline.assets.firstIndex(where: { $0.id == current }) {
+            for neighbour in [index + 1, index - 1, index + 2, index - 2] where timeline.assets.indices.contains(neighbour) {
+                let id = timeline.assets[neighbour].id
+                guard !Task.isCancelled, details[id] == nil, timeline.assets[neighbour].localID == nil else { continue }
+                if let asset = try? await client.asset(id) { details[id] = asset }
+            }
         }
     }
 
@@ -936,6 +951,8 @@ struct PlayerLayer: UIViewRepresentable {
 private struct AmbientBackground: View {
     let assets: [AssetRef]
     let progress: PageProgress
+    /// Goes up when new blurs are ready; the view redraws without being rebuilt.
+    let version: Int
     let shown: (AssetRef) -> AssetRef
 
     var body: some View {
@@ -946,9 +963,10 @@ private struct AmbientBackground: View {
         Color.black
             .overlay {
                 if index < assets.count {
-                    layer(assets[index])
+                    // while the finger moves, a blur that isn't ready is left out rather than made on the main thread
+                    layer(assets[index], make: fraction == 0)
                     if index + 1 < assets.count, fraction > 0 {
-                        layer(assets[index + 1]).opacity(fraction)
+                        layer(assets[index + 1], make: false).opacity(fraction)
                     }
                 }
             }
@@ -956,8 +974,8 @@ private struct AmbientBackground: View {
             .opacity(0.55)
     }
 
-    @ViewBuilder private func layer(_ asset: AssetRef) -> some View {
-        if let image = Still.blurred(shown(asset)) {
+    @ViewBuilder private func layer(_ asset: AssetRef, make: Bool) -> some View {
+        if let image = Still.blurred(shown(asset), make: make) {
             Image(uiImage: image).resizable().interpolation(.high).scaledToFill()
         }
     }
@@ -978,11 +996,12 @@ enum Still {
     private static let blurContext = CIContext()
 
     /// A small, blurred and saturated copy of the photo for the viewer's background, made once per image.
-    static func blurred(_ asset: AssetRef) -> UIImage? {
+    static func blurred(_ asset: AssetRef, make: Bool = true) -> UIImage? {
         guard let source = cached(asset) else { return nil }
         // a thumbhash and a thumbnail differ in size, so the real image replaces the placeholder's blur
         let key = "\(asset.id)-\(Int(source.size.width))" as NSString
         if let image = blurCache.object(forKey: key) { return image }
+        guard make else { return nil }
         let small = UIGraphicsImageRenderer(size: CGSize(width: 48, height: 48 * source.size.height / max(source.size.width, 1)))
             .image { context in source.draw(in: context.format.bounds) }
         guard let input = CIImage(image: small) else { return nil }
@@ -994,6 +1013,11 @@ enum Still {
         let image = UIImage(cgImage: cgImage)
         blurCache.setObject(image, forKey: key)
         return image
+    }
+
+    /// Makes the blurs off the main thread, so scrolling only reads them.
+    static func prepareBlurs(_ assets: [AssetRef]) async {
+        await Task.detached(priority: .userInitiated) { for asset in assets { _ = blurred(asset) } }.value
     }
 
     static func load(_ id: String, size: String, client: ImmichClient?, cache: Bool = true) async -> UIImage? {

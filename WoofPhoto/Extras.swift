@@ -246,7 +246,7 @@ struct TripCard: View {
     var width: CGFloat?
 
     var body: some View {
-        let title = trip.title
+        let title = trip.places.first.map { Naming.trip(place: $0, start: trip.start, end: trip.assets.last?.date) } ?? trip.title
         NavigationLink {
             FixedGridScreen(title: title, assets: trip.assets)
         } label: {

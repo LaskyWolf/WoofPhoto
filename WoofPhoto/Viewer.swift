@@ -1124,6 +1124,8 @@ struct InfoSheet: View {
     @State private var asset: Asset?
     @State private var caption = ""
     @State private var error: String?
+    @State private var note: String?
+    @State private var suggesting = false
     @State private var editsFaces = false
 
     var body: some View {
@@ -1143,6 +1145,11 @@ struct InfoSheet: View {
                     HStack(alignment: .firstTextBaseline) {
                         TextField("Add a Caption", text: $caption, axis: .vertical)
                             .onSubmit { Task { await saveCaption() } }
+                        if caption.isEmpty {
+                            Button("Suggest a Caption", systemImage: "text.append") { Task { await suggestCaption(asset) } }
+                                .labelStyle(.iconOnly)
+                                .disabled(suggesting)
+                        }
                     }
                     .card()
                     stars(asset.exifInfo?.rating?.value ?? 0)
@@ -1174,6 +1181,7 @@ struct InfoSheet: View {
             .padding(.top, 8)
         }
         .sheet(isPresented: $editsFaces) { FacesView(assetID: id) }
+        .messageAlert($note)
         .onDisappear { Task { await saveCaption() } }
         .task {
             do {
@@ -1260,6 +1268,19 @@ struct InfoSheet: View {
         }
         .background(Tokens.cardColor)
         .clipShape(.rect(cornerRadius: Tokens.cardRadius))
+    }
+
+    /// Words for what Vision sees in the photo, to edit; saved like a typed caption, on submit or close.
+    private func suggestCaption(_ asset: Asset) async {
+        suggesting = true
+        defer { suggesting = false }
+        guard let image = await Still.load(asset.id, size: "preview", client: session.client) else { return }
+        let place = [asset.exifInfo?.city, asset.exifInfo?.country].compactMap { $0 }.first
+        if let text = await Naming.caption(for: image, place: place) {
+            caption = text
+        } else {
+            note = "Couldn't recognise anything in this photo."
+        }
     }
 
     private func saveCaption() async {

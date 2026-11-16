@@ -224,6 +224,14 @@ struct SearchView: View {
         // so each keystroke doesn't start a search
         try? await Task.sleep(for: .milliseconds(400))
         guard !Task.isCancelled else { return }
+        // a date in the words becomes the date filter; the server's smart search reads the rest
+        if scope == .everything, filters.after == nil, filters.before == nil, let found = Naming.date(in: text) {
+            var combined = filters
+            combined.after = found.after
+            combined.before = found.before
+            await performSearch(text: found.rest, scope: scope, filters: combined)
+            return
+        }
         await performSearch(text: text, scope: scope, filters: filters)
     }
 

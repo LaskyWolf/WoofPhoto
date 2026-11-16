@@ -103,10 +103,6 @@ struct AssetGrid: View {
                 .disabled(selection.isEmpty)
                 Button("Done") { toggleSelect() }
             }
-        } else if canSelect {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Select", systemImage: "checkmark.circle") { toggleSelect() }
-            }
         }
     }
 
@@ -115,6 +111,8 @@ struct AssetGrid: View {
         Group {
             TabHeader(title: selection.map { "\($0.count) Selected" } ?? title, showsCommon: selection == nil) {
                 if let selection {
+                    // one glass capsule around the three controls
+                    HStack(spacing: 4) {
                     HeaderButton(label: allSelected ? "Deselect All" : "Select All",
                                  systemImage: allSelected ? "checklist.unchecked" : "checklist.checked") {
                         self.selection = allSelected ? [] : selectable
@@ -137,8 +135,9 @@ struct AssetGrid: View {
                         .font(.headline)
                         .frame(height: 36)
                         .tapArea(outset: 4)
-                } else if canSelect {
-                    HeaderButton(label: "Select", systemImage: "checkmark.circle") { toggleSelect() }
+                    }
+                    .padding(.horizontal, 10)
+                    .glassEffect(.regular, in: .capsule)
                 }
             }
             if showsLevels, selection == nil, timeline.months?.isEmpty == false {

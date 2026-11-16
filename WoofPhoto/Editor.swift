@@ -95,8 +95,6 @@ struct EditorView: View {
     /// True once the preview shows the whole picture, so the crop frame doesn't sit on a cropped one.
     @State private var previewUncropped = false
     @State private var confirmsCancel = false
-    /// The straighten angle when two fingers started turning the photo.
-    @State private var twistStart: Double?
     @State private var ink = Ink.pen
     @State private var inkColor = Color.yellow
     @State private var inkWidth = 8.0
@@ -180,16 +178,15 @@ struct EditorView: View {
     @ViewBuilder private var canvasArea: some View {
         if let image = stageImage {
             EditorStage(image: image, inset: Self.cropInset, overlayCoversStage: tool == .crop, overlay: stageOverlay,
-                        canvas: tool == .markup ? canvas : nil, tilt: cropTilt, viewing: viewsOriginal, twisting: [.adjust, .filters, .crop].contains(tool),
+                        canvas: tool == .markup ? canvas : nil, tilt: cropTilt, viewing: viewsOriginal,
                         onHold: { holding in
                             comparing = holding
                             Task { await render(original: holding) }
                         },
-                        onTwist: { twist($0) },
                         onZoom: { zoom in Task { @MainActor in if abs(stageZoom - zoom) > 0.001 { stageZoom = zoom } } })
                 .overlay(alignment: .top) { originalLabel }
                 .overlay(alignment: .bottom) { cleanStatusLabel }
-                .accessibilityHint("Pinch to zoom, two fingers to move")
+                .accessibilityHint("Pinch to zoom, two fingers to move and turn")
         } else {
             ProgressView()
         }
@@ -242,21 +239,6 @@ struct EditorView: View {
                 .glassEffect(.regular, in: .capsule)
                 .padding()
         }
-    }
-
-    /// Two fingers turning the photo: `degrees` clockwise since they started, nil when they lift.
-    /// It sets the straighten angle on Adjust, Filters and Crop (up to 45 either way; the Rotate button turns by quarters), and sticks at 0.
-    private func twist(_ degrees: Double?) {
-        guard let degrees else {
-            twistStart = nil
-            return
-        }
-        let start = twistStart ?? edit.straighten
-        twistStart = start
-        // the mirrored orientations turn the other way
-        var angle = min(max(start + (edit.mirrored ? -degrees : degrees), -45), 45)
-        if abs(angle) < 1.5 { angle = 0 }
-        edit.straighten = angle
     }
 
     private func cancel() {

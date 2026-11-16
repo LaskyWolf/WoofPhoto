@@ -1,7 +1,8 @@
 import PencilKit
 import SwiftUI
 
-/// The editor's photo for every tool: pinch to zoom and two fingers to move it, kept while the tool changes.
+/// The editor's photo for every tool: pinch to zoom, two fingers to move it and to turn it all the way round, kept while the tool changes.
+/// Turning is only a way of looking at the photo, like zooming: it isn't an edit and isn't saved.
 /// The tool's own layer (the crop frame, Clean Up's brush) or the Markup canvas sits on the photo and zooms with it.
 /// One finger is left to the tool: on the viewing tools holding it shows the original.
 struct EditorStage: UIViewRepresentable {
@@ -16,10 +17,7 @@ struct EditorStage: UIViewRepresentable {
     var tilt: (degrees: Double, scale: CGFloat) = (0, 1)
     /// Holding one finger and a double tap: on the tools that leave the photo alone.
     var viewing = true
-    var twisting = true
     var onHold: (Bool) -> Void = { _ in }
-    /// Degrees turned clockwise since two fingers started; nil when they lift.
-    var onTwist: (Double?) -> Void = { _ in }
     var onZoom: (CGFloat) -> Void = { _ in }
 
     func makeUIView(context: Context) -> ZoomPane { ZoomPane() }
@@ -28,9 +26,7 @@ struct EditorStage: UIViewRepresentable {
         pane.inset = inset
         pane.overlayCoversStage = overlayCoversStage
         pane.viewing = viewing
-        pane.twisting = twisting
         pane.onHold = onHold
-        pane.onTwist = onTwist
         pane.onZoom = onZoom
         pane.show(image)
         pane.setOverlay(overlay)
@@ -41,15 +37,16 @@ struct EditorStage: UIViewRepresentable {
 
 final class ZoomPane: UIScrollView, UIScrollViewDelegate {
     var onHold: (Bool) -> Void = { _ in }
-    var onTwist: (Double?) -> Void = { _ in }
     var onZoom: (CGFloat) -> Void = { _ in }
     var inset: CGFloat = 0 { didSet { if inset != oldValue { arrange() } } }
     var overlayCoversStage = false { didSet { if overlayCoversStage != oldValue { arrange() } } }
     var viewing = true { didSet { hold.isEnabled = viewing; doubleTap.isEnabled = viewing } }
-    var twisting = true { didSet { twist.isEnabled = twisting } }
 
-    /// What zooms: the photo, the tool's layer and the canvas.
+    /// What zooms (the scroll view scales it) and holds `content`, which is what turns.
+    private let rotor = UIView()
+    /// The photo, the tool's layer and the canvas, turned by `angle` (radians, clockwise).
     private let content = UIView()
+    private var angle = 0.0
     private let imageView = UIImageView()
     private var host: UIHostingController<AnyView>?
     private weak var canvas: PKCanvasView?
@@ -75,7 +72,8 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
         delaysContentTouches = false
         panGestureRecognizer.minimumNumberOfTouches = 2
         imageView.contentMode = .scaleToFill
-        addSubview(content)
+        addSubview(rotor)
+        rotor.addSubview(content)
         content.addSubview(imageView)
         hold.addTarget(self, action: #selector(held(_:)))
         hold.minimumPressDuration = 0.1
@@ -142,9 +140,12 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         if zoomScale == minimumZoomScale {
-            content.frame = bounds
+            rotor.frame = bounds
             contentSize = bounds.size
         }
+        // content is turned, so it is placed by bounds and centre, never by frame
+        content.bounds = CGRect(origin: .zero, size: rotor.bounds.size)
+        content.center = CGPoint(x: rotor.bounds.midX, y: rotor.bounds.midY)
         arrange()
     }
 
@@ -162,7 +163,7 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
         canvas?.frame = picture
     }
 
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? { content }
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { rotor }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) { onZoom(zoomScale) }
 
@@ -176,13 +177,27 @@ final class ZoomPane: UIScrollView, UIScrollViewDelegate {
 
     @objc private func twisted(_ gesture: UIRotationGestureRecognizer) {
         switch gesture.state {
-        case .changed: onTwist(Double(gesture.rotation) * 180 / .pi)
-        case .ended, .cancelled, .failed: onTwist(nil)
+        case .changed:
+            angle += Double(gesture.rotation)
+            gesture.rotation = 0
+            content.transform = CGAffineTransform(rotationAngle: angle)
+        case .ended, .cancelled:
+            // a click into place when it is within 4° of upright or a quarter turn
+            let quarter = Double.pi / 2
+            let nearest = (angle / quarter).rounded() * quarter
+            angle = remainder(abs(angle - nearest) < 4 * .pi / 180 ? nearest : angle, 2 * .pi)
+            UIView.animate(withDuration: 0.15) { self.content.transform = CGAffineTransform(rotationAngle: self.angle) }
         default: break
         }
     }
 
     @objc private func doubleTapped() {
-        setZoomScale(zoomScale > minimumZoomScale ? minimumZoomScale : 3, animated: true)
+        let zoomsOut = zoomScale > minimumZoomScale
+        setZoomScale(zoomsOut ? minimumZoomScale : 3, animated: true)
+        // back to fit also turns the photo upright again
+        if zoomsOut, angle != 0 {
+            angle = 0
+            UIView.animate(withDuration: 0.25) { self.content.transform = .identity }
+        }
     }
 }

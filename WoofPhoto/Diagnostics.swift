@@ -197,7 +197,6 @@ struct DiagnosticsSection: Identifiable {
     private static func models() -> DiagnosticsSection {
         DiagnosticsSection(title: "AI Models", rows: [
             Row(label: "LaMa", value: CoreMLModel.lama.isDownloaded ? "Downloaded" : "Not downloaded"),
-            Row(label: "Apple Intelligence", value: Intelligence.isAvailable ? "Available" : "Not available"),
             Row(label: "Free Memory", value: Int64(os_proc_available_memory()).formatted(.byteCount(style: .memory))),
         ])
     }

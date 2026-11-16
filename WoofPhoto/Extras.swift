@@ -244,11 +244,9 @@ struct TripsView: View {
 struct TripCard: View {
     let trip: TripsView.Trip
     var width: CGFloat?
-    /// Apple Intelligence's name for the trip, like Photos' memories; the main place until it's ready.
-    @State private var title: String?
 
     var body: some View {
-        let title = title ?? trip.title
+        let title = trip.title
         NavigationLink {
             FixedGridScreen(title: title, assets: trip.assets)
         } label: {
@@ -269,11 +267,6 @@ struct TripCard: View {
                 .clipShape(.rect(cornerRadius: Tokens.cardRadius))
         }
         .buttonStyle(ZoomPressStyle(scale: 0.97))
-        .task {
-            let generated = await Intelligence.title(key: "trip:\(trip.id)", kind: "trip away from home", places: trip.places,
-                                                     start: trip.start, end: trip.assets.last?.date)
-            withAnimation { self.title = generated }
-        }
     }
 }
 

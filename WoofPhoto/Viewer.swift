@@ -1124,8 +1124,6 @@ struct InfoSheet: View {
     @State private var asset: Asset?
     @State private var caption = ""
     @State private var error: String?
-    @State private var suggesting = false
-    @State private var note: String?
     @State private var editsFaces = false
 
     var body: some View {
@@ -1145,12 +1143,6 @@ struct InfoSheet: View {
                     HStack(alignment: .firstTextBaseline) {
                         TextField("Add a Caption", text: $caption, axis: .vertical)
                             .onSubmit { Task { await saveCaption() } }
-                        if caption.isEmpty, Intelligence.isAvailable {
-                            Button("Suggest a Caption", systemImage: "apple.intelligence") { Task { await suggestCaption(asset) } }
-                                .labelStyle(.iconOnly)
-                                .symbolEffect(.pulse, isActive: suggesting)
-                                .disabled(suggesting)
-                        }
                     }
                     .card()
                     stars(asset.exifInfo?.rating?.value ?? 0)
@@ -1181,7 +1173,6 @@ struct InfoSheet: View {
             .padding(Tokens.screenPadding)
             .padding(.top, 8)
         }
-        .messageAlert($note)
         .sheet(isPresented: $editsFaces) { FacesView(assetID: id) }
         .onDisappear { Task { await saveCaption() } }
         .task {
@@ -1269,20 +1260,6 @@ struct InfoSheet: View {
         }
         .background(Tokens.cardColor)
         .clipShape(.rect(cornerRadius: Tokens.cardRadius))
-    }
-
-    /// Apple Intelligence writes a caption from what's in the photo; it's saved like a typed one, on submit or close.
-    private func suggestCaption(_ asset: Asset) async {
-        suggesting = true
-        defer { suggesting = false }
-        guard let image = await Still.load(asset.id, size: "preview", client: session.client) else { return }
-        let place = [asset.exifInfo?.city, asset.exifInfo?.country].compactMap { $0 }.joined(separator: ", ")
-        let people = asset.people?.map(\.name).filter { !$0.isEmpty } ?? []
-        if let text = await Intelligence.caption(for: image, place: place.isEmpty ? nil : place, date: asset.date, people: people) {
-            caption = text
-        } else {
-            note = "Apple Intelligence couldn't write a caption for this photo."
-        }
     }
 
     private func saveCaption() async {

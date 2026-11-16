@@ -461,9 +461,6 @@ struct ShelfGrid: View {
 
 struct MemoryTile: View {
     let memory: Memory
-    /// Apple Intelligence's title; "3 Years Ago" until it's ready.
-    @State private var title: String?
-
     var body: some View {
         NavigationLink {
             MemoryScreen(memory: memory)
@@ -472,7 +469,7 @@ struct MemoryTile: View {
                 .aspectRatio(1, contentMode: .fit)
                 .overlay { Thumbnail(asset: memory.assets.first?.ref, size: "preview") }
                 .overlay(alignment: .bottomLeading) {
-                    Text(title ?? memory.title)
+                    Text(memory.title)
                         .font(.caption.bold())
                         .foregroundStyle(.white)
                         .lineLimit(2)
@@ -484,14 +481,7 @@ struct MemoryTile: View {
                 .clipShape(.rect(cornerRadius: Tokens.tileRadius))
         }
         .buttonStyle(ZoomPressStyle())
-        .accessibilityLabel(title ?? memory.title)
-        .task(id: memory.id) {
-            let places = memory.assets.compactMap { $0.exifInfo?.city ?? $0.exifInfo?.country }
-            let ranked = Dictionary(places.map { ($0, 1) }, uniquingKeysWith: +).sorted { $0.value > $1.value }.map(\.key)
-            let dates = memory.assets.compactMap(\.date)
-            title = await Intelligence.title(key: "memory:\(memory.id)", kind: "memory, \(memory.title)", places: ranked,
-                                             start: dates.min(), end: dates.max())
-        }
+        .accessibilityLabel(memory.title)
     }
 }
 

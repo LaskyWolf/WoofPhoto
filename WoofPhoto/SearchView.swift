@@ -224,20 +224,6 @@ struct SearchView: View {
         // so each keystroke doesn't start a search
         try? await Task.sleep(for: .milliseconds(400))
         guard !Task.isCancelled else { return }
-        // ponytail: 3+ words means a sentence; shorter text goes straight to smart search
-        if scope == .everything, text.split(separator: " ").count >= 3, let parsed = await Intelligence.searchQuery(text) {
-            guard !Task.isCancelled else { return }
-            var combined = filters
-            let day = DateFormatter()
-            day.dateFormat = "yyyy-MM-dd"
-            if combined.city.isEmpty { combined.city = parsed.city }
-            if combined.country.isEmpty { combined.country = parsed.country }
-            if combined.after == nil { combined.after = day.date(from: parsed.after) }
-            if combined.before == nil { combined.before = day.date(from: parsed.before) }
-            if combined.media == .all { combined.media = parsed.media == "photos" ? .photos : parsed.media == "videos" ? .videos : .all }
-            await performSearch(text: parsed.subject, scope: scope, filters: combined)
-            return
-        }
         await performSearch(text: text, scope: scope, filters: filters)
     }
 

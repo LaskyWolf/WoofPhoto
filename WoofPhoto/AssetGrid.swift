@@ -80,8 +80,8 @@ struct AssetGrid: View {
     /// Selecting acts on the server, so it needs one.
     private var canSelect: Bool { session.client != nil && level == .all && timeline.months?.isEmpty == false }
 
-    /// What Select All picks: the server's items that have loaded.
-    private var selectable: Set<String> { Set(timeline.assets.filter { $0.localID == nil }.map(\.id)) }
+    /// What Select All picks: every item that has loaded, on the server or only on this iPhone.
+    private var selectable: Set<String> { Set(timeline.assets.map(\.id)) }
     private var allSelected: Bool { !selectable.isEmpty && selection == selectable }
 
     private func toggleSelect() {
@@ -203,7 +203,7 @@ struct AssetGrid: View {
                                 }
                                 .contentShape(.contextMenuPreview, .rect)
                                 .liftedMenu(background: nil) {
-                                    if let asset, asset.localID == nil, client != nil {
+                                    if let asset, client != nil {
                                         AssetMenuItems(actions: actions, ids: [asset.id], isFavorite: asset.isFavorite)
                                     }
                                 }
@@ -212,7 +212,7 @@ struct AssetGrid: View {
                                 .onTapGesture {
                                     guard let asset else { return }
                                     if selection != nil {
-                                        if asset.localID == nil { selection = toggled(asset.id, in: selection ?? []) }
+                                        selection = toggled(asset.id, in: selection ?? [])
                                     } else {
                                         OpenPhoto.shared.open(asset, in: timeline)
                                     }
@@ -320,11 +320,7 @@ struct AssetGrid: View {
         }
         guard let drag else { return }
         let end = index(location)
-        // photos only on this iPhone aren't on the server, so no action could reach them
-        let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { position -> String? in
-            guard let asset = flat[safe: position] ?? nil, asset.localID == nil else { return nil }
-            return asset.id
-        }
+        let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { (flat[safe: $0] ?? nil)?.id }
         self.selection = drag.adds ? drag.base.union(ids) : drag.base.subtracting(ids)
     }
 

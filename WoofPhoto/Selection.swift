@@ -24,10 +24,17 @@ final class AssetActions {
 
     var isTrash: Bool { timeline?.query?.isTrash == true }
 
+    /// Photos only on this iPhone have ids like "local:<PhotoKit id>"; the rest are on the server.
+    static func split(_ ids: [String]) -> (server: [String], device: [String]) {
+        (ids.filter { !$0.hasPrefix("local:") }, ids.filter { $0.hasPrefix("local:") }.map { String($0.dropFirst(6)) })
+    }
+
     func setFavorite(_ favorite: Bool, _ client: ImmichClient?) {
         let ids = ids
         run(client, removes: false) { client in
-            try await client.updateAssets(ids, ["isFavorite": favorite])
+            let (server, device) = Self.split(ids)
+            if !device.isEmpty { try await DeviceLibrary.setFavorite(device, favorite) }
+            if !server.isEmpty { try await client.updateAssets(server, ["isFavorite": favorite]) }
             self.timeline?.update(Set(ids)) { $0.isFavorite = favorite }
         }
     }
@@ -56,10 +63,22 @@ final class AssetActions {
         defer { busy = false }
         do {
             var urls: [URL] = []
-            for id in ids { urls.append(try await client.downloadOriginal(id)) }
+            for id in ids {
+                if id.hasPrefix("local:") { urls.append(try await DeviceLibrary.original(String(id.dropFirst(6)))) }
+                else { urls.append(try await client.downloadOriginal(id)) }
+            }
             sharing = SharedFiles(urls: urls)
         } catch {
             message = error.explanation
+        }
+    }
+
+    /// Deletes server items and iPhone-only items; iOS asks its own confirmation for the latter.
+    func delete(_ client: ImmichClient?, force: Bool) {
+        let (server, device) = Self.split(ids)
+        run(client, removes: true) { client in
+            if !device.isEmpty { try await DeviceLibrary.delete(device) }
+            if !server.isEmpty { try await client.deleteAssets(server, force: force) }
         }
     }
 
@@ -98,6 +117,8 @@ struct AssetMenuItems: View {
     var body: some View {
         let client = session.client
         let timeline = actions.timeline
+        // album, tags, links, archive and the like live on the server, so they wait for a selection that is all on it
+        let onServer = !ids.contains { $0.hasPrefix("local:") }
         if actions.isTrash {
             Button("Recover", systemImage: "arrow.uturn.backward") { act { actions.run(client, removes: true) { try await $0.restoreTrash(self.ids) } } }
             Button("Delete for Good", systemImage: "trash", role: .destructive) { act { actions.confirmsDelete = true } }
@@ -111,6 +132,7 @@ struct AssetMenuItems: View {
                 }
                 Button("Share", systemImage: "square.and.arrow.up") { act { Task { await actions.share(client) } } }
                 Button("Add to Album", systemImage: "rectangle.stack.badge.plus") { act { actions.addsToAlbum = true } }
+                    .disabled(!onServer)
             }
             .controlGroupStyle(.compactMenu)
             Section {
@@ -128,6 +150,7 @@ struct AssetMenuItems: View {
                     Button("Remove from Album", systemImage: "minus.circle") { act { actions.run(client, removes: true) { try await $0.removeFromAlbum(album, assets: self.ids) } } }
                 }
             }
+            .disabled(!onServer)
             Section {
                 let back = ["visibility": "timeline"]
                 if timeline?.query == .archive {
@@ -141,6 +164,7 @@ struct AssetMenuItems: View {
                     Button("Hide", systemImage: "eye.slash") { act { actions.run(client, removes: true) { try await $0.updateAssets(self.ids, ["visibility": "locked"]) } } }
                 }
             }
+            .disabled(!onServer)
             Section {
                 Button("Delete", systemImage: "trash", role: .destructive) { act { actions.confirmsDelete = true } }
             }
@@ -191,9 +215,8 @@ private struct AssetActionsHost: ViewModifier {
             .confirmationDialog(actions.isTrash ? "These items will be deleted for good. This can't be undone." : "These items move to Recently Deleted.",
                                 isPresented: $actions.confirmsDelete, titleVisibility: .visible) {
                 Button(actions.ids.count == 1 ? "Delete" : "Delete \(actions.ids.count) Items", role: .destructive) {
-                    let force = actions.isTrash, ids = actions.ids
                     actions.deleted += 1
-                    actions.run(session.client, removes: true) { try await $0.deleteAssets(ids, force: force) }
+                    actions.delete(session.client, force: actions.isTrash)
                 }
             }
             .sensoryFeedback(.impact(weight: .light), trigger: actions.succeeded)
@@ -212,6 +235,34 @@ enum DeviceLibrary {
     enum Failure: LocalizedError {
         case denied
         var errorDescription: String? { "Allow WoofPhoto to add photos in Settings > Privacy & Security > Photos." }
+    }
+
+    /// Favorites or unfavorites photos in the iPhone's own library.
+    static func setFavorite(_ localIDs: [String], _ favorite: Bool) async throws {
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: localIDs, options: nil)
+        try await PHPhotoLibrary.shared().performChanges {
+            assets.enumerateObjects { asset, _, _ in PHAssetChangeRequest(for: asset).isFavorite = favorite }
+        }
+    }
+
+    /// iOS shows its own confirmation and moves the items to Recently Deleted on the iPhone.
+    static func delete(_ localIDs: [String]) async throws {
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: localIDs, options: nil)
+        guard assets.count > 0 else { return }
+        try await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(assets) }
+    }
+
+    /// The original file of an iPhone photo or video, copied to a temporary folder for sharing.
+    static func original(_ localID: String) async throws -> URL {
+        let resources = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject.map { PHAssetResource.assetResources(for: $0) } ?? []
+        guard let resource = resources.first(where: { $0.type == .photo || $0.type == .video }) ?? resources.first else { throw Failure.denied }
+        let folder = FileManager.default.temporaryDirectory.appending(path: "device/\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appending(path: resource.originalFilename)
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: options)
+        return file
     }
 
     /// A photo from the iPhone's library, at about `side` pixels.

@@ -7,7 +7,7 @@ enum Tokens {
     static let cardRadius: CGFloat = 18
     static let tileRadius: CGFloat = 12
     /// Height of the chip row under each tab title.
-    static let controlHeight: CGFloat = 40
+    static let controlHeight: CGFloat = 44
     static let cardColor = Color(.secondarySystemBackground)
 }
 
@@ -424,6 +424,7 @@ struct RoundIcon: View {
             .frame(width: filled ? 50 : 38, height: filled ? 50 : 38)
             .background(filled ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary.opacity(0.1)), in: .circle)
             .contentShape(.circle)
+            .tapArea(outset: filled ? 0 : 3)
             .accessibilityShowsLargeContentViewer()
     }
 }

@@ -180,7 +180,7 @@ struct PersonView: View {
             PersonPhoto(id: id)
         } secondary: {
             if timeline.months != nil {
-                Text("\(timeline.count.formatted()) Items").font(.subheadline).foregroundStyle(.secondary)
+                Text(Naming.items(timeline.count)).font(.subheadline).foregroundStyle(.secondary)
             }
         } buttons: {
             Menu {
@@ -193,8 +193,8 @@ struct PersonView: View {
                 Button("Merge with…", systemImage: "arrow.triangle.merge") { merging = true }
                 Button("Hide", systemImage: "eye.slash") {
                     Task {
-                        await update(["isHidden": true], done: nil)
-                        dismiss()
+                        // a failed hide keeps the screen, so its alert shows
+                        if await update(["isHidden": true], done: nil) { dismiss() }
                     }
                 }
             } label: {
@@ -237,12 +237,13 @@ struct MergePicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var people: [Person] = []
     @State private var error: String?
+    @State private var candidate: Person?
 
     var body: some View {
         NavigationStack {
             List(people.filter { $0.id != source && !$0.name.isEmpty }) { person in
                 Button {
-                    Task { await merge(into: person) }
+                    candidate = person
                 } label: {
                     HStack {
                         PersonPhoto(id: person.id).frame(width: 44, height: 44).clipShape(.circle)
@@ -257,6 +258,12 @@ struct MergePicker: View {
             .toolbar { Button("Cancel", role: .cancel) { dismiss() } }
         }
         .task { people = (try? await session.client?.people()) ?? [] }
+        .confirmationDialog("Merge into \(candidate?.name ?? "")?", isPresented: Binding(get: { candidate != nil }, set: { if !$0 { candidate = nil } }),
+                            titleVisibility: .visible) {
+            Button("Merge", role: .destructive) { if let candidate { Task { await merge(into: candidate) } } }
+        } message: {
+            Text("All of this person's photos move there. This can't be undone.")
+        }
     }
 
     private func merge(into person: Person) async {

@@ -3,6 +3,9 @@ import Vision
 
 /// Plain rules for what Apple Intelligence used to write: trip titles, dates in a search, caption keywords.
 enum Naming {
+    /// "1 item", "2,431 items".
+    static func items(_ count: Int) -> String { count == 1 ? "1 item" : "\(count.formatted()) items" }
+
     /// "Weekend in Lisbon" for up to three days, otherwise "Summer in Lisbon".
     static func trip(place: String, start: Date, end: Date?) -> String {
         let days = end.flatMap { Calendar.current.dateComponents([.day], from: start, to: $0).day } ?? 0

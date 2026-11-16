@@ -338,6 +338,8 @@ struct StorageSettings: View {
     @State private var cacheSize = URLCache.shared.currentDiskUsage
     @State private var thumbsSize: Int64 = 0
     @State private var keptSize: Int64 = 0
+    @State private var confirmsRemoveKept = false
+    @State private var confirmsClearCache = false
     private var downloads: OfflineDownloads { .shared }
 
     var body: some View {
@@ -354,10 +356,8 @@ struct StorageSettings: View {
                     Text("\(downloads.failed) items could not be downloaded. Select them again and choose Keep Offline.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                Button("Remove Kept Photos", systemImage: "trash", role: .destructive) {
-                    OfflineFiles.removeOriginals()
-                    keptSize = 0
-                }
+                Button("Remove Kept Photos", systemImage: "trash", role: .destructive) { confirmsRemoveKept = true }
+                    .disabled(keptSize == 0)
             } header: {
                 Text("Offline")
             } footer: {
@@ -365,17 +365,26 @@ struct StorageSettings: View {
             }
             Section {
                 LabeledContent("Saved Thumbnails", value: Int64(cacheSize).formatted(.byteCount(style: .file)))
-                Button("Clear Saved Thumbnails", systemImage: "trash", role: .destructive) {
-                    URLCache.shared.removeAllCachedResponses()
-                    try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: "originals"))
-                    cacheSize = URLCache.shared.currentDiskUsage
-                }
+                Button("Clear Saved Thumbnails and Opened Photos", systemImage: "trash", role: .destructive) { confirmsClearCache = true }
             } footer: {
                 Text("Thumbnails and photos you opened stay on this iPhone, so they show without a connection. Thumbnails use up to 512 MB.")
             }
         }
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("The photos kept on this iPhone are deleted. They stay on your server.", isPresented: $confirmsRemoveKept, titleVisibility: .visible) {
+            Button("Remove Kept Photos", role: .destructive) {
+                OfflineFiles.removeOriginals()
+                keptSize = 0
+            }
+        }
+        .confirmationDialog("The saved thumbnails and the photos you opened are deleted from this iPhone. They download again when needed.", isPresented: $confirmsClearCache, titleVisibility: .visible) {
+            Button("Clear", role: .destructive) {
+                URLCache.shared.removeAllCachedResponses()
+                try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appending(path: "originals"))
+                cacheSize = URLCache.shared.currentDiskUsage
+            }
+        }
         .task(id: downloads.done) {
             thumbsSize = OfflineFiles.bytes(in: OfflineFiles.thumbs)
             keptSize = OfflineFiles.bytes(in: OfflineFiles.originals)
@@ -392,6 +401,7 @@ final class ServerPreferences {
 
     func load(_ client: ImmichClient?) async {
         guard let client else { return }
+        error = nil
         do {
             let data = try await client.call("GET", "/users/me/preferences")
             values = (try JSONSerialization.jsonObject(with: data) as? [String: [String: Any]]) ?? [:]
@@ -411,6 +421,7 @@ final class ServerPreferences {
             Task {
                 do {
                     try await client?.call("PUT", "/users/me/preferences", body: [group: [key: new]])
+                    self.error = nil
                 } catch {
                     self.values[group]?[key] = old
                     self.error = error.explanation
@@ -449,10 +460,8 @@ private struct ServerSections: View {
                 Section {
                     Toggle(isOn: prefs.binding("memories", "enabled", default: true, client: client)) { Label("Memories", systemImage: "clock.arrow.circlepath") }
                     Toggle(isOn: prefs.binding("people", "enabled", default: true, client: client)) { Label("People", systemImage: "person.2") }
-                    Toggle(isOn: prefs.binding("ratings", "enabled", default: false, client: client)) { Label("Ratings", systemImage: "star") }
                     Toggle(isOn: prefs.binding("tags", "enabled", default: false, client: client)) { Label("Tags", systemImage: "tag") }
                     Toggle(isOn: prefs.binding("folders", "enabled", default: false, client: client)) { Label("Folders", systemImage: "folder") }
-                    Toggle(isOn: prefs.binding("sharedLinks", "enabled", default: true, client: client)) { Label("Shared Links", systemImage: "link") }
                 } header: {
                     Text("Features")
                 } footer: {
@@ -535,6 +544,7 @@ struct WidgetSettings: View {
     var body: some View {
         Section {
             Toggle(isOn: $favoritesOnly) { Label("Favorites Only", systemImage: "heart") }
+                .onChange(of: favoritesOnly) { Task { await refresh() } }
             Button("Choose New Photos", systemImage: "shuffle") { Task { await refresh() } }
                 .disabled(busy)
             if busy { ProgressView() }
@@ -552,7 +562,8 @@ struct WidgetSettings: View {
         defer { busy = false }
         do {
             let count = try await FeaturedPhotos.refresh(client: client, favoritesOnly: favoritesOnly)
-            status = "\(count) photos ready for the widget."
+            // 0 means a refresh was already running; its own result will land
+            if count > 0 { status = count == 1 ? "1 photo ready for the widget." : "\(count) photos ready for the widget." }
         } catch {
             status = error.explanation
         }

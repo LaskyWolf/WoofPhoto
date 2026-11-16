@@ -10,6 +10,8 @@ struct AlbumsView: View {
     @State private var reordering = false
     @State private var newName = ""
     @State private var error: String?
+    /// A failed create: an alert over the albums already loaded, not a screen that replaces them.
+    @State private var message: String?
 
     var body: some View {
         ScrollView {
@@ -39,10 +41,12 @@ struct AlbumsView: View {
             Button("Cancel", role: .cancel) { newName = "" }
             Button("Save") { Task { await create() } }
         }
+        .messageAlert($message)
         .task { await load() }
     }
 
     private func load() async {
+        error = nil
         do {
             albums = AlbumOrder.sorted(try await session.client?.albums().filter { ($0.shared == true) == shared } ?? [])
         } catch {
@@ -58,7 +62,7 @@ struct AlbumsView: View {
             _ = try await session.client?.createAlbum(name)
             await load()
         } catch {
-            self.error = error.explanation
+            message = error.explanation
         }
     }
 }
@@ -162,7 +166,7 @@ struct AlbumTile: View {
                         .frame(width: 80, height: 80)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(album.albumName).font(.headline).lineLimit(2)
-                        Text("\((album.assetCount ?? 0).formatted()) items").font(.subheadline).foregroundStyle(.secondary)
+                        Text(Naming.items(album.assetCount ?? 0)).font(.subheadline).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                 }
@@ -196,8 +200,10 @@ struct AlbumTile: View {
             TextField("Title", text: $name)
             Button("Cancel", role: .cancel) {}
             Button("Save") {
+                let title = name.trimmingCharacters(in: .whitespaces)
+                guard !title.isEmpty else { return }
                 Task {
-                    do { try await session.client?.updateAlbum(album.id, ["albumName": name]) } catch { self.error = error.explanation }
+                    do { try await session.client?.updateAlbum(album.id, ["albumName": title]) } catch { self.error = error.explanation }
                     onChange()
                 }
             }
@@ -246,10 +252,12 @@ struct AlbumView: View {
                 TextField("Title", text: $newName)
                 Button("Cancel", role: .cancel) {}
                 Button("Save") {
+                    let title = newName.trimmingCharacters(in: .whitespaces)
+                    guard !title.isEmpty else { return }
                     Task {
                         do {
-                            try await session.client?.updateAlbum(id, ["albumName": newName])
-                            name = newName
+                            try await session.client?.updateAlbum(id, ["albumName": title])
+                            name = title
                         } catch {
                             self.error = error.explanation
                         }
@@ -285,7 +293,7 @@ struct AlbumView: View {
             Thumbnail(asset: album?.albumThumbnailAssetId.map { AssetRef(id: $0) }, size: "preview", square: false)
         } secondary: {
             if timeline.months != nil {
-                Text("\(timeline.count.formatted()) Items").font(.subheadline).foregroundStyle(.secondary)
+                Text(Naming.items(timeline.count)).font(.subheadline).foregroundStyle(.secondary)
             }
         } buttons: {
             Menu {
@@ -361,7 +369,7 @@ struct ActivitySheet: View {
                         if activity.user.id == me?.id {
                             Button("Delete", systemImage: "trash", role: .destructive) {
                                 Task {
-                                    try? await session.client?.deleteActivity(activity.id)
+                                    do { try await session.client?.deleteActivity(activity.id) } catch { self.error = error.explanation }
                                     await load()
                                 }
                             }
@@ -407,16 +415,27 @@ struct ActivitySheet: View {
     private func send() async {
         let text = comment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        comment = ""
-        try? await session.client?.addActivity(album: album, comment: text)
+        error = nil
+        // the text stays in the field until the server has it
+        do {
+            try await session.client?.addActivity(album: album, comment: text)
+            comment = ""
+        } catch {
+            self.error = error.explanation
+        }
         await load()
     }
 
     private func toggleLike() async {
-        if let myLike {
-            try? await session.client?.deleteActivity(myLike.id)
-        } else {
-            try? await session.client?.addActivity(album: album, comment: nil)
+        error = nil
+        do {
+            if let myLike {
+                try await session.client?.deleteActivity(myLike.id)
+            } else {
+                try await session.client?.addActivity(album: album, comment: nil)
+            }
+        } catch {
+            self.error = error.explanation
         }
         await load()
     }

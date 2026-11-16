@@ -127,6 +127,7 @@ struct SharedLinksView: View {
     @State private var base: URL?
     @State private var editing: SharedLink?
     @State private var error: String?
+    @State private var deleting: SharedLink?
 
     var body: some View {
         List {
@@ -135,16 +136,22 @@ struct SharedLinksView: View {
                 Button { editing = link } label: { SharedLinkRow(link: link, url: url) }
                     .buttonStyle(.plain)
                     .swipeActions(allowsFullSwipe: false) {
-                        Button("Delete", systemImage: "trash", role: .destructive) { Task { await delete(link) } }
+                        Button("Delete", systemImage: "trash", role: .destructive) { deleting = link }
                     }
                     .contextMenu {
                         if let url {
                             Button("Copy Link", systemImage: "doc.on.doc") { UIPasteboard.general.url = url }
                             ShareLink(item: url) { Label("Share Link", systemImage: "square.and.arrow.up") }
                         }
-                        Button("Delete", systemImage: "trash", role: .destructive) { Task { await delete(link) } }
+                        Button("Delete", systemImage: "trash", role: .destructive) { deleting = link }
                     }
             }
+        }
+        .confirmationDialog("Delete this link?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete Link", role: .destructive) { if let deleting { Task { await delete(deleting) } } }
+        } message: {
+            Text("Anyone who has the link loses access.")
         }
         .overlay {
             if links == nil, error == nil { ProgressView() }
@@ -281,6 +288,7 @@ struct SharedLinkEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(link == nil ? "Create" : "Save") { Task { await save() } }
+                        .disabled(saving)
                 }
             }
         }

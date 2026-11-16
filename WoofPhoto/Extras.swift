@@ -87,12 +87,12 @@ struct PetsSection: View {
             }
             if let progress = pets.progress {
                 ProgressView("Looking for pets in \(progress.done) of \(progress.total) photos", value: Double(progress.done), total: Double(max(progress.total, 1)))
-                Button("Stop", role: .destructive) { pets.stop() }
+                Button("Stop") { pets.stop() }
             } else {
                 Button(pets.record.scanned.isEmpty ? "Find Pets in My Photos" : "Look for New Pets") {
                     if let client = session.client { pets.scan(with: client) }
                 }
-                Text("WoofPhoto looks at each photo on this iPhone. Telling two dogs apart isn't possible yet, so pets are grouped by kind.")
+                Text("WoofPhoto downloads each photo from your server and looks for pets on this iPhone; photos only on the phone are skipped. Telling two dogs apart isn't possible yet, so pets are grouped by kind.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -208,7 +208,7 @@ struct TripsView: View {
         }
         summary = places.isEmpty
             ? "None of your \(total.formatted()) photos has a location, so there's no trip to find."
-            : "\(places.count.formatted()) of \(total.formatted()) photos have a location, but no 10 of them were taken more than 100 km from home within a few days."
+            : "\(places.count.formatted()) of \(total.formatted()) photos have a location, but fewer than 10 were taken more than 100 km from home within a few days."
         places.sort { ($0.ref.date ?? .distantPast) < ($1.ref.date ?? .distantPast) }
 
         // home: the 50 km cell with the most photos
@@ -256,7 +256,7 @@ struct TripCard: View {
                 .overlay { Thumbnail(asset: trip.assets.first, size: "preview") }
                 .overlay(alignment: .bottomLeading) {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("\(trip.start.formatted(.dateTime.month(.wide).year())) · \(trip.assets.count) items").font(.caption)
+                        Text("\(trip.start.formatted(.dateTime.month(.wide).year())) · \(Naming.items(trip.assets.count))").font(.caption)
                         Text(title).font(.title3.bold()).lineLimit(1).contentTransition(.opacity)
                     }
                     .foregroundStyle(.white)
@@ -369,7 +369,9 @@ struct MemoryMovie: View {
         .overlay(alignment: .topTrailing) {
             HStack {
                 Button("Music", systemImage: "music.note") { picksSong = true }
+                    .frame(minWidth: 44, minHeight: 44)
                 Button("Close", systemImage: "xmark") { dismiss() }
+                    .frame(minWidth: 44, minHeight: 44)
             }
             .labelStyle(.iconOnly)
             .font(.title2)

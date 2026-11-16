@@ -144,7 +144,7 @@ struct TagRow: View {
     }
 }
 
-/// Settings > Immich > Tags, saved on the server. Off by default, as in Immich.
+/// Account > Features > Tags, saved on the server. Off by default, as in Immich.
 @MainActor func tagsEnabled(_ client: ImmichClient?) async -> Bool {
     let prefs = ServerPreferences()
     await prefs.load(client)
@@ -261,7 +261,7 @@ struct TagPicker: View {
         NavigationStack {
             Group {
                 if !enabled {
-                    ContentUnavailableView("Tags Are Off", systemImage: "tag.slash", description: Text("Turn them on in Settings > Immich."))
+                    ContentUnavailableView("Tags Are Off", systemImage: "tag.slash", description: Text("Turn them on in Account > Features."))
                 } else if let tags {
                     List {
                         Section {

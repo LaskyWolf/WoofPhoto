@@ -90,7 +90,7 @@ struct SearchView: View {
                     }
                 }
                 if !people.isEmpty {
-                    sectionTitle("People and Pets") {
+                    sectionTitle("People & Pets") {
                         NavigationLink("See All") { PeopleView() }.font(.subheadline.weight(.semibold))
                     }
                     ScrollView(.horizontal) {
@@ -207,7 +207,8 @@ struct SearchView: View {
         let formatter = DateFormatter()
         for format in ["MMMM yyyy", "MMM yyyy", "yyyy"] {
             formatter.dateFormat = format
-            guard let start = formatter.date(from: text) else { continue }
+            // "12" would parse as a year; only four digits are one
+            guard format != "yyyy" || (text.count == 4 && text.allSatisfy(\.isNumber)), let start = formatter.date(from: text) else { continue }
             let end = calendar.date(byAdding: format == "yyyy" ? .year : .month, value: 1, to: start) ?? start
             return ("Photos from \(text)", start, end)
         }

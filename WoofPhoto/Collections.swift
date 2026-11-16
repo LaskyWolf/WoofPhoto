@@ -81,7 +81,14 @@ enum Shelf: Hashable, Codable {
         case .map: PlacesView()
         case .videos: SearchedGrid(title: title) { try await $0.searchMetadata(["type": "VIDEO"]) }
         case .livePhotos: SearchedGrid(title: title) { try await $0.searchMetadata(["isMotion": true]) }
-        case .raw: SearchedGrid(title: title) { try await $0.searchMetadata(["originalFileName": ".dng"]) }
+        case .raw:
+            SearchedGrid(title: title) { client in
+                var found: [Asset] = []
+                for ext in [".dng", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".orf", ".rw2"] {
+                    found += try await client.searchMetadata(["originalFileName": ext])
+                }
+                return found
+            }
         // Immich has no classifier for these; smart search finds them by their look.
         case .selfies: SearchedGrid(title: title) { try await $0.searchSmart("selfie") }
         case .portraits: SearchedGrid(title: title) { try await $0.searchSmart("portrait photo with blurred background") }
@@ -132,7 +139,7 @@ struct CollectionsView: View {
     @State private var favoriteCovers: [String] = []
     @State private var favoriteCount: Int?
     @State private var duplicates: [DuplicateGroup] = []
-    /// Settings > Immich turns Tags and Folders on and off.
+    /// Account > Features turns Memories, People, Tags and Folders on and off.
     @State private var prefs = ServerPreferences()
 
     var body: some View {
@@ -177,7 +184,12 @@ struct CollectionsView: View {
     }
 
     private var sections: [Section] {
-        Self.sections(order).filter { !hiddenSections.split(separator: ",").contains(Substring($0.rawValue)) }
+        Self.sections(order).filter { section in
+            // the Features switches in Settings: Immich's own setting for Memories and People
+            if prefs.loaded, section == .memories, !prefs.value("memories", "enabled", default: true) { return false }
+            if prefs.loaded, section == .people, !prefs.value("people", "enabled", default: true) { return false }
+            return !hiddenSections.split(separator: ",").contains(Substring(section.rawValue))
+        }
     }
 
     /// WoofMusic's library section: a bold title with its count, See All, and the content under it.
@@ -229,12 +241,12 @@ struct CollectionsView: View {
     private var shortcuts: some View {
         HStack(spacing: 10) {
             NavigationLink(value: Shelf.favorites) {
-                ShortcutTile(title: "Favorites", subtitle: favoriteCount.map { "\($0.formatted()) items" }, icon: "heart.fill",
+                ShortcutTile(title: "Favorites", subtitle: favoriteCount.map { Naming.items($0) }, icon: "heart.fill",
                              tint: .red, covers: favoriteCovers)
             }
             .zoomSource(Shelf.favorites, in: shelfZoom)
             NavigationLink(value: Shelf.duplicates) {
-                ShortcutTile(title: "Duplicates", subtitle: duplicates.isEmpty ? "None found" : "\(duplicates.count) groups",
+                ShortcutTile(title: "Duplicates", subtitle: duplicates.isEmpty ? "None found" : "\(duplicates.count) \(duplicates.count == 1 ? "group" : "groups")",
                              icon: "square.fill.on.square.fill", tint: .teal,
                              covers: duplicates.prefix(2).compactMap { $0.assets.first?.id })
             }
@@ -543,7 +555,7 @@ struct TimelineScreen: View {
     var body: some View {
         AssetGrid(timeline: timeline)
             .navigationTitle(title)
-            .navigationSubtitle(timeline.months == nil ? "" : "\(timeline.count.formatted()) Items")
+            .navigationSubtitle(timeline.months == nil ? "" : Naming.items(timeline.count))
     }
 }
 
@@ -560,7 +572,7 @@ struct FixedGridScreen: View {
     var body: some View {
         AssetGrid(timeline: timeline)
             .navigationTitle(title)
-            .navigationSubtitle("\(timeline.count.formatted()) Items")
+            .navigationSubtitle(Naming.items(timeline.count))
     }
 }
 
@@ -584,7 +596,7 @@ struct SearchedGrid: View {
             }
         }
         .navigationTitle(title)
-        .navigationSubtitle(timeline.map { "\($0.count.formatted()) Items" } ?? "")
+        .navigationSubtitle(timeline.map { Naming.items($0.count) } ?? "")
         .task {
             guard timeline == nil, let client = session.client else { return }
             do {

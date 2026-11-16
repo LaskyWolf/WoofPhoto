@@ -634,7 +634,12 @@ private extension View {
 /// Decoded images kept in memory, so scrolling back doesn't decode them again. iOS empties it under memory pressure.
 /// The downloaded files themselves stay in URLCache on disk (see WoofPhotoApp).
 enum ImageCache {
-    private static let images = NSCache<NSString, UIImage>()
+    private static let images: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        // decoded bitmaps are large; iOS empties the cache under pressure, but a fast scroll can outrun it
+        cache.countLimit = 2000
+        return cache
+    }()
 
     static func image(_ id: String, size: String) -> UIImage? { images.object(forKey: "\(size):\(id)" as NSString) }
     static func store(_ image: UIImage, for id: String, size: String) { images.setObject(image, forKey: "\(size):\(id)" as NSString) }

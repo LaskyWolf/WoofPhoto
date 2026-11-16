@@ -29,18 +29,18 @@ actor OfflineIndex {
     }
 
     func learn(_ assets: [Asset]) {
-        var all = load()
+        // changed in place: a local copy of the whole index would be copied again on its first write, for every photo opened
+        _ = load()
         var changed = false
         for asset in assets {
             let detailed = asset.exifInfo != nil
             // a search result has no description or place: it never replaces what the details said
-            if all[asset.id]?.detailed == true, !detailed { continue }
-            all[asset.id] = Entry(id: asset.id, video: asset.type == "VIDEO", hash: asset.thumbhash, taken: asset.date,
+            if entries?[asset.id]?.detailed == true, !detailed { continue }
+            entries?[asset.id] = Entry(id: asset.id, video: asset.type == "VIDEO", hash: asset.thumbhash, taken: asset.date,
                                   text: Self.text(of: asset), detailed: detailed)
             changed = true
         }
         guard changed else { return }
-        entries = all
         scheduleSave()
     }
 

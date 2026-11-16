@@ -1,14 +1,25 @@
 <div align="center">
 
-# WoofPhoto
+<img src=".github/assets/banner.svg" width="100%" alt="WoofPhoto: your Immich library, native on iPhone" />
+
+[![iOS 26+](https://img.shields.io/badge/iOS-26%2B-black?logo=apple)](#install)
+[![SwiftUI](https://img.shields.io/badge/Swift-SwiftUI-F05138?logo=swift&logoColor=white)](WoofPhoto)
+[![Server: Immich](https://img.shields.io/badge/server-Immich-4250af)](https://immich.app)
 
 **A native iPhone client for your Immich server.**
-
 Browse, edit and back up your photos in an app that mixes Photos and WoofMusic.
 
 </div>
 
----
+## Highlights
+
+| | |
+| --- | --- |
+| 🖼️ **One library** | Photos on the server and on the iPhone share one grid, with a badge on items not backed up yet. |
+| ✏️ **Full editor** | Sliders, filters, crop, markup, Clean Up and video trim. Edits save to the server and can be reverted. |
+| 🔎 **Smart search** | Results appear as you type, with filters and text found by OCR. |
+| ☁️ **Background backup** | Pick device albums, upload over Wi-Fi or cellular, then free up space. |
+| 🧊 **Native iOS 26** | Zoom transitions, system menus and sheets. Hidden items stay behind Face ID. |
 
 ## Features
 

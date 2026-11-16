@@ -44,18 +44,22 @@ final class Timeline {
 
     /// Photos only on this iPhone, shown in the Library next to the server's.
     private var local: [String: [AssetRef]] { query == .library ? Backup.shared.pendingByMonth : [:] }
+    /// Phone-side copies hidden in each month because the server already has the same photo.
+    private var duplicates: [String: Set<String>] = [:]
     var count: Int { months?.reduce(0) { $0 + $1.count } ?? 0 }
 
     func reload(with client: ImmichClient) async throws {
         guard let query else { return }
         var counts = Dictionary(try await client.buckets(query).map { ($0.timeBucket, $0.count) }) { $0 + $1 }
-        for (key, assets) in local { counts[key, default: 0] += assets.count }
+        for (key, assets) in local { counts[key, default: 0] += assets.count - (duplicates[key]?.count ?? 0) }
         // keep months already loaded, so a reload after an edit doesn't blank the screen
         let old = Dictionary(uniqueKeysWithValues: (months ?? []).map { ($0.key, $0) })
         // nothing new on the server: leave the grid alone, so it doesn't redraw for the same answer
         // a month whose photos only on this iPhone changed (a backup uploaded them) is stale even when its total is the same
         func localChanged(_ month: Month) -> Bool {
-            month.assets.map { $0.filter { $0.localID != nil }.count != (local[month.key]?.count ?? 0) } ?? false
+            guard let assets = month.assets else { return false }
+            let shown = Set(assets.compactMap(\.localID)).union(duplicates[month.key] ?? [])
+            return shown != Set((local[month.key] ?? []).compactMap(\.localID))
         }
         if let months, months.count == counts.count, months.allSatisfy({ counts[$0.key] == $0.count && !localChanged($0) }) {
             startSavingForOffline(client)
@@ -86,7 +90,10 @@ final class Timeline {
             do {
                 var assets = try await client.bucket(key, query, order: "asc").refs
                 if let device = local[key] {
-                    assets = (assets + device).sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+                    let (only, same, serverIDs) = Self.separate(device, from: assets)
+                    duplicates[key] = same
+                    Backup.shared.noteOnDevice(serverIDs)
+                    assets = (assets + only).sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
                 }
                 if let index = months?.firstIndex(where: { $0.key == key }) {
                     months?[index].assets = assets
@@ -98,6 +105,30 @@ final class Timeline {
         }
         loading[key] = task
         await task.value
+    }
+
+    /// Splits the iPhone's not-backed-up photos into the ones the server really lacks and the ones it already has,
+    /// told apart by kind and capture time (within a second), one server photo per iPhone photo.
+    /// Backup itself still decides by checksum; this only keeps the grid from showing one photo twice.
+    private static func separate(_ device: [AssetRef], from server: [AssetRef]) -> (only: [AssetRef], same: Set<String>, serverIDs: Set<String>) {
+        func second(_ date: Date?) -> Int { Int((date ?? .distantPast).timeIntervalSince1970.rounded()) }
+        var free: [Int: [AssetRef]] = [:]
+        for asset in server where asset.date != nil { free[second(asset.date), default: []].append(asset) }
+        var only: [AssetRef] = [], same = Set<String>(), serverIDs = Set<String>()
+        for asset in device {
+            let near = (-1...1).map { second(asset.date) + $0 }
+            let found = near.lazy.compactMap { key in
+                free[key]?.firstIndex { $0.isImage == asset.isImage && abs($0.date!.timeIntervalSince(asset.date ?? .distantPast)) < 1 }.map { (key, $0) }
+            }.first
+            if let (key, index) = found, let localID = asset.localID {
+                serverIDs.insert(free[key]![index].id)
+                free[key]!.remove(at: index)
+                same.insert(localID)
+            } else {
+                only.append(asset)
+            }
+        }
+        return (only, same, serverIDs)
     }
 
     /// A month and the two beside it, so scrolling into the next month already shows its thumbhashes.

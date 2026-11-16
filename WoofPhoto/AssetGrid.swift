@@ -548,7 +548,7 @@ struct Thumbnail: View {
         guard backupBadge, let asset else { return nil }
         if asset.localID != nil { return ("iphone", "Only on this iPhone") }
         let backup = Backup.shared
-        if backup.tracksDevice, !backup.onDeviceIDs.contains(asset.id) { return ("icloud", "Only on the server") }
+        if backup.tracksDevice, !backup.onDeviceIDs.contains(asset.id), !backup.matchedOnDevice.contains(asset.id) { return ("icloud", "Only on the server") }
         return nil
     }
 

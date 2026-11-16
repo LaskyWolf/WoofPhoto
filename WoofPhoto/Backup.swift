@@ -43,6 +43,8 @@ final class Backup {
     private var uploaded: [String: String]
     /// Server asset ids whose copy is still in this iPhone's library, for the grid badges.
     private(set) var onDeviceIDs: Set<String> = []
+    /// Server photos the grid matched to a copy on this iPhone by capture time, not yet known to the backup record.
+    private(set) var matchedOnDevice: Set<String> = []
     /// False until photo access is granted: without it every server photo would look server-only.
     private(set) var tracksDevice = false
     private var task: Task<Void, Never>?
@@ -186,6 +188,8 @@ final class Backup {
         return true
     }
 
+    func noteOnDevice(_ serverIDs: Set<String>) { matchedOnDevice.formUnion(serverIDs) }
+
     private func remember(_ asset: PHAsset, server id: String) {
         uploaded[asset.localIdentifier] = id
         onDeviceIDs.insert(id)
@@ -261,6 +265,7 @@ final class Backup {
         stop()
         uploaded = [:]
         onDeviceIDs = []
+        matchedOnDevice = []
         try? FileManager.default.removeItem(at: Self.recordURL)
         refreshPending()
     }

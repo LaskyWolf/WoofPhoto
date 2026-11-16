@@ -27,8 +27,8 @@ final class Outbox {
         save()
     }
 
-    /// Sends the waiting changes in order. A network failure stops it and keeps the rest;
-    /// an answer from the server, even a refusal (the photo was deleted since), removes that change so it can't block the others.
+    /// Sends the waiting changes in order. Anything that may pass stops it and keeps the rest: no network, a proxy that is still waking (5xx),
+    /// an expired login (401). Only a refusal that will never change (the photo was deleted since, 4xx) removes that change so it can't block the others.
     func flush(with client: ImmichClient) async {
         guard !flushing, !items.isEmpty else { return }
         flushing = true
@@ -38,11 +38,13 @@ final class Outbox {
                 let body = try JSONSerialization.jsonObject(with: item.body) as? [String: Any]
                 try await client.call(item.method, item.path, body: body)
                 Connection.shared.markFast()
-            } catch is URLError {
-                return
+            } catch ImmichError.http(let code, _) where (400..<500).contains(code) && ![401, 408, 429].contains(code) {
+                // refused for good: drop it
             } catch {
-                // refused by the server: drop it
+                return
             }
+            // signing out empties the queue while a change is on its way
+            guard !items.isEmpty else { return }
             items.removeFirst()
             save()
         }

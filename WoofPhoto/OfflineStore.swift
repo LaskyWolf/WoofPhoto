@@ -106,6 +106,8 @@ final class OfflineDownloads {
 
     private var queue: [String] = []
     private var worker: Task<Void, Never>?
+    /// Bumped by `cancel`, so a worker that was cancelled mid-photo can't take the items added afterwards.
+    private var generation = 0
 
     func add(_ ids: [String], client: ImmichClient) {
         let new = ids.filter { !OfflineFiles.isKept($0) && !queue.contains($0) }
@@ -114,17 +116,20 @@ final class OfflineDownloads {
         queue += new
         total += new.count
         guard worker == nil else { return }
+        let mine = generation
         worker = Task {
-            while !queue.isEmpty {
+            while generation == mine, !queue.isEmpty {
                 let id = queue.removeFirst()
-                do { try await client.keepOffline(id) } catch { failed += 1 }
+                do { try await client.keepOffline(id) } catch { if generation == mine { failed += 1 } }
+                guard generation == mine else { return }
                 done += 1
             }
-            worker = nil
+            if generation == mine { worker = nil }
         }
     }
 
     func cancel() {
+        generation += 1
         worker?.cancel()
         worker = nil
         queue = []

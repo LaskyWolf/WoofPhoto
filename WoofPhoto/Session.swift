@@ -47,6 +47,8 @@ final class Session {
     func signOut() {
         Keychain.delete("token")
         Keychain.delete("hidden.pin")
+        OfflineDownloads.shared.cancel()
+        Backup.shared.enabled = false
         Backup.shared.forget()
         History.shared.clear()
         Pets.shared.forget()

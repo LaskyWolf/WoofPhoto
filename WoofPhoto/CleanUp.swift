@@ -16,6 +16,9 @@ struct CleanUpLayer: View {
 
     /// The stroke being drawn, in points over the shown photo; it stays while LaMa works on it.
     @State private var stroke: [CGPoint] = []
+    /// A stroke that ended is being erased; one whose touch was cancelled (a pinch began) is dropped.
+    @State private var submitted = false
+    @GestureState private var touching = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -23,8 +26,10 @@ struct CleanUpLayer: View {
                 .stroke(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: brush / zoom, lineCap: .round, lineJoin: .round))
                 .contentShape(.rect)
                 .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { stroke.append($0.location) }
-                    .onEnded { _ in erase(shownWidth: geometry.size.width) })
+                    .updating($touching) { _, state, _ in state = true }
+                    .onChanged { submitted = false; stroke.append($0.location) }
+                    .onEnded { _ in submitted = true; erase(shownWidth: geometry.size.width) })
+                .onChange(of: touching) { _, now in if !now, !submitted { stroke = [] } }
         }
         .allowsHitTesting(status == nil)
         .accessibilityLabel("Photo to clean up")

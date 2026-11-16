@@ -111,7 +111,7 @@ struct MainTabs: View {
         // things that finish while the screen is elsewhere
         .modifier(FinishHaptics())
         .environment(\.photoZoom, zoom)
-        .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close() } }
+        .onChange(of: session.client == nil) { _, signedOut in if signedOut { open.close(); tab = 0 } }
         .overlay { MiniViewer(zoom: zoom) }
         // a collection asked for by a widget, Spotlight or Shortcuts
         .sheet(item: $router.shelf) { shelf in

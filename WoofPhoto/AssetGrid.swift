@@ -212,7 +212,7 @@ struct AssetGrid: View {
                                 .onTapGesture {
                                     guard let asset else { return }
                                     if selection != nil {
-                                        selection = toggled(asset.id, in: selection ?? [])
+                                        if asset.localID == nil { selection = toggled(asset.id, in: selection ?? []) }
                                     } else {
                                         OpenPhoto.shared.open(asset, in: timeline)
                                     }
@@ -320,7 +320,11 @@ struct AssetGrid: View {
         }
         guard let drag else { return }
         let end = index(location)
-        let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { (flat[safe: $0] ?? nil)?.id }
+        // photos only on this iPhone aren't on the server, so no action could reach them
+        let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { position -> String? in
+            guard let asset = flat[safe: position] ?? nil, asset.localID == nil else { return nil }
+            return asset.id
+        }
         self.selection = drag.adds ? drag.base.union(ids) : drag.base.subtracting(ids)
     }
 

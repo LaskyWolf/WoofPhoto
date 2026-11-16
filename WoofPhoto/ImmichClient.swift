@@ -174,7 +174,8 @@ extension ImmichClient {
 
     /// A change made without a connection waits in the Outbox and goes out when the server answers again.
     private func changeOrQueue(_ method: String, _ path: String, _ body: [String: Any]) async throws {
-        if Connection.shared.isUsable {
+        // older changes still waiting go first, or a late replay would undo this one
+        if Connection.shared.isUsable, await Outbox.shared.items.isEmpty {
             do {
                 try await call(method, path, body: body)
                 return

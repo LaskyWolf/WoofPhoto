@@ -110,6 +110,8 @@ struct Viewer: View {
                     ViewerPage(asset: shown(asset), isCurrent: asset.id == current, chromeHidden: $chromeHidden) {
                         if !voiceOver { withAnimation(.easeOut(duration: 0.2)) { chromeHidden.toggle() } }
                     }
+                    // choosing another member of a stack gives this page a different photo; without the id it keeps the first one's image
+                    .id(shown(asset).id)
                     .containerRelativeFrame([.horizontal, .vertical])
                 }
             }

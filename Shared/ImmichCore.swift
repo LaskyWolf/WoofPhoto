@@ -102,7 +102,8 @@ struct ImmichClient {
 
     func request(_ path: String, query: [String: String] = [:]) -> URLRequest {
         var components = URLComponents(url: address.appending(path: "api" + path), resolvingAgainstBaseURL: false)!
-        if !query.isEmpty { components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
+        // sorted: a dictionary's order changes every launch, and the offline copy's file name is made from this address
+        if !query.isEmpty { components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 30
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }

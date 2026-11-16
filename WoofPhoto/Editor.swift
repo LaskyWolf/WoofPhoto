@@ -121,8 +121,11 @@ struct EditorView: View {
                         Text(tool.rawValue)
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(.yellow)
-                        if tool == .crop, edit.crop != PhotoEdit.unit || edit.straighten != 0 || edit.perspectiveV != 0 || edit.perspectiveH != 0 {
+                        if tool == .crop, edit.crop != PhotoEdit.unit || edit.straighten != 0 || edit.perspectiveV != 0 || edit.perspectiveH != 0
+                            || edit.quarterTurns != 0 || edit.mirrored {
                             Button("Reset") {
+                                edit.quarterTurns = 0
+                                edit.mirrored = false
                                 edit.crop = PhotoEdit.unit
                                 edit.straighten = 0
                                 edit.perspectiveV = 0
@@ -297,7 +300,8 @@ struct EditorView: View {
         ToolbarItem(placement: .confirmationAction) {
             Button("Done", role: .confirm) { Task { await save() } }
                 .tint(.yellow)
-                .disabled(!changed || busy)
+                // Markup strokes aren't in `changed` until they are committed, which `save` does
+                .disabled(!(changed || tool == .markup) || busy)
         }
     }
 
@@ -427,8 +431,10 @@ struct EditorView: View {
 
     /// The strokes drawn so far become part of the photo.
     private func commitMarkup() {
-        if let source, let marked = MarkupCanvas.flatten(canvas, onto: edit.base(source)) { retouch(marked) }
+        if !canvas.drawing.strokes.isEmpty, let source, let marked = MarkupCanvas.flatten(canvas, onto: edit.base(source)) { retouch(marked) }
         canvas.drawing = PKDrawing()
+        // the strokes are in the photo now; undoing them from the old drawing would bring them back a second time
+        canvas.undoManager?.removeAllActions()
     }
 
     private func applyInk() {
@@ -1015,6 +1021,7 @@ struct EditorView: View {
 
     private func save() async {
         commitMarkup()
+        guard changed else { dismiss(); return }
         busy = true
         defer { busy = false }
         // what History's undo removes: the new copy, the Immich edit, or the edit in Photos
@@ -1697,6 +1704,8 @@ struct CropOverlay: View {
     }
 
     @State private var grab: Grab?
+    /// Goes false when the touch ends or is cancelled (a second finger turned it into a pinch); `onEnded` only runs for the first.
+    @GestureState private var touching = false
     /// The smallest side of the frame, in 0…1 of the picture.
     private static let minSide: CGFloat = 0.08
 
@@ -1747,7 +1756,7 @@ struct CropOverlay: View {
                 .stroke(.white, style: StrokeStyle(lineWidth: 4, lineCap: .round))
             }
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+            .gesture(DragGesture(minimumDistance: 0).updating($touching) { _, state, _ in state = true }.onChanged { value in
                 if grab == nil {
                     guard let held = grabbed(at: value.startLocation, in: frame) else { return }
                     grab = Grab(edges: held, start: crop)
@@ -1757,6 +1766,7 @@ struct CropOverlay: View {
             }.onEnded { _ in
                 grab = nil
             })
+            .onChange(of: touching) { _, now in if !now { grab = nil } }
         }
         .accessibilityElement()
         .accessibilityLabel("Crop frame")

@@ -28,7 +28,7 @@ final class AssetActions {
         let ids = ids
         run(client, removes: false) { client in
             try await client.updateAssets(ids, ["isFavorite": favorite])
-            for id in ids { self.timeline?.update(id) { $0.isFavorite = favorite } }
+            self.timeline?.update(Set(ids)) { $0.isFavorite = favorite }
         }
     }
 
@@ -76,7 +76,8 @@ final class AssetActions {
         busy = true
         defer { busy = false }
         do {
-            let assets = timeline?.assets.filter { ids.contains($0.id) } ?? []
+            let wanted = Set(ids)
+            let assets = timeline?.assets.filter { wanted.contains($0.id) } ?? []
             for asset in assets { try await DeviceLibrary.save(asset, client: client) }
             message = "Saved \(assets.count) items to Photos."
             done()

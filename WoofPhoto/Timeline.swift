@@ -53,12 +53,16 @@ final class Timeline {
         // keep months already loaded, so a reload after an edit doesn't blank the screen
         let old = Dictionary(uniqueKeysWithValues: (months ?? []).map { ($0.key, $0) })
         // nothing new on the server: leave the grid alone, so it doesn't redraw for the same answer
-        if let months, months.count == counts.count, months.allSatisfy({ counts[$0.key] == $0.count }) {
+        // a month whose photos only on this iPhone changed (a backup uploaded them) is stale even when its total is the same
+        func localChanged(_ month: Month) -> Bool {
+            month.assets.map { $0.filter { $0.localID != nil }.count != (local[month.key]?.count ?? 0) } ?? false
+        }
+        if let months, months.count == counts.count, months.allSatisfy({ counts[$0.key] == $0.count && !localChanged($0) }) {
             startSavingForOffline(client)
             return
         }
         months = counts.keys.sorted().map { key in
-            let kept = old[key].flatMap { $0.count == counts[key] ? $0.assets : nil }
+            let kept = old[key].flatMap { $0.count == counts[key] && !localChanged($0) ? $0.assets : nil }
             return Month(key: key, count: counts[key] ?? 0, assets: kept)
         }
         startSavingForOffline(client)
@@ -114,14 +118,16 @@ final class Timeline {
         }
     }
 
-    func update(_ id: String, _ change: (inout AssetRef) -> Void) {
-        guard let months else { return }
-        for m in months.indices {
-            if let a = months[m].assets?.firstIndex(where: { $0.id == id }) {
-                change(&self.months![m].assets![a])
-                return
-            }
+    func update(_ id: String, _ change: (inout AssetRef) -> Void) { update([id], change) }
+
+    /// Changes several assets at once. `months` is assigned once: each assignment flattens the whole library.
+    func update(_ ids: Set<String>, _ change: (inout AssetRef) -> Void) {
+        guard var changed = months else { return }
+        for m in changed.indices {
+            guard let assets = changed[m].assets else { continue }
+            for a in assets.indices where ids.contains(assets[a].id) { change(&changed[m].assets![a]) }
         }
+        months = changed
     }
 
     /// Forgets the loaded month holding `id`, so its cells load it again.
@@ -132,14 +138,15 @@ final class Timeline {
 
     /// Takes assets out after they were deleted, hidden or moved, without reloading.
     func remove(_ ids: Set<String>) {
-        guard months != nil else { return }
-        for m in months!.indices {
-            guard let assets = months![m].assets else { continue }
+        guard var changed = months else { return }
+        for m in changed.indices {
+            guard let assets = changed[m].assets else { continue }
             let kept = assets.filter { !ids.contains($0.id) }
-            months![m].assets = kept
-            months![m].count = kept.count
+            changed[m].assets = kept
+            changed[m].count = kept.count
         }
-        months!.removeAll { $0.count == 0 && $0.assets != nil }
+        changed.removeAll { $0.count == 0 && $0.assets != nil }
+        months = changed
     }
 
     func report(_ error: Error, while step: String) {

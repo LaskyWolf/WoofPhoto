@@ -46,6 +46,7 @@ final class Backup {
     /// False until photo access is granted: without it every server photo would look server-only.
     private(set) var tracksDevice = false
     private var task: Task<Void, Never>?
+    private var saving: Task<Void, Never>?
 
     private static let recordURL = URL.applicationSupportDirectory.appending(path: "backup.json")
 
@@ -133,13 +134,25 @@ final class Backup {
             do {
                 if try await upload(asset, client: client) { sent += 1 }
             } catch let error as URLError where error.code == .notConnectedToInternet || error.code == .dataNotAllowed {
+                persist()
                 state = .waiting(wifiOnly ? "Waiting for Wi-Fi." : "Waiting for a connection.")
                 return
+            } catch let error as URLError where error.code == .cancelled {
+                // Stop was tapped: not an error to list
+                break
+            } catch let error as URLError where Connection.isUnreachable(error) {
+                // the server went away; trying every remaining photo would only fill the list with the same failure
+                persist()
+                state = .waiting("Can't reach the server.")
+                return
+            } catch is CancellationError {
+                break
             } catch {
                 errors.append("\(asset.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "An item"): \(error.explanation)")
             }
         }
         current = nil
+        persist()
         refreshPending()
         state = Task.isCancelled ? .idle : .finished
         if !Task.isCancelled { UserDefaults.standard.set(Date.now, forKey: "backup.lastRun") }
@@ -176,6 +189,16 @@ final class Backup {
     private func remember(_ asset: PHAsset, server id: String) {
         uploaded[asset.localIdentifier] = id
         onDeviceIDs.insert(id)
+        // the whole record is rewritten, so it waits for a pause in uploading instead of following every photo
+        saving?.cancel()
+        saving = Task {
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled { persist() }
+        }
+    }
+
+    private func persist() {
+        saving?.cancel()
         try? FileManager.default.createDirectory(at: Self.recordURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONEncoder().encode(uploaded).write(to: Self.recordURL)
     }
@@ -338,7 +361,7 @@ struct BackupView: View {
                     }
                 }
             } footer: {
-                Text("Deletes from this iPhone the \(backup.backedUpOnDevice().count.formatted()) items your server already has. iOS asks before deleting.")
+                Text("Deletes from this iPhone the \(backup.onDeviceIDs.count.formatted()) items your server already has. iOS asks before deleting.")
             }
             Section {
                 TextField("Server", text: $gotifyServer, prompt: Text("https://gotify.example.com"))

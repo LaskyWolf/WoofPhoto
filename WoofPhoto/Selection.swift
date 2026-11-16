@@ -135,10 +135,10 @@ struct AssetMenuItems: View {
                     .disabled(!onServer)
             }
             .controlGroupStyle(.compactMenu)
+            if isFavorite == nil {
+                Button("Unfavorite", systemImage: "heart.slash") { act { actions.setFavorite(false, client) } }
+            }
             Section {
-                if isFavorite == nil {
-                    Button("Unfavorite", systemImage: "heart.slash") { act { actions.setFavorite(false, client) } }
-                }
                 Button("Save to iPhone", systemImage: "square.and.arrow.down") { act { Task { await actions.save(client) } } }
                 Button("Keep Offline", systemImage: "arrow.down.circle") { act { actions.keepOffline(client) } }
                 Button("Share Link…", systemImage: "link") { act { actions.sharesLink = true } }

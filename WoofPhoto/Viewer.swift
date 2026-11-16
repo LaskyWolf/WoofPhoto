@@ -245,7 +245,6 @@ struct Viewer: View {
                             .foregroundStyle(.red)
                     } else {
                         Button("Share", systemImage: "square.and.arrow.up") { Task { await share() } }
-                            .disabled(shownAsset?.localID != nil)
                         Spacer()
                         HStack(spacing: 0) {
                             if shownAsset?.localID != nil {
@@ -253,15 +252,14 @@ struct Viewer: View {
                                     if let client = session.client { Backup.shared.start(with: client) }
                                 }
                                 .disabled(session.client == nil)
-                            } else {
-                                let favorite = shownAsset?.isFavorite == true
-                                Button(favorite ? "Unfavorite" : "Favorite", systemImage: favorite ? "heart.fill" : "heart") {
-                                    Task { await toggleFavorite() }
-                                }
-                                .foregroundStyle(favorite ? .pink : .white)
-                                .contentTransition(.symbolEffect(.replace))
-                                .sensoryFeedback(.impact(weight: .light), trigger: favorite)
                             }
+                            let favorite = shownAsset?.isFavorite == true
+                            Button(favorite ? "Unfavorite" : "Favorite", systemImage: favorite ? "heart.fill" : "heart") {
+                                Task { await toggleFavorite() }
+                            }
+                            .foregroundStyle(favorite ? .pink : .white)
+                            .contentTransition(.symbolEffect(.replace))
+                            .sensoryFeedback(.impact(weight: .light), trigger: favorite)
                             Button("Edit", systemImage: "slider.horizontal.3") { editing = shownAsset }
                         }
                         .buttonStyle(CapsuleIconStyle())
@@ -272,7 +270,6 @@ struct Viewer: View {
                         .glassEffect(.regular.interactive(), in: .capsule)
                         Spacer()
                         Button("Delete", systemImage: "trash") { confirmsDelete = true }
-                            .disabled(shownAsset?.localID != nil)
                     }
                 }
                 .labelStyle(.iconOnly)
@@ -436,9 +433,13 @@ struct Viewer: View {
     // MARK: Actions
 
     private func toggleFavorite() async {
-        guard let asset = shownAsset, let client = session.client else { return }
+        guard let asset = shownAsset else { return }
         do {
-            try await client.updateAssets([asset.id], ["isFavorite": !asset.isFavorite])
+            if let localID = asset.localID {
+                try await DeviceLibrary.setFavorite([localID], !asset.isFavorite)
+            } else if let client = session.client {
+                try await client.updateAssets([asset.id], ["isFavorite": !asset.isFavorite])
+            } else { return }
             timeline.update(asset.id) { $0.isFavorite.toggle() }
             // a stack member isn't in the timeline, only in the stack
             if let index = stack?.assets.firstIndex(where: { $0.id == asset.id }) {
@@ -450,9 +451,13 @@ struct Viewer: View {
     }
 
     private func delete() async {
-        guard let id = shownID, let client = session.client else { return }
+        guard let id = shownID else { return }
         await perform {
-            try await client.deleteAssets([id], force: timeline.query?.isTrash == true)
+            if let localID = shownAsset?.localID {
+                try await DeviceLibrary.delete([localID])
+            } else if let client = session.client {
+                try await client.deleteAssets([id], force: timeline.query?.isTrash == true)
+            } else { return }
             deletes += 1
             removeCurrent()
         }
@@ -492,9 +497,14 @@ struct Viewer: View {
     }
 
     private func share() async {
-        guard let id = shownID, let client = session.client else { return }
+        guard let id = shownID else { return }
         await perform {
-            let url = try await client.downloadOriginal(id)
+            let url: URL
+            if let localID = shownAsset?.localID {
+                url = try await DeviceLibrary.original(localID)
+            } else if let client = session.client {
+                url = try await client.downloadOriginal(id)
+            } else { return }
             sharing = SharedFile(url: url)
         }
     }

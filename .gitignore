@@ -13,3 +13,11 @@ ShareExtension/WoofPhotoShare.entitlements
 
 # local tool settings
 .claude/
+
+# Private working files
+.impeccable/
+PRODUCT.md
+FEASIBILITY.md
+ROADMAP.md
+design/
+prototype/

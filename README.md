@@ -31,8 +31,6 @@ Browse, edit and back up your photos in an app that mixes Photos and WoofMusic.
 - **Backup.** Choose device albums, upload in the background, Wi-Fi or cellular, free up space after upload.
 - **Also.** Featured Photos widget, "Upload to Immich" share extension, offline viewing, OAuth sign-in.
 
-Milestones are in [ROADMAP.md](ROADMAP.md). Decisions are in [FEASIBILITY.md](FEASIBILITY.md). The product brief is in [PRODUCT.md](PRODUCT.md).
-
 ## Install
 
 You need iOS 26 or later.
@@ -61,20 +59,6 @@ Sign in with your server address, email and password. The account button opens t
 - **Open a Live Photo from the Server** passes when the photo plays while you touch and hold it.
 - **AI Models** times the on-device models and shows their peak memory.
 
-## Spatial prototype (in progress)
-
-`prototype/spatial/` is a web page that turns a photo into a 3D scene from a depth map. The app does not use it: Spatial Scenes were removed from the app.
-
-The current work compares depth models (Depth Anything 3 Base, Depth Anything V2 Base and a mix of both), with sliders for relief and midtones.
-
-```bash
-python3 prototype/spatial/serve.py 8000
-```
-
-Open `http://localhost:8000`. The page loads its libraries and models from CDNs.
-
-`prototype/spatial/sharp/` is a local Python server that makes splat files. It needs `torch`, `transformers`, `onnxruntime`, `scipy` and `Pillow`. The header of `server.py` shows how to start it.
-
 ## Tech stack
 
 - Swift 5 mode, SwiftUI, Liquid Glass, iOS 26 deployment target.
@@ -90,7 +74,5 @@ WoofPhoto/          the app: views, editor, backup, offline store
 Shared/             code shared by the app and both extensions
 WoofPhotoWidget/    Featured Photos widget
 ShareExtension/     "Upload to Immich" share extension
-design/icon/        app icon sources
-prototype/spatial/  web prototype for Spatial Scenes
 project.yml         XcodeGen project definition
 ```

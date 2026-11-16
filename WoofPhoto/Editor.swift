@@ -180,7 +180,7 @@ struct EditorView: View {
     @ViewBuilder private var canvasArea: some View {
         if let image = stageImage {
             EditorStage(image: image, inset: Self.cropInset, overlayCoversStage: tool == .crop, overlay: stageOverlay,
-                        canvas: tool == .markup ? canvas : nil, tilt: cropTilt, viewing: viewsOriginal, twisting: tool == .crop,
+                        canvas: tool == .markup ? canvas : nil, tilt: cropTilt, viewing: viewsOriginal, twisting: [.adjust, .filters, .crop].contains(tool),
                         onHold: { holding in
                             comparing = holding
                             Task { await render(original: holding) }
@@ -245,7 +245,7 @@ struct EditorView: View {
     }
 
     /// Two fingers turning the photo: `degrees` clockwise since they started, nil when they lift.
-    /// It sets the straighten angle in Crop (up to 45 either way; the Rotate button turns by quarters), and sticks at 0.
+    /// It sets the straighten angle on Adjust, Filters and Crop (up to 45 either way; the Rotate button turns by quarters), and sticks at 0.
     private func twist(_ degrees: Double?) {
         guard let degrees else {
             twistStart = nil

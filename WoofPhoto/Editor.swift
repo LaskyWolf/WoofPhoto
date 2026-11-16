@@ -105,6 +105,8 @@ struct EditorView: View {
     /// The stage's zoom, so Clean Up's brush keeps its size on screen.
     @State private var stageZoom: CGFloat = 1
     @State private var cleanStatus: String?
+    /// What Auto changed and why, shown for a few seconds.
+    @State private var autoNote: String?
 
     var body: some View {
         NavigationStack {
@@ -186,6 +188,7 @@ struct EditorView: View {
                         onZoom: { zoom in Task { @MainActor in if abs(stageZoom - zoom) > 0.001 { stageZoom = zoom } } })
                 .overlay(alignment: .top) { originalLabel }
                 .overlay(alignment: .bottom) { cleanStatusLabel }
+                .overlay(alignment: .bottom) { autoLabel }
                 .accessibilityHint("Pinch to zoom, two fingers to move and turn")
         } else {
             ProgressView()
@@ -227,6 +230,19 @@ struct EditorView: View {
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(.black.opacity(0.6), in: .capsule)
                 .padding(.top, 8)
+        }
+    }
+
+    @ViewBuilder private var autoLabel: some View {
+        if let autoNote, tool == .adjust {
+            Text(autoNote)
+                .font(.footnote.weight(.medium))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                .padding()
+                .transition(.opacity)
         }
     }
 
@@ -687,45 +703,138 @@ struct EditorView: View {
         setPixels(pixels)
     }
 
-    /// Auto: exposure, black point, contrast and saturation chosen from the photo's tones.
+    /// The sliders Auto decides. Brightness, Tint and Vignette are left as they are.
+    private static let autoSliders: [PhotoEdit.Slider] = [.exposure, .brilliance, .highlights, .shadows, .blackPoint, .contrast, .saturation,
+                                                          .vibrance, .warmth, .sharpness, .definition, .noiseReduction]
+
+    /// Auto: reads the photo and sets each slider from what it finds, then says why.
     private func applyAuto(_ image: CIImage) {
-        let found = Self.autoValues(image)
-        for slider in [PhotoEdit.Slider.exposure, .blackPoint, .contrast, .saturation] {
-            edit[slider] = found[slider] ?? slider.neutral
+        let found = Self.autoAdjustments(image)
+        for slider in Self.autoSliders { edit[slider] = found.values[slider] ?? slider.neutral }
+        autoNote = found.notes.prefix(3).joined(separator: "\n")
+        let note = autoNote
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            if autoNote == note { autoNote = nil }
         }
     }
 
-    /// Reads a 64-pixel copy: mean brightness sets exposure, the darkest 1% sets the black point,
-    /// a narrow tonal spread adds contrast and dull colours add saturation.
-    private static func autoValues(_ image: CIImage) -> [PhotoEdit.Slider: Double] {
+    /// Reads a 256-pixel copy: the tones (median, spread, blown highlights, crushed shadows), the colour cast of the near-grey
+    /// pixels, how dull the colours are, the noise in the dark areas and how soft the edges are.
+    /// A night photo is kept dark, a backlit one gets its shadows opened, and a sunset's warmth is left alone,
+    /// because it has too few grey pixels to read a cast from.
+    /// ponytail: the thresholds are tuned on test images, not on a library of real photos; adjust them if Auto over- or under-corrects.
+    private static func autoAdjustments(_ image: CIImage) -> (values: [PhotoEdit.Slider: Double], notes: [String]) {
         let extent = image.extent
-        guard extent.width > 0, extent.height > 0 else { return [:] }
-        let scale = 64 / max(extent.width, extent.height)
+        guard extent.width > 0, extent.height > 0 else { return ([:], []) }
+        let scale = min(1, 256 / max(extent.width, extent.height))
         let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let rect = small.extent.integral
         let width = Int(rect.width), height = Int(rect.height)
-        guard width > 0, height > 0 else { return [:] }
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        PhotoEdit.context.render(small, toBitmap: &pixels, rowBytes: width * 4, bounds: rect, format: .RGBA8,
+        guard width > 4, height > 4 else { return ([:], []) }
+        var px = [UInt8](repeating: 0, count: width * height * 4)
+        PhotoEdit.context.render(small, toBitmap: &px, rowBytes: width * 4, bounds: rect, format: .RGBA8,
                                  colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        func luma(_ i: Int) -> Double { (0.299 * Double(px[i]) + 0.587 * Double(px[i + 1]) + 0.114 * Double(px[i + 2])) / 255 }
+
         var lumas: [Double] = []
-        var saturation = 0.0
-        for index in 0..<(width * height) {
-            let r = Double(pixels[index * 4]) / 255, g = Double(pixels[index * 4 + 1]) / 255, b = Double(pixels[index * 4 + 2]) / 255
-            lumas.append(0.299 * r + 0.587 * g + 0.114 * b)
-            let top = max(r, g, b)
-            if top > 0 { saturation += (top - min(r, g, b)) / top }
+        var noiseSum = 0.0, noiseCount = 0, edgeSum = 0.0
+        var grey = (r: 0.0, g: 0.0, b: 0.0, count: 0)
+        var satSum = 0.0, satCount = 0
+        for y in 1..<(height - 1) {
+            for x in 1..<(width - 1) {
+                let i = (y * width + x) * 4
+                let r = Double(px[i]) / 255, g = Double(px[i + 1]) / 255, b = Double(px[i + 2]) / 255
+                let l = 0.299 * r + 0.587 * g + 0.114 * b
+                lumas.append(l)
+                let top = max(r, g, b), saturation = top > 0 ? (top - min(r, g, b)) / top : 0
+                if l < 0.35 {
+                    let around = (luma(i - 4) + luma(i + 4) + luma(i - width * 4) + luma(i + width * 4)) / 4
+                    noiseSum += abs(l - around)
+                    noiseCount += 1
+                }
+                edgeSum += abs(luma(i + 4) - luma(i - 4)) + abs(luma(i + width * 4) - luma(i - width * 4))
+                if saturation < 0.35, l > 0.15, l < 0.85 { grey.r += r; grey.g += g; grey.b += b; grey.count += 1 }
+                if top > 0.12, l > 0.08, l < 0.92 { satSum += saturation; satCount += 1 }
+            }
         }
+        let n = Double(lumas.count)
         lumas.sort()
-        let mean = lumas.reduce(0, +) / Double(lumas.count)
-        let low = lumas[lumas.count / 100], high = lumas[lumas.count * 99 / 100]
-        saturation /= Double(lumas.count)
-        var result: [PhotoEdit.Slider: Double] = [:]
-        result[.exposure] = min(max(log2(0.45 / max(mean, 0.02)) * 0.6, -1), 1)
-        result[.blackPoint] = min(max(low * 0.8, 0), 0.2)
-        result[.contrast] = 1 + min(max(0.8 - (high - low), 0) * 0.5, 0.3)
-        result[.saturation] = saturation < 0.35 ? 1.15 : 1.05
-        return result
+        func percentile(_ q: Double) -> Double { lumas[min(lumas.count - 1, Int(n * q))] }
+        let mean = lumas.reduce(0, +) / n
+        let median = percentile(0.5), p1 = percentile(0.01), p5 = percentile(0.05), p95 = percentile(0.95), p99 = percentile(0.99)
+        let clipped = Double(lumas.filter { $0 > 0.96 }.count) / n, dark = Double(lumas.filter { $0 < 0.12 }.count) / n
+        func clamp(_ v: Double, _ low: Double, _ high: Double) -> Double { min(max(v, low), high) }
+
+        var values: [PhotoEdit.Slider: Double] = [:]
+        var notes: [String] = []
+        let lowKey = mean < 0.16
+        let backlit = dark > 0.2 && p95 > 0.6 && mean > 0.2
+
+        // exposure: the median goes to a target that depends on the scene, and highlights are never pushed into white
+        var ev = log2((lowKey ? 0.3 : 0.46) / max(median, 0.03)) * 0.65
+        ev = clamp(ev, lowKey ? -0.4 : -1.2, lowKey ? 0.5 : 1.2)
+        if clipped > 0.03, ev > 0 { ev *= 0.4 }
+        if backlit { ev = min(ev, 0.3) }
+        if abs(ev) > 0.05 { values[.exposure] = ev }
+        if abs(ev) > 0.12 { notes.append(ev > 0 ? (lowKey ? "Brightened a little, keeping the dark mood." : "Brightened a dark photo.") : "Darkened an over-bright photo.") }
+
+        if clipped > 0.015 || p99 > 0.985 {
+            values[.highlights] = -clamp(clipped * 14 + 0.12, 0.12, 0.8)
+            notes.append("Pulled back blown highlights.")
+        }
+        if backlit {
+            values[.shadows] = clamp(dark * 1.3, 0.15, 0.65)
+            notes.append("Opened the shadows: the subject is backlit.")
+        } else if dark > 0.12, !lowKey {
+            values[.shadows] = clamp(dark * 0.8, 0.05, 0.4)
+            notes.append("Lifted the shadows a little.")
+        }
+        if median < 0.4, !lowKey, p95 - p5 < 0.6 { values[.brilliance] = 0.2 }
+        if p1 > 0.03, !lowKey {
+            values[.blackPoint] = clamp(p1 * 0.8, 0, 0.2)
+            notes.append("Deepened washed-out blacks.")
+        }
+        let spread = p95 - p5
+        let contrast = 1 + clamp((0.72 - spread) * 0.6, -0.12, 0.3)
+        if abs(contrast - 1) > 0.04 {
+            values[.contrast] = contrast
+            notes.append(contrast > 1 ? "Added contrast to a flat photo." : "Eased the contrast.")
+        }
+
+        // colour cast: read only from near-grey mid-tones, and only when there are enough of them
+        if Double(grey.count) > n * 0.14 {
+            let r = max(grey.r / Double(grey.count), 0.01), b = max(grey.b / Double(grey.count), 0.01)
+            let warmth = clamp(log(b / r) * 1.5, -0.35, 0.35)
+            if abs(warmth) >= 0.06 {
+                values[.warmth] = warmth
+                notes.append(warmth > 0 ? "Warmed a cool cast." : "Cooled a warm cast.")
+            }
+        }
+
+        // colour: vibrance first, since it spares skin and strong colours; saturation only for very dull or very strong photos
+        let meanSaturation = satSum / Double(max(satCount, 1))
+        if meanSaturation < 0.3 {
+            values[.vibrance] = clamp((0.36 - meanSaturation) * 2.4, 0, 0.6)
+            notes.append("Brought out dull colours.")
+        }
+        if meanSaturation < 0.16 { values[.saturation] = 1.1 } else if meanSaturation > 0.6 {
+            values[.saturation] = 0.94
+            notes.append("Calmed over-strong colours.")
+        }
+
+        // detail: noise in the dark areas, soft edges
+        let noise = noiseSum / Double(max(noiseCount, 1)), edges = edgeSum / n
+        if noise > 0.012 {
+            values[.noiseReduction] = clamp((noise - 0.012) * 16, 0, 0.5)
+            notes.append("Reduced noise in the dark areas.")
+        }
+        if edges < 0.05 {
+            values[.sharpness] = 0.2
+            notes.append("Sharpened soft edges.")
+        }
+        if spread < 0.5, !lowKey { values[.definition] = 0.15 }
+        return (values, notes.isEmpty ? ["This photo already looks balanced."] : notes)
     }
 
     /// A picked key photo stays the key photo, so saving still replaces the Live Photo's still.

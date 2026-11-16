@@ -50,15 +50,6 @@ xcodegen generate && open WoofPhoto.xcodeproj
 
 `WoofPhoto.xcodeproj`, the Info.plist files and the entitlements files are generated from `project.yml`. Do not commit them.
 
-## Diagnostics
-
-Sign in with your server address, email and password. The account button opens the diagnostics screen:
-
-- **Count Timeline** shows the number of months and items.
-- **Write Value for the Widget** feeds the **WoofPhoto Check** widget. It passes when it shows the same time and group as the app.
-- **Open a Live Photo from the Server** passes when the photo plays while you touch and hold it.
-- **AI Models** times the on-device models and shows their peak memory.
-
 ## Tech stack
 
 - Swift 5 mode, SwiftUI, Liquid Glass, iOS 26 deployment target.

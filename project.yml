@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.7"
-    CURRENT_PROJECT_VERSION: "80"
+    MARKETING_VERSION: "0.8"
+    CURRENT_PROJECT_VERSION: "81"
     TARGETED_DEVICE_FAMILY: "1"
 targets:
   WoofPhoto:

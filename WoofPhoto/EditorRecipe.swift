@@ -6,6 +6,7 @@ struct EditRecipe: Codable {
     var values: [String: Double]
     var filter: String?
     var filterAmount: Double?
+    var effects: [String: Double]?
 
     private static let key = "copiedEdit"
 
@@ -13,6 +14,7 @@ struct EditRecipe: Codable {
         values = Dictionary(uniqueKeysWithValues: edit.values.map { ($0.key.rawValue, $0.value) })
         filter = edit.filter
         filterAmount = edit.filterAmount
+        effects = Dictionary(uniqueKeysWithValues: edit.effects.map { ($0.key.rawValue, $0.value) })
     }
 
     func apply(to edit: inout PhotoEdit) {
@@ -22,6 +24,10 @@ struct EditRecipe: Codable {
         }
         edit.filter = filter
         edit.filterAmount = filterAmount ?? 1
+        edit.effects = [:]
+        for (name, value) in effects ?? [:] {
+            if let effect = PhotoEdit.Effect(rawValue: name) { edit.effects[effect] = value }
+        }
     }
 
     static var saved: EditRecipe? {

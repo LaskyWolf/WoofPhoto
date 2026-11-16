@@ -50,7 +50,7 @@ struct EditorView: View {
     var onSaved: () -> Void
 
     /// The controls keep one height for every tool, so the photo above doesn't jump when the tool changes.
-    private static let controlsHeight: CGFloat = 176
+    private static let controlsHeight: CGFloat = 200
     /// Room around the picture in Crop, so a corner handle can be grabbed at the very corner.
     private static let cropInset: CGFloat = 24
 
@@ -107,6 +107,8 @@ struct EditorView: View {
     @State private var cleanStatus: String?
     /// What Auto changed and why, shown for a few seconds.
     @State private var autoNote: String?
+    /// The effect the Filters slider is on; nil is the look's own intensity.
+    @State private var focusedEffect: PhotoEdit.Effect?
 
     var body: some View {
         NavigationStack {
@@ -114,6 +116,7 @@ struct EditorView: View {
                 canvasArea
                     .frame(maxHeight: .infinity)
                 VStack(spacing: 8) {
+                    if tool != .filters {
                     HStack(spacing: 12) {
                         Text(tool.rawValue)
                             .font(.footnote.weight(.semibold))
@@ -130,6 +133,7 @@ struct EditorView: View {
                                 .font(.footnote.weight(.semibold))
                                 .tint(.yellow)
                         }
+                    }
                     }
                     controls
                 }
@@ -278,7 +282,7 @@ struct EditorView: View {
                     EditRecipe(edit).save()
                     canPaste = true
                 }
-                .disabled(edit.values.isEmpty && edit.filter == nil)
+                .disabled(edit.values.isEmpty && edit.filter == nil && edit.effects.isEmpty)
                 Button("Paste Edits", systemImage: "doc.on.clipboard") {
                     EditRecipe.saved?.apply(to: &edit)
                 }
@@ -519,7 +523,8 @@ struct EditorView: View {
         let scale = min(1, 160 / max(base.extent.width, base.extent.height))
         let small = base.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         var thumbs: [String: UIImage] = [:]
-        for filter in PhotoEdit.filters {
+        for family in PhotoEdit.families {
+            let filter = family.looks[0]
             var look = PhotoEdit()
             look.filter = filter.name
             let image = small.applying(look, scale: scale)
@@ -578,50 +583,7 @@ struct EditorView: View {
                 .scrollIndicators(.hidden)
             }
         case .filters:
-            VStack(spacing: 6) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 10) {
-                    ForEach(PhotoEdit.filters, id: \.title) { filter in
-                        let chosen = edit.filter == filter.name
-                        Button {
-                            if edit.filter != filter.name { edit.filterAmount = 1 }
-                            edit.filter = filter.name
-                        } label: {
-                            VStack(spacing: 5) {
-                                Group {
-                                    if let thumb = filterThumbs[filter.name ?? ""] {
-                                        Image(uiImage: thumb).resizable().scaledToFill()
-                                    } else {
-                                        Color.white.opacity(0.12)
-                                    }
-                                }
-                                .frame(width: 64, height: 64)
-                                .clipShape(.rect(cornerRadius: 8))
-                                .overlay { RoundedRectangle(cornerRadius: 8).stroke(chosen ? Color.yellow : .clear, lineWidth: 2) }
-                                Text(filter.title)
-                                    .font(.caption2.weight(.medium))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                                    .frame(width: 64)
-                                    .foregroundStyle(chosen ? Color.yellow : .white.opacity(0.8))
-                            }
-                        }
-                        .accessibilityLabel(filter.title)
-                        .accessibilityAddTraits(chosen ? .isSelected : [])
-                    }
-                }
-                .padding(.horizontal)
-            }
-            .scrollIndicators(.hidden)
-            // how much of the look is applied
-            HStack {
-                Slider(value: $edit.filterAmount, in: 0...1).tint(.yellow).accessibilityLabel("Filter Intensity")
-                Text("\(Int((edit.filterAmount * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 40)
-            }
-            .padding(.horizontal)
-            .disabled(edit.filter == nil)
-            .opacity(edit.filter == nil ? 0.35 : 1)
-            }
+            filtersControls
         case .crop:
             VStack(spacing: 10) {
                 // the slider on top, then which angle it turns, then the buttons and the shape of the frame
@@ -674,6 +636,120 @@ struct EditorView: View {
                 }
             }
             .padding(.horizontal)
+        }
+    }
+
+    // MARK: Filters
+
+    /// One page: the five families of looks, the style of the chosen one, the effects to stack on it, and one slider.
+    private var filtersControls: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                ForEach(PhotoEdit.families, id: \.title) { family in
+                    let first = family.looks[0]
+                    let chosen = PhotoEdit.family(of: edit.filter)?.title == family.title
+                    Button { chooseFamily(family) } label: {
+                        VStack(spacing: 4) {
+                            Group {
+                                if let thumb = filterThumbs[first.name ?? ""] {
+                                    Image(uiImage: thumb).resizable().scaledToFill()
+                                } else {
+                                    Color.white.opacity(0.12)
+                                }
+                            }
+                            .frame(width: 54, height: 54)
+                            .clipShape(.rect(cornerRadius: 10))
+                            .overlay { RoundedRectangle(cornerRadius: 10).stroke(chosen ? Color.yellow : .clear, lineWidth: 2) }
+                            Text(family.title)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(chosen ? Color.yellow : .white.opacity(0.8))
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .accessibilityLabel(family.title)
+                    .accessibilityAddTraits(chosen ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal)
+            lookStyles
+            HStack(spacing: 8) {
+                ForEach(PhotoEdit.Effect.allCases, id: \.self) { effect in effectChip(effect) }
+            }
+            .padding(.horizontal)
+            HStack(spacing: 10) {
+                Text(filterSliderTitle).font(.footnote).foregroundStyle(.secondary).frame(width: 80, alignment: .leading)
+                Slider(value: filterSliderValue, in: 0...1).tint(.yellow).accessibilityLabel(filterSliderTitle)
+                    .disabled(focusedEffect == nil && edit.filter == nil)
+                Text("\(Int((filterSliderValue.wrappedValue * 100).rounded()))").font(.caption.monospacedDigit()).frame(width: 30, alignment: .trailing)
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    /// The chosen family's styles; before any look is chosen, a line that says what to do.
+    @ViewBuilder private var lookStyles: some View {
+        if let family = PhotoEdit.family(of: edit.filter), family.looks.count > 1 {
+            Picker("Style", selection: Binding { edit.filter } set: { edit.filter = $0 }) {
+                ForEach(family.looks, id: \.title) { Text($0.title).tag($0.name) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+        } else {
+            Text("Pick a look to style it").font(.footnote).foregroundStyle(.secondary).frame(height: 32)
+        }
+    }
+
+    private func effectChip(_ effect: PhotoEdit.Effect) -> some View {
+        let on = edit.effects[effect] != nil, focused = focusedEffect == effect
+        return Button { tapEffect(effect) } label: {
+            Text(effect.rawValue)
+                .font(.footnote.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .foregroundStyle(focused ? Color.black : .white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .background(focused ? Color.white : Color.white.opacity(0.14), in: .capsule)
+                .overlay { if on, !focused { Capsule().stroke(Color.yellow, lineWidth: 1.5) } }
+        }
+        .accessibilityLabel(effect.rawValue)
+        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityAddTraits(focused ? .isSelected : [])
+    }
+
+    private var filterSliderTitle: String {
+        if let focusedEffect { return focusedEffect.rawValue }
+        return PhotoEdit.family(of: edit.filter)?.title ?? "Look"
+    }
+
+    /// 0…1: the look's intensity, or the focused effect's amount; the effect is removed at 0.
+    private var filterSliderValue: Binding<Double> {
+        Binding {
+            if let focusedEffect { return edit.effects[focusedEffect] ?? 0 }
+            return edit.filterAmount
+        } set: { value in
+            if let focusedEffect { edit.effects[focusedEffect] = value > 0 ? value : nil } else { edit.filterAmount = value }
+        }
+    }
+
+    private func chooseFamily(_ family: PhotoEdit.LookFamily) {
+        if PhotoEdit.family(of: edit.filter)?.title != family.title {
+            edit.filter = family.looks[0].name
+            edit.filterAmount = 1
+        }
+        focusedEffect = nil
+    }
+
+    /// A first tap turns an effect on at half; a tap on the chosen one turns it off.
+    private func tapEffect(_ effect: PhotoEdit.Effect) {
+        if edit.effects[effect] == nil {
+            edit.effects[effect] = 0.5
+            focusedEffect = effect
+        } else if focusedEffect == effect {
+            edit.effects[effect] = nil
+            focusedEffect = nil
+        } else {
+            focusedEffect = effect
         }
     }
 
@@ -1178,14 +1254,30 @@ struct PhotoEdit: Equatable {
     /// The whole picture, in 0…1 with the origin at the top left.
     static let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
 
-    /// The Filters strip: the name is what `filter` holds. The first ones are made here; "CIPhotoEffect…" are Core Image's own.
-    static let filters: [(name: String?, title: String)] = [
-        (nil, "Original"), ("Vivid", "Vivid"), ("Vivid Warm", "Vivid Warm"), ("Vivid Cool", "Vivid Cool"),
-        ("Dramatic", "Dramatic"), ("Dramatic Warm", "Dramatic Warm"), ("Dramatic Cool", "Dramatic Cool"),
-        ("Matte", "Matte"), ("Film", "Film"), ("CIPhotoEffectFade", "Fade"), ("CIPhotoEffectInstant", "Instant"),
-        ("CIPhotoEffectChrome", "Chrome"), ("CIPhotoEffectProcess", "Process"), ("CIPhotoEffectTransfer", "Transfer"),
-        ("CIPhotoEffectMono", "Mono"), ("CIPhotoEffectTonal", "Silvertone"), ("CIPhotoEffectNoir", "Noir"),
+    /// A group of looks on the Filters page: the first is what the thumbnail shows. `name` is what `filter` holds:
+    /// the first ones are made here, "CIPhotoEffect…" are Core Image's own.
+    struct LookFamily {
+        let title: String
+        let looks: [(name: String?, title: String)]
+    }
+
+    static let families: [LookFamily] = [
+        LookFamily(title: "Original", looks: [(nil, "Original")]),
+        LookFamily(title: "Vivid", looks: [("Vivid", "Neutral"), ("Vivid Warm", "Warm"), ("Vivid Cool", "Cool")]),
+        LookFamily(title: "Dramatic", looks: [("Dramatic", "Neutral"), ("Dramatic Warm", "Warm"), ("Dramatic Cool", "Cool")]),
+        LookFamily(title: "Film", looks: [("Film", "Classic"), ("Matte", "Matte"), ("CIPhotoEffectFade", "Fade"), ("CIPhotoEffectInstant", "Instant")]),
+        LookFamily(title: "Mono", looks: [("CIPhotoEffectMono", "Mono"), ("CIPhotoEffectTonal", "Silvertone"), ("CIPhotoEffectNoir", "Noir")]),
     ]
+
+    /// The family a filter belongs to; nil for a name from an older save.
+    static func family(of filter: String?) -> LookFamily? {
+        families.first { $0.looks.contains { $0.name == filter } }
+    }
+
+    /// Effects that stack on the look, each from 0 to 1.
+    enum Effect: String, CaseIterable {
+        case grain = "Grain", aberration = "Aberration", glow = "Glow", splitTone = "Split Tone"
+    }
 
     static let context = CIContext()
 
@@ -1193,6 +1285,7 @@ struct PhotoEdit: Equatable {
     var filter: String?
     /// How much of the filter is applied, 0…1.
     var filterAmount = 1.0
+    var effects: [Effect: Double] = [:]
     var quarterTurns = 0
     var mirrored = false
     var straighten = 0.0
@@ -1212,7 +1305,7 @@ struct PhotoEdit: Equatable {
     }
 
     static func == (a: PhotoEdit, b: PhotoEdit) -> Bool {
-        a.values == b.values && a.filter == b.filter && a.filterAmount == b.filterAmount && a.quarterTurns == b.quarterTurns && a.mirrored == b.mirrored
+        a.values == b.values && a.filter == b.filter && a.filterAmount == b.filterAmount && a.effects == b.effects && a.quarterTurns == b.quarterTurns && a.mirrored == b.mirrored
             && a.straighten == b.straighten && a.perspectiveV == b.perspectiveV && a.perspectiveH == b.perspectiveH && a.crop == b.crop && a.motionOff == b.motionOff && a.keyFrame === b.keyFrame
             && a.retouched === b.retouched
     }
@@ -1229,7 +1322,7 @@ struct PhotoEdit: Equatable {
     /// Only crop, rotate and mirror: Immich can store these without new pixels.
     /// A crop of a turned photo is baked into new pixels: the server's crop works on the photo as it was shot.
     var isGeometryOnly: Bool {
-        values.isEmpty && filter == nil && straighten == 0 && perspectiveV == 0 && perspectiveH == 0 && keyFrame == nil && retouched == nil && !motionOff
+        values.isEmpty && filter == nil && effects.isEmpty && straighten == 0 && perspectiveV == 0 && perspectiveH == 0 && keyFrame == nil && retouched == nil && !motionOff
             && (crop == Self.unit || quarterTurns == 0)
     }
 
@@ -1357,7 +1450,104 @@ extension CIImage {
             // Core Image's y runs upward, the crop's runs downward
             image = image.cropped(to: CGRect(x: e.minX + c.minX * e.width, y: e.minY + (1 - c.maxY) * e.height, width: c.width * e.width, height: c.height * e.height))
         }
-        return image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))
+        let result = image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))
+        // the effects go last, so the grain and the fringe follow the frame that is kept
+        return edit.effects.isEmpty ? result : result.withEffects(edit.effects, scale: scale)
+    }
+}
+
+extension CIImage {
+    /// Split tone, glow, chromatic aberration and grain, in that order.
+    func withEffects(_ effects: [PhotoEdit.Effect: Double], scale: CGFloat) -> CIImage {
+        let extent = self.extent
+        var image = self
+        if let amount = effects[.splitTone] { image = image.splitToned(amount) }
+        if let amount = effects[.glow] {
+            let f = CIFilter.bloom(); f.inputImage = image; f.radius = Float(30 * scale); f.intensity = Float(amount)
+            image = (f.outputImage ?? image).cropped(to: extent)
+        }
+        if let amount = effects[.aberration] { image = image.aberrated(amount) }
+        if let amount = effects[.grain] { image = image.grained(amount, scale: scale) }
+        return image
+    }
+
+    /// Cool in the shadows, warm in the highlights.
+    private func splitToned(_ amount: Double) -> CIImage {
+        let extent = self.extent
+        let lumaMatrix = CIFilter.colorMatrix()
+        lumaMatrix.inputImage = self
+        lumaMatrix.rVector = CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0)
+        lumaMatrix.gVector = CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0)
+        lumaMatrix.bVector = CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0)
+        lumaMatrix.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        guard let luma = lumaMatrix.outputImage else { return self }
+        func tint(_ base: CIImage, color: CIColor, mask: CIImage) -> CIImage {
+            let strength = CGFloat(amount * 0.45)
+            let weight = CIFilter.colorMatrix()
+            weight.inputImage = mask
+            weight.rVector = CIVector(x: strength, y: 0, z: 0, w: 0)
+            weight.gVector = CIVector(x: strength, y: 0, z: 0, w: 0)
+            weight.bVector = CIVector(x: strength, y: 0, z: 0, w: 0)
+            weight.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            let colored = CIFilter.colorBlendMode()
+            colored.inputImage = CIImage(color: color).cropped(to: extent)
+            colored.backgroundImage = base
+            let mix = CIFilter.blendWithMask()
+            mix.inputImage = colored.outputImage
+            mix.backgroundImage = base
+            mix.maskImage = weight.outputImage
+            return (mix.outputImage ?? base).cropped(to: extent)
+        }
+        let shadows = luma.applyingFilter("CIColorInvert")
+        let cooled = tint(self, color: CIColor(red: 0.2, green: 0.65, blue: 0.75), mask: shadows)
+        return tint(cooled, color: CIColor(red: 1, green: 0.62, blue: 0.3), mask: luma)
+    }
+
+    /// Lateral chromatic aberration: red is drawn a little larger and blue a little smaller than green, so colour fringes grow toward the edges.
+    private func aberrated(_ amount: Double) -> CIImage {
+        let extent = self.extent, k = CGFloat(amount) * 0.012
+        func channel(_ factor: CGFloat, red: CGFloat, green: CGFloat, blue: CGFloat) -> CIImage {
+            let about = CGAffineTransform(translationX: -extent.midX, y: -extent.midY)
+                .concatenating(CGAffineTransform(scaleX: factor, y: factor))
+                .concatenating(CGAffineTransform(translationX: extent.midX, y: extent.midY))
+            let moved = clampedToExtent().transformed(by: about).cropped(to: extent)
+            let only = CIFilter.colorMatrix()
+            only.inputImage = moved
+            only.rVector = CIVector(x: red, y: 0, z: 0, w: 0)
+            only.gVector = CIVector(x: 0, y: green, z: 0, w: 0)
+            only.bVector = CIVector(x: 0, y: 0, z: blue, w: 0)
+            only.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            return only.outputImage ?? moved
+        }
+        func add(_ a: CIImage, _ b: CIImage) -> CIImage {
+            let f = CIFilter.additionCompositing(); f.inputImage = a; f.backgroundImage = b
+            return f.outputImage ?? a
+        }
+        let red = channel(1 + k, red: 1, green: 0, blue: 0)
+        let green = channel(1, red: 0, green: 1, blue: 0)
+        let blue = channel(1 - k, red: 0, green: 0, blue: 1)
+        return add(add(red, green), blue).cropped(to: extent)
+    }
+
+    /// Film grain: random grey noise laid over the photo as soft light, so it shows most in the mid-tones.
+    private func grained(_ amount: Double, scale: CGFloat) -> CIImage {
+        let extent = self.extent
+        guard let noise = CIFilter.randomGenerator().outputImage else { return self }
+        // grain is at least a pixel, and in a shrunken preview a bit coarser so it still shows
+        let size = max(1, 1.5 * scale)
+        let strength = CGFloat(amount * 0.9)
+        let grey = CIFilter.colorMatrix()
+        grey.inputImage = noise.transformed(by: CGAffineTransform(scaleX: size, y: size)).cropped(to: extent)
+        grey.rVector = CIVector(x: strength, y: 0, z: 0, w: 0)
+        grey.gVector = CIVector(x: strength, y: 0, z: 0, w: 0)
+        grey.bVector = CIVector(x: strength, y: 0, z: 0, w: 0)
+        grey.aVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+        let bias = 0.5 - strength / 2
+        grey.biasVector = CIVector(x: bias, y: bias, z: bias, w: 1)
+        let blend = CIFilter.softLightBlendMode()
+        blend.inputImage = grey.outputImage
+        blend.backgroundImage = self
+        return (blend.outputImage ?? self).cropped(to: extent)
     }
 }
 

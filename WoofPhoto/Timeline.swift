@@ -19,7 +19,8 @@ final class Timeline {
     private(set) var assets: [AssetRef] = []
     /// The last failure, shown under the grid until tapped.
     var problem: String?
-    private var loading: Set<String> = []
+    /// Month loads in flight. They belong to the timeline, not to the cell that asked, so scrolling past that cell doesn't cancel them.
+    private var loading: [String: Task<Void, Never>] = [:]
     private var saving: Task<Void, Never>?
 
     init(_ query: TimelineQuery) {
@@ -72,23 +73,27 @@ final class Timeline {
     }
 
     func loadMonth(_ key: String, with client: ImmichClient) async {
-        guard let query, let index = months?.firstIndex(where: { $0.key == key }), months?[index].assets == nil,
-              !loading.contains(key) else { return }
-        loading.insert(key)
-        defer { loading.remove(key) }
-        // a failed or cancelled month stays grey and is retried when its cells appear again
-        do {
-            var assets = try await client.bucket(key, query, order: "asc").refs
-            if let device = local[key] {
-                assets = (assets + device).sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+        guard let query, let index = months?.firstIndex(where: { $0.key == key }), months?[index].assets == nil else { return }
+        // a cell that appears while another is still loading the month waits for that load; before, it gave up and the month stayed grey
+        if let running = loading[key] { return await running.value }
+        let task = Task {
+            defer { loading[key] = nil }
+            // a failed month stays grey and is retried when its cells appear again
+            do {
+                var assets = try await client.bucket(key, query, order: "asc").refs
+                if let device = local[key] {
+                    assets = (assets + device).sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+                }
+                if let index = months?.firstIndex(where: { $0.key == key }) {
+                    months?[index].assets = assets
+                    months?[index].count = assets.count
+                }
+            } catch {
+                report(error, while: "loading \(key.prefix(7))")
             }
-            if let index = months?.firstIndex(where: { $0.key == key }) {
-                months?[index].assets = assets
-                months?[index].count = assets.count
-            }
-        } catch {
-            report(error, while: "loading \(key.prefix(7))")
         }
+        loading[key] = task
+        await task.value
     }
 
     /// A month and the two beside it, so scrolling into the next month already shows its thumbhashes.
@@ -96,6 +101,7 @@ final class Timeline {
         await loadMonth(key, with: client)
         guard let months, let index = months.firstIndex(where: { $0.key == key }) else { return }
         for neighbour in [index + 1, index - 1] where months.indices.contains(neighbour) {
+            guard !Task.isCancelled else { return }
             await loadMonth(months[neighbour].key, with: client)
         }
     }

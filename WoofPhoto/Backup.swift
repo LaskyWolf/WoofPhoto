@@ -41,6 +41,10 @@ final class Backup {
     private(set) var pendingByMonth: [String: [AssetRef]] = [:]
     /// Device asset id → server asset id, for everything uploaded or found on the server.
     private var uploaded: [String: String]
+    /// Server asset ids whose copy is still in this iPhone's library, for the grid badges.
+    private(set) var onDeviceIDs: Set<String> = []
+    /// False until photo access is granted: without it every server photo would look server-only.
+    private(set) var tracksDevice = false
     private var task: Task<Void, Never>?
 
     private static let recordURL = URL.applicationSupportDirectory.appending(path: "backup.json")
@@ -76,6 +80,11 @@ final class Backup {
             months[monthKey(asset), default: []].append(AssetRef(device: asset))
         }
         pendingByMonth = months
+        var present = Set<String>()
+        PHAsset.fetchAssets(withLocalIdentifiers: Array(uploaded.keys), options: nil)
+            .enumerateObjects { asset, _, _ in present.insert(asset.localIdentifier) }
+        onDeviceIDs = Set(uploaded.filter { present.contains($0.key) }.map(\.value))
+        tracksDevice = true
     }
 
     func start(with client: ImmichClient) {
@@ -166,6 +175,7 @@ final class Backup {
 
     private func remember(_ asset: PHAsset, server id: String) {
         uploaded[asset.localIdentifier] = id
+        onDeviceIDs.insert(id)
         try? FileManager.default.createDirectory(at: Self.recordURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONEncoder().encode(uploaded).write(to: Self.recordURL)
     }
@@ -227,6 +237,7 @@ final class Backup {
     func forget() {
         stop()
         uploaded = [:]
+        onDeviceIDs = []
         try? FileManager.default.removeItem(at: Self.recordURL)
         refreshPending()
     }

@@ -285,9 +285,9 @@ struct TimelineSettings: View {
             Text("Pinching the grid changes it too.")
         }
         Section {
-            Toggle(isOn: $backupBadge) { Label("Not Backed Up Badge", systemImage: "icloud.slash") }
+            Toggle(isOn: $backupBadge) { Label("Phone / Server Badge", systemImage: "iphone") }
         } footer: {
-            Text("Marks the photos on this iPhone that aren't on the server yet.")
+            Text("Bottom right: a phone for photos only on this iPhone, a cloud for photos only on the server. Nothing when both have it.")
         }
     }
 }

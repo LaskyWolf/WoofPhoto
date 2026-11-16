@@ -1519,8 +1519,9 @@ extension CIImage {
             only.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
             return only.outputImage ?? moved
         }
+        // each copy holds one colour channel, so the per-channel maximum is their sum and alpha stays 1 (addition made alpha 3)
         func add(_ a: CIImage, _ b: CIImage) -> CIImage {
-            let f = CIFilter.additionCompositing(); f.inputImage = a; f.backgroundImage = b
+            let f = CIFilter.maximumCompositing(); f.inputImage = a; f.backgroundImage = b
             return f.outputImage ?? a
         }
         let red = channel(1 + k, red: 1, green: 0, blue: 0)
@@ -1535,7 +1536,7 @@ extension CIImage {
         guard let noise = CIFilter.randomGenerator().outputImage else { return self }
         // grain is at least a pixel, and in a shrunken preview a bit coarser so it still shows
         let size = max(1, 1.5 * scale)
-        let strength = CGFloat(amount * 0.9)
+        let strength = CGFloat(amount * 0.5)
         let grey = CIFilter.colorMatrix()
         grey.inputImage = noise.transformed(by: CGAffineTransform(scaleX: size, y: size)).cropped(to: extent)
         grey.rVector = CIVector(x: strength, y: 0, z: 0, w: 0)

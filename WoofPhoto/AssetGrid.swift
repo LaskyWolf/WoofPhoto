@@ -522,18 +522,16 @@ struct Thumbnail: View {
             .clipShape(.rect(cornerRadius: cornerRadius))
             .contentShape(.rect(cornerRadius: cornerRadius))
             .overlay(alignment: .bottomTrailing) {
-                if showsBadges, let duration {
-                    Text(duration).overlayBadge()
+                if showsBadges {
+                    HStack(spacing: 0) {
+                        if let duration { Text(duration).overlayBadge() }
+                        if let place { Image(systemName: place.symbol).overlayBadge() }
+                    }
                 }
             }
             .overlay(alignment: .bottomLeading) {
                 if showsBadges, asset?.isFavorite == true {
                     Image(systemName: "heart.fill").overlayBadge()
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                if showsBadges, backupBadge, asset?.localID != nil {
-                    Image(systemName: "icloud.slash").overlayBadge()
                 }
             }
             .overlay(alignment: .topTrailing) {
@@ -546,13 +544,22 @@ struct Thumbnail: View {
             .task(id: asset?.id) { await load() }
     }
 
+    /// Where the photo lives; nothing to show when the server and this iPhone both have it.
+    private var place: (symbol: String, spoken: String)? {
+        guard backupBadge, let asset else { return nil }
+        if asset.localID != nil { return ("iphone", "Only on this iPhone") }
+        let backup = Backup.shared
+        if backup.tracksDevice, !backup.onDeviceIDs.contains(asset.id) { return ("icloud", "Only on the server") }
+        return nil
+    }
+
     /// "Video, 1:05, Favorite, March 3, 2024" for VoiceOver.
     private var spokenLabel: String {
         guard let asset else { return "Photo, loading" }
         var parts = [asset.isImage ? "Photo" : "Video"]
         if let duration { parts.append(duration) }
         if asset.isFavorite { parts.append("Favorite") }
-        if asset.localID != nil { parts.append("Not backed up") }
+        if let place { parts.append(place.spoken) }
         if asset.stackCount > 1 { parts.append("Stack of \(asset.stackCount)") }
         if let date = asset.date { parts.append(date.formatted(Date.FormatStyle(date: .long, time: .omitted, timeZone: .gmt))) }
         return parts.joined(separator: ", ")

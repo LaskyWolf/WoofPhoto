@@ -25,6 +25,8 @@ struct AssetGrid: View {
     @State private var error: String?
     /// nil outside Select mode.
     @State private var selection: Set<String>?
+    /// The select checkmark's glyph plus its padding, growing with the text size like the glyph does.
+    @ScaledMetric(relativeTo: .title3) private var checkmarkWidth: CGFloat = 28
     @State private var drag: (start: Int, base: Set<String>, adds: Bool)?
     @State private var gridWidth: CGFloat = 0
     @Environment(\.photoZoom) private var zoom
@@ -202,7 +204,8 @@ struct AssetGrid: View {
 
     /// One grid cell. Its own function: inside the grid's ForEach the modifier chain is too long for the type checker.
     private func cell(_ asset: AssetRef?, month: Timeline.Month, index: Int, client: ImmichClient?) -> some View {
-        Thumbnail(asset: asset)
+        // in select mode the time and cloud/iPhone badges step left of the checkmark instead of sitting under it
+        Thumbnail(asset: asset, badgeInset: selection == nil ? 0 : checkmarkWidth)
             .overlay(alignment: .bottomTrailing) {
                 if let selection, let id = asset?.id {
                     let selected = selection.contains(id)
@@ -681,6 +684,8 @@ struct Thumbnail: View {
     var cornerRadius: CGFloat = 0
     /// Off in the viewer's strip, where the cells are too small for them.
     var showsBadges = true
+    /// Room left free at the bottom-right corner, for the select mode's checkmark.
+    var badgeInset: CGFloat = 0
 
     @Environment(Session.self) private var session
     @Environment(Timeline.self) private var timeline: Timeline?
@@ -706,6 +711,7 @@ struct Thumbnail: View {
                         if let duration { Text(duration).overlayBadge() }
                         if let place { Image(systemName: place.symbol).overlayBadge() }
                     }
+                    .padding(.trailing, badgeInset)
                 }
             }
             .overlay(alignment: .bottomLeading) {

@@ -70,6 +70,8 @@ struct AssetGrid: View {
                 // an action on the selection ends Select mode, as in WoofMusic's playlists
                 actions.done = { selection = nil }
             }
+            // photos the checksum check found on the server, or a finished backup, change what the Library merges
+            .onChange(of: Backup.shared.revision) { if timeline.query == .library { Task { await reload() } } }
             .task(id: ObjectIdentifier(timeline)) {
                 // a new search or a refreshed trash swaps the timeline, so the actions follow it
                 actions.timeline = timeline
@@ -218,7 +220,8 @@ struct AssetGrid: View {
                                     }
                                 }
                                 .accessibilityAddTraits(selection?.contains(asset?.id ?? "") == true ? [.isButton, .isSelected] : .isButton)
-                                .task {
+                                // again when the month is forgotten, which a changed backup record does
+                                .task(id: month.assets == nil) {
                                     if let client { await timeline.loadMonth(around: month.key, with: client) }
                                 }
                         }
@@ -607,6 +610,11 @@ struct Thumbnail: View {
                 return
             } catch let error as URLError where error.code != .cancelled && attempt < 2 {
                 do { try await Task.sleep(for: .seconds(Double(attempt + 1) * 1.5)) } catch { return }
+            } catch ImmichError.http(404, _) where attempt < 2 {
+                // just uploaded, so the server hasn't made the thumbnail yet; or deleted on the server since this list was saved
+                do { try await Task.sleep(for: .seconds(Double(attempt + 1) * 3)) } catch { return }
+            } catch ImmichError.http(404, _) {
+                return // stays grey: the next reload drops an item the server deleted
             } catch {
                 if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
                     timeline?.report(error, while: "loading a thumbnail")

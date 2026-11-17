@@ -68,6 +68,8 @@ struct WoofPhotoApp: App {
             .onChange(of: scenePhase) { _, phase in
                 let backup = Backup.shared
                 if phase == .active, backup.enabled, let client = session.client { backup.start(with: client) }
+                // the newest 300 photos not compared yet, on Wi-Fi only: the Library merges the ones the server has
+                if phase == .active, !backup.enabled, Connection.shared.isCheap, let client = session.client { backup.matchExisting(with: client, limit: 300) }
                 if phase == .active, let client = session.client { Task { await FeaturedPhotos.refreshIfStale(client: client) } }
                 if phase == .active, let client = session.client { Task { await WidgetSync.refresh(client: client) } }
                 if phase == .background { backup.scheduleBackground() }

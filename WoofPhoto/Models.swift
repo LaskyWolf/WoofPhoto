@@ -102,7 +102,14 @@ extension Date {
     /// Immich dates: "2024-05-01T10:20:30.000Z", with or without the fraction.
     init?(immich text: String) {
         let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-        guard let date = (try? fractional.parse(text)) ?? (try? Date.ISO8601FormatStyle().parse(text)) else { return nil }
+        func parse(_ text: String) -> Date? { (try? fractional.parse(text)) ?? (try? Date.ISO8601FormatStyle().parse(text)) }
+        if let date = parse(text) { self = date; return }
+        // a database's spelling: "2024-05-01 10:20:30+00", or no zone at all, which Immich means as UTC
+        var fixed = text.replacingOccurrences(of: " ", with: "T")
+        guard fixed.contains("T") else { return nil }
+        if fixed.range(of: #"[+-]\d{2}$"#, options: .regularExpression) != nil { fixed += ":00" }
+        else if !fixed.hasSuffix("Z"), fixed.range(of: #"[+-]\d{2}:\d{2}$"#, options: .regularExpression) == nil { fixed += "Z" }
+        guard let date = parse(fixed) else { return nil }
         self = date
     }
 }

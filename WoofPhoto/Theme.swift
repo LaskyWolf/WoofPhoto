@@ -120,7 +120,8 @@ extension View {
 extension View {
     /// An OK alert with the message, shown while it's set; dismissing it clears it.
     func messageAlert(_ message: Binding<String?>) -> some View {
-        alert(message.wrappedValue ?? "", isPresented: Binding { message.wrappedValue != nil } set: { if !$0 { message.wrappedValue = nil } }) {}
+        // an empty message is a cancelled request, which isn't worth an alert
+        alert(message.wrappedValue ?? "", isPresented: Binding { message.wrappedValue?.isEmpty == false } set: { if !$0 { message.wrappedValue = nil } }) {}
     }
 }
 

@@ -47,13 +47,22 @@ final class Backup {
     private(set) var matchedOnDevice: Set<String> = []
     /// False until photo access is granted: without it every server photo would look server-only.
     private(set) var tracksDevice = false
+    /// Goes up whenever the lists of photos not backed up changed, so the Library merges again.
+    private(set) var revision = 0
+    /// iPhone photos whose checksum the server already answered for.
+    private var checked: Set<String>
+    private var matchTask: Task<Void, Never>?
+    /// Progress of the checksum check against the server, nil when it isn't running.
+    private(set) var matching: (done: Int, total: Int)?
     private var task: Task<Void, Never>?
     private var saving: Task<Void, Never>?
 
     private static let recordURL = URL.applicationSupportDirectory.appending(path: "backup.json")
+    private static let checkedURL = URL.applicationSupportDirectory.appending(path: "backup-checked.json")
 
     private init() {
         uploaded = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: Self.recordURL))) ?? [:]
+        checked = Set((try? JSONDecoder().decode([String].self, from: Data(contentsOf: Self.checkedURL))) ?? [])
     }
 
     var isRunning: Bool { task != nil }
@@ -88,6 +97,61 @@ final class Backup {
             .enumerateObjects { asset, _, _ in present.insert(asset.localIdentifier) }
         onDeviceIDs = Set(uploaded.filter { present.contains($0.key) }.map(\.value))
         tracksDevice = true
+        revision += 1
+    }
+
+    /// Asks the server which of the photos not backed up it already has, by checksum, and uploads nothing.
+    /// A match is remembered like an upload, so the photo shows once. Photos whose original is only in iCloud are skipped.
+    /// `limit` keeps the automatic run short; the button in Backup passes none.
+    func matchExisting(with client: ImmichClient, limit: Int = .max) {
+        guard matchTask == nil, task == nil else { return }
+        matchTask = Task {
+            defer { matchTask = nil; matching = nil }
+            guard await authorize() else { return }
+            if pending.isEmpty { refreshPending() }
+            let todo = Array(pending.filter { !checked.contains($0.localIdentifier) }.prefix(limit))
+            var found = 0
+            for start in stride(from: 0, to: todo.count, by: 50) {
+                if Task.isCancelled { break }
+                matching = (start, todo.count)
+                var entries: [[String: String]] = []
+                for asset in todo[start..<min(start + 50, todo.count)] {
+                    guard !Task.isCancelled, let sum = await checksum(of: asset) else { continue }
+                    entries.append(["id": asset.localIdentifier, "checksum": sum])
+                }
+                guard !entries.isEmpty else { continue }
+                do {
+                    let reply: UploadCheck = try await client.fetch("POST", "/assets/bulk-upload-check", body: ["assets": entries])
+                    let answer = Matching.duplicates(in: reply.results)
+                    checked.formUnion(answer.checked)
+                    for (local, server) in answer.found { uploaded[local] = server }
+                    found += answer.found.count
+                } catch {
+                    break // offline or the server is busy: the rest waits for the next run
+                }
+            }
+            if let data = try? JSONEncoder().encode(checked) { try? data.write(to: Self.checkedURL, options: .atomic) }
+            if found > 0 {
+                persist()
+                refreshPending()
+            }
+        }
+    }
+
+    func stopMatching() { matchTask?.cancel() }
+
+    /// The SHA-1 the server knows a file by, read from the original in the library without copying it; nil when it isn't on this iPhone.
+    private func checksum(of asset: PHAsset) async -> String? {
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let main = resources.first(where: { [.photo, .video].contains($0.type) }) ?? resources.first else { return nil }
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = false
+        let hasher = SHA1Box()
+        return await withCheckedContinuation { continuation in
+            PHAssetResourceManager.default().requestData(for: main, options: options) { hasher.sha1.update(data: $0) } completionHandler: { error in
+                continuation.resume(returning: error == nil ? hasher.hex : nil)
+            }
+        }
     }
 
     func start(with client: ImmichClient) {
@@ -266,6 +330,9 @@ final class Backup {
         uploaded = [:]
         onDeviceIDs = []
         matchedOnDevice = []
+        matchTask?.cancel()
+        checked = []
+        try? FileManager.default.removeItem(at: Self.checkedURL)
         try? FileManager.default.removeItem(at: Self.recordURL)
         refreshPending()
     }
@@ -288,12 +355,13 @@ final class Backup {
 }
 
 private struct UploadCheck: Decodable {
-    var results: [Result]
+    var results: [Matching.Check]
+}
 
-    struct Result: Decodable {
-        var action: String
-        var assetId: String?
-    }
+/// A SHA-1 fed by PhotoKit's callbacks, which run one after another on a background queue.
+private final class SHA1Box: @unchecked Sendable {
+    var sha1 = Insecure.SHA1()
+    var hex: String { sha1.finalize().map { String(format: "%02x", $0) }.joined() }
 }
 
 /// Backup settings, progress and errors.
@@ -334,6 +402,17 @@ struct BackupView: View {
                 } else {
                     Button("Back Up Now", systemImage: "arrow.up.circle") { if let client = session.client { backup.start(with: client) } }
                 }
+            }
+            Section {
+                if let progress = backup.matching {
+                    ProgressView("Checking \(progress.done + 1) of \(progress.total)", value: Double(progress.done), total: Double(max(progress.total, 1)))
+                    Button("Stop", systemImage: "stop.circle", role: .destructive) { backup.stopMatching() }
+                } else {
+                    Button("Find Photos Already on the Server", systemImage: "link") { if let client = session.client { backup.matchExisting(with: client) } }
+                        .disabled(backup.isRunning)
+                }
+            } footer: {
+                Text("Compares each photo with the server's by content, without uploading, so a photo on both shows once in the Library.")
             }
             Section("Options") {
                 Toggle(isOn: $backup.wifiOnly) { Label("Wi-Fi Only", systemImage: "wifi") }

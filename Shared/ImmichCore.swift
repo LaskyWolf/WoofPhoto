@@ -181,6 +181,8 @@ enum ImmichError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .http(401, _): "Wrong email or password, or the session expired."
+        // a wrong address answers with the web server's own "Cannot GET ..." page; Immich itself says what it didn't find
+        case let .http(404, message) where message?.hasPrefix("Cannot ") == false: "The server doesn't have that item any more."
         case .http(404, _): "No Immich server at this address. Check the URL and the port."
         case let .http(code, message): "The server answered \(code)\(message.map { ": \($0)" } ?? ".")"
         }
@@ -191,6 +193,8 @@ extension Error {
     /// A message that says what went wrong and what to try, for the errors a home server usually causes.
     /// Each one is also written to the log file, where Diagnostics lists it under Recent Problems.
     var explanation: String {
+        // a request that was cancelled (the user scrolled on or left the screen) isn't a failure: no message, no log line
+        if self is CancellationError || (self as? URLError)?.code == .cancelled { return "" }
         let message = describe
         // ponytail: logs where the message is made; every caller asks once per failure today
         FileLog.shared.append("ERROR", "\(message) (\(String(describing: self).prefix(200)))")

@@ -147,5 +147,15 @@ try? await Task.sleep(for: .milliseconds(100)); task.cancel()
 do { _ = try await task.value } catch { _ = error.explanation }
 check(!logText().contains("cancelled"), "cancelling a request in flight (scrolling away) is not logged")
 
+print("Editing")
+func upright(_ orientation: String) -> String {
+    let json = #"{"id":"a","exifInfo":{"exifImageWidth":4032,"exifImageHeight":3024,"orientation":"\#(orientation)"}}"#
+    return (try? JSONDecoder().decode(Asset.self, from: Data(json.utf8)).uprightSize).flatMap { $0 }.map { "\($0.width)x\($0.height)" } ?? "nil"
+}
+check(upright("1") == "4032x3024", "an upright photo keeps its EXIF size")
+check(upright("6") == "3024x4032", "a photo shot in portrait (EXIF 6) swaps width and height, as the server does", upright("6"))
+let numeric = try? JSONDecoder().decode(Asset.self, from: Data(#"{"id":"a","exifInfo":{"exifImageWidth":10,"exifImageHeight":5,"orientation":6}}"#.utf8))
+check(numeric?.exifInfo != nil, "an orientation sent as a number doesn't break the asset")
+
 print("\n\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

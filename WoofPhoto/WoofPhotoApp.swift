@@ -78,7 +78,7 @@ struct WoofPhotoApp: App {
             // not only in debug builds: this keeps the thumbnail folder under its limit
             .task { Task.detached(priority: .utility) { OfflineFiles.trimThumbs() } }
             #if DEBUG
-            .task { ImmichClient.selfCheck(); Connection.selfCheck(); OfflineIndex.selfCheck(); WidgetData.selfCheck(); FoldersView.selfCheck(); GlyphScript.selfCheck(); FileLog.selfCheck(); AppUpdate.selfCheck() }
+            .task { ImmichClient.selfCheck(); Connection.selfCheck(); OfflineIndex.selfCheck(); WidgetData.selfCheck(); FoldersView.selfCheck(); GlyphScript.selfCheck(); FileLog.selfCheck(); AppUpdate.selfCheck(); ServerEdits.selfCheck() }
             #endif
         }
     }

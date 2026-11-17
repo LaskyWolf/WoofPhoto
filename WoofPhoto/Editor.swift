@@ -61,8 +61,15 @@ struct EditorView: View {
     @State private var slider = PhotoEdit.Slider.exposure
     /// The photo, or the video frame being looked at.
     @State private var source: CIImage?
+    /// A copy of `source` at most 2048 pixels long, which the previews start from: rendering 48 MP for a
+    /// 1600-pixel preview is what made the sliders lag. Saving uses `source`.
+    @State private var proxy: CIImage?
     @State private var preview: UIImage?
     @State private var hasServerEdits = false
+    /// The server's crop, rotate and mirror already on the photo, shown as the starting settings; Done is off until something differs.
+    @State private var initial = PhotoEdit()
+    /// The photo came from the server's own copy, which already has its edits: they can't be replaced by new ones.
+    @State private var serverEditsInPixels = false
     @State private var busy = false
     @State private var error: String?
     @State private var keyFrame = 0.0
@@ -175,7 +182,7 @@ struct EditorView: View {
         // a moving crop frame doesn't render again: the picture under it stays the same
         // in Crop the straighten angle turns the shown picture under the frame instead, so it isn't in the render
         .task(id: RenderKey(edit: tool == .crop ? edit.withoutCrop.untilted : edit.withoutCrop, cropping: tool == .crop)) { await render(original: false) }
-        .task(id: source.map { ObjectIdentifier(edit.base($0)) }) { baseDisplay = source.map { edit.base($0) }?.screenImage }
+        .task(id: source.map { ObjectIdentifier(edit.base($0)) }) { baseDisplay = source.map { previewPixels(edit.base($0)) }?.screenImage }
         .task(id: source == nil) { await makeFilterThumbs() }
         .task(id: framePosition) { await showFrame(at: framePosition) }
     }
@@ -323,7 +330,7 @@ struct EditorView: View {
                 Group {
                     if tool == .adjust {
                         Button {
-                            if let source { applyAuto(edit.base(source)) }
+                            if let source { applyAuto(previewPixels(edit.base(source))) }
                         } label: {
                             Image(systemName: "wand.and.stars").font(.title3.weight(.semibold)).frame(width: 52, height: 52)
                                 .glassEffect(.regular.interactive(), in: .circle)
@@ -528,7 +535,7 @@ struct EditorView: View {
     /// The Filters strip's thumbnails: the photo, small, with each filter.
     private func makeFilterThumbs() async {
         guard let source else { return }
-        let base = edit.base(source)
+        let base = previewPixels(edit.base(source))
         let scale = min(1, 160 / max(base.extent.width, base.extent.height))
         let small = base.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         var thumbs: [String: UIImage] = [:]
@@ -542,7 +549,7 @@ struct EditorView: View {
         filterThumbs = thumbs
     }
 
-    private var changed: Bool { edit != PhotoEdit() || trim != 0...1 || muted }
+    private var changed: Bool { edit != initial || trim != 0...1 || muted }
 
     private var tools: [Tool] {
         if !asset.isImage { return [.trim, .adjust, .filters, .crop] }
@@ -943,10 +950,21 @@ struct EditorView: View {
                 }
             } else if let client = session.client {
                 if asset.isImage {
-                    let data = try await client.image(asset.id, size: "fullsize")
-                    source = CIImage(data: data, options: [.applyOrientationProperty: true])
                     let edits: ServerEdits? = try? await client.get("/assets/\(asset.id)/edits")
                     hasServerEdits = edits?.edits.isEmpty == false
+                    // the original, not "fullsize": for a HEIC that is the 1440-pixel preview unless the server makes full-size copies.
+                    // The server's edits are shown as settings on it, so saving keeps them.
+                    let original = (try? await client.downloadOriginal(asset.id)).flatMap { CIImage(contentsOf: $0, options: [.applyOrientationProperty: true]) }
+                    if let original, let earlier = (edits ?? ServerEdits(edits: [])).photoEdit(size: original.extent.size) {
+                        source = original
+                        edit = earlier
+                        initial = earlier
+                    } else {
+                        // a format Core Image can't read, or edits the editor can't show: the server's copy, which has them in its pixels
+                        let data = try await client.image(asset.id, size: "fullsize")
+                        source = CIImage(data: data, options: [.applyOrientationProperty: true])
+                        serverEditsInPixels = hasServerEdits
+                    }
                     // the moving part is optional: a failed download leaves the still editable instead of a spinner
                     if let video = asset.livePhotoVideoId, let url = try? await client.downloadOriginal(video) {
                         motion = AVURLAsset(url: url)
@@ -966,6 +984,7 @@ struct EditorView: View {
                 self.frames = frames
             }
             if source == nil, video == nil { throw EditError.load }
+            if video == nil, let source { proxy = await Self.shrunk(source) }
             await render(original: false)
         } catch {
             self.error = error.explanation
@@ -998,17 +1017,38 @@ struct EditorView: View {
         await render(original: false)
     }
 
-    /// Renders a screen-sized preview of the edit.
+    /// The picture a preview starts from: the shrunk copy when `base` is the photo's own pixels.
+    private func previewPixels(_ base: CIImage) -> CIImage { base === source ? proxy ?? base : base }
+
+    /// Decodes the photo once at most 2048 pixels long, in Display P3 so the preview keeps its colours.
+    private static func shrunk(_ image: CIImage) async -> CIImage {
+        await Task.detached(priority: .userInitiated) {
+            let scale = min(1, 2048 / max(image.extent.width, image.extent.height))
+            guard scale < 1 else { return image }
+            let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            defer { PhotoEdit.context.clearCaches() }
+            guard let cgImage = PhotoEdit.context.createCGImage(small, from: small.extent, format: .RGBA8,
+                                                                 colorSpace: CGColorSpace(name: CGColorSpace.displayP3)) else { return image }
+            return CIImage(cgImage: cgImage)
+        }.value
+    }
+
+    /// Renders a screen-sized preview of the edit, off the main thread so the sliders keep moving.
     private func render(original: Bool) async {
         guard let source else { return }
         // Crop shows the whole picture with the frame over it
         let cropping = tool == .crop && !original
         let shown = cropping ? edit.withoutCrop.untilted : edit
-        let base = original ? source : shown.base(source)
-        let scale = min(1, 1600 / max(base.extent.width, base.extent.height))
-        let small = base.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let full = original ? source : shown.base(source)
+        let base = previewPixels(full)
+        let fit = min(1, 1600 / max(base.extent.width, base.extent.height))
+        let small = base.transformed(by: CGAffineTransform(scaleX: fit, y: fit))
+        // distance-based effects (Definition, Grain) are scaled against the saved photo, so the preview matches it
+        let scale = small.extent.width / max(full.extent.width, 1)
         let image = original ? small : small.applying(shown, scale: scale)
-        guard let cgImage = PhotoEdit.context.createCGImage(image, from: image.extent) else { return }
+        let cgImage = await Task.detached(priority: .userInitiated) { PhotoEdit.context.createCGImage(image, from: image.extent) }.value
+        // a newer render replaced this one, or the finger lifted (or came down) while it ran
+        guard !Task.isCancelled, original == comparing, let cgImage else { return }
         preview = UIImage(cgImage: cgImage)
         previewUncropped = cropping || edit.crop == PhotoEdit.unit
     }
@@ -1047,12 +1087,11 @@ struct EditorView: View {
                     defer { try? FileManager.default.removeItem(at: file) }
                     try await export(video, to: file)
                     editID = try await stackNew(file, detail: detail, client: client)
-                } else if edit.motionOff, edit.withoutMotion == PhotoEdit() {
+                } else if edit.motionOff, edit.withoutMotion == initial {
                     try await client.call("PUT", "/assets/\(asset.id)", body: ["livePhotoVideoId": NSNull()])
-                } else if edit.isGeometryOnly, let detail = try? await client.asset(asset.id),
-                          let width = detail.exifInfo?.exifImageWidth?.value ?? detail.width?.value,
-                          let height = detail.exifInfo?.exifImageHeight?.value ?? detail.height?.value {
-                    try await client.call("PUT", "/assets/\(asset.id)/edits", body: ["edits": edit.serverEdits(width: width, height: height)])
+                } else if edit.isGeometryOnly, !serverEditsInPixels, let detail = try? await client.asset(asset.id),
+                          let size = detail.uprightSize {
+                    try await client.call("PUT", "/assets/\(asset.id)/edits", body: ["edits": edit.serverEdits(width: size.width, height: size.height)])
                     editID = "edits"
                 } else if let source {
                     editID = try await bake(source, client: client)
@@ -1080,7 +1119,7 @@ struct EditorView: View {
         if let video {
             try await export(video, to: output.renderedContentURL)
         } else if let source {
-            try jpeg(edit.base(source).applying(edit, scale: 1)).write(to: output.renderedContentURL)
+            try await Self.jpeg(edit.base(source).applying(edit, scale: 1)).write(to: output.renderedContentURL)
         }
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest(for: phAsset).contentEditingOutput = output
@@ -1121,11 +1160,13 @@ struct EditorView: View {
         try await exporter.export(to: file, as: .mov)
     }
 
-    private func jpeg(_ image: CIImage) throws -> Data {
-        guard let data = PhotoEdit.context.jpegRepresentation(of: image, colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
-                                                               options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.92]) else {
-            throw EditError.render
-        }
+    /// The full-size render, off the main thread: a 48 MP photo takes seconds, and the spinner must keep turning.
+    private static func jpeg(_ image: CIImage) async throws -> Data {
+        let data = await Task.detached(priority: .userInitiated) {
+            PhotoEdit.context.jpegRepresentation(of: image, colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
+                                                 options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.92])
+        }.value
+        guard let data else { throw EditError.render }
         return data
     }
 
@@ -1134,7 +1175,7 @@ struct EditorView: View {
         let detail = try await client.asset(asset.id)
         let name = ((detail.originalFileName ?? "Photo") as NSString).deletingPathExtension + "_edited.jpg"
         let file = FileManager.default.temporaryDirectory.appending(path: name)
-        try jpeg(edit.base(source).applying(edit, scale: 1)).write(to: file)
+        try await Self.jpeg(edit.base(source).applying(edit, scale: 1)).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         let id = try await stackNew(file, detail: detail, client: client, motion: edit.motionOff ? nil : asset.livePhotoVideoId)
         if edit.keyFrame != nil {
@@ -1201,9 +1242,84 @@ struct EditorView: View {
     }
 }
 
-private struct ServerEdits: Decodable {
+/// `GET /assets/{id}/edits`. The server turns the photo upright (its EXIF orientation) first, then crops, then rotates and mirrors.
+struct ServerEdits: Decodable {
     var edits: [Edit]
-    struct Edit: Decodable { var action: String }
+
+    struct Edit: Decodable {
+        var action: String
+        var parameters: Parameters?
+    }
+
+    struct Parameters: Decodable {
+        var x, y, width, height, angle: Double?
+        var axis: String?
+    }
+
+    /// The same edits as the editor's settings, on an upright photo `size` big: the reverse of `PhotoEdit.serverEdits`.
+    /// Nil for what the editor can't show (another app's actions, or a crop under a rotation).
+    func photoEdit(size: CGSize) -> PhotoEdit? {
+        var edit = PhotoEdit()
+        var crop: CGRect?
+        var angle: Int?
+        var axis: String?
+        for (index, item) in edits.enumerated() {
+            let p = item.parameters
+            switch item.action {
+            case "crop":
+                guard index == 0, let x = p?.x, let y = p?.y, let w = p?.width, let h = p?.height, size.width > 0, size.height > 0 else { return nil }
+                crop = CGRect(x: x / size.width, y: y / size.height, width: w / size.width, height: h / size.height)
+            case "rotate":
+                guard angle == nil, let degrees = p?.angle, degrees.truncatingRemainder(dividingBy: 90) == 0 else { return nil }
+                // a mirror before the rotation equals the opposite rotation before the mirror
+                angle = axis == nil ? Int(degrees) : -Int(degrees)
+            case "mirror":
+                guard axis == nil, let a = p?.axis, a == "horizontal" || a == "vertical" else { return nil }
+                axis = a
+            default:
+                return nil
+            }
+        }
+        // the server's clockwise degrees back into the editor's quarter turns
+        let turns = ((angle ?? 0) / 90 % 4 + 4) % 4
+        edit.quarterTurns = (4 - turns) % 4
+        if let axis {
+            edit.mirrored = true
+            // serverEdits mirrors sideways on an upright photo and top to bottom on a turned one;
+            // the other axis is the same mirror with half a turn more
+            if axis != (edit.quarterTurns % 2 == 1 ? "vertical" : "horizontal") { edit.quarterTurns = (edit.quarterTurns + 2) % 4 }
+        }
+        if let crop {
+            // serverEdits writes a crop only on a photo that isn't turned
+            guard edit.quarterTurns == 0 else { return nil }
+            edit.crop = CGRect(x: edit.mirrored ? 1 - crop.maxX : crop.minX, y: crop.minY, width: crop.width, height: crop.height)
+                .intersection(PhotoEdit.unit)
+        }
+        return edit
+    }
+
+    #if DEBUG
+    static func selfCheck() {
+        let size = CGSize(width: 400, height: 300)
+        for turns in 0..<4 {
+            for mirrored in [false, true] {
+                var edit = PhotoEdit()
+                edit.quarterTurns = turns
+                edit.mirrored = mirrored
+                if turns == 0 { edit.crop = CGRect(x: 0.25, y: 0.2, width: 0.5, height: 0.6) }
+                let back = decoded(edit.serverEdits(width: 400, height: 300))?.photoEdit(size: size)
+                assert(back == edit, "server edits round trip: \(turns) turns, mirrored \(mirrored)")
+            }
+        }
+        assert(ServerEdits(edits: [Edit(action: "blur")]).photoEdit(size: size) == nil)
+    }
+
+    /// Through JSON, as the server would send it back. A static func: an init here would hide the memberwise one.
+    private static func decoded(_ json: [[String: Any]]) -> ServerEdits? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["edits": json]) else { return nil }
+        return try? JSONDecoder().decode(ServerEdits.self, from: data)
+    }
+    #endif
 }
 
 /// Every setting of one edit. Equatable, so the preview re-renders only when something changes.
@@ -1364,8 +1480,11 @@ struct PhotoEdit: Equatable {
         if crop != Self.unit {
             // isGeometryOnly keeps this to photos that aren't turned; a mirror flips the frame sideways
             let x = mirrored ? 1 - crop.maxX : crop.minX
-            edits.append(["action": "crop", "parameters": ["x": Int((x * CGFloat(width)).rounded()), "y": Int((crop.minY * CGFloat(height)).rounded()),
-                                                           "width": Int((crop.width * CGFloat(width)).rounded()), "height": Int((crop.height * CGFloat(height)).rounded())]])
+            let left = Int((x * CGFloat(width)).rounded()), top = Int((crop.minY * CGFloat(height)).rounded())
+            // the server refuses a crop past the edge, which rounding both the corner and the size up can make by a pixel
+            edits.append(["action": "crop", "parameters": ["x": left, "y": top,
+                                                           "width": min(Int((crop.width * CGFloat(width)).rounded()), width - left),
+                                                           "height": min(Int((crop.height * CGFloat(height)).rounded()), height - top)]])
         }
         if quarterTurns != 0 { edits.append(["action": "rotate", "parameters": ["angle": (4 - quarterTurns) % 4 * 90]]) }
         // on a turned photo the mirrored orientations flip top to bottom

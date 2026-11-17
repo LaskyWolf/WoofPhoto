@@ -52,6 +52,13 @@ struct Asset: Decodable, Identifiable {
 
     /// The date the photo was taken, in the time zone where it was taken.
     var date: Date? { (localDateTime ?? fileCreatedAt).flatMap(Date.init(immich:)) }
+
+    /// The size a server crop is measured in: the photo turned upright first, so EXIF orientations 5 to 8 swap the sides.
+    /// Only the EXIF size, as on the server, which refuses a crop without it.
+    var uprightSize: (width: Int, height: Int)? {
+        guard let width = exifInfo?.exifImageWidth?.value, let height = exifInfo?.exifImageHeight?.value else { return nil }
+        return ["5", "6", "7", "8"].contains(exifInfo?.orientation?.value) ? (height, width) : (width, height)
+    }
 }
 
 struct Exif: Decodable {
@@ -73,6 +80,8 @@ struct Exif: Decodable {
     var fileSizeInByte: Lossy<Int>?
     var exifImageWidth: Lossy<Int>?
     var exifImageHeight: Lossy<Int>?
+    /// "1" to "8", as in EXIF.
+    var orientation: Lossy<String>?
 }
 
 struct Person: Decodable, Identifiable, Hashable {

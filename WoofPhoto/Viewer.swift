@@ -587,6 +587,7 @@ struct ViewerPage: View {
 /// Shows the thumbnail at once, the ~1440 px preview when it arrives, and the full image after zooming in.
 struct PhotoPage: View {
     let asset: AssetRef
+    var livePhoto: PHLivePhoto?
     let onTap: () -> Void
 
     @Environment(Session.self) private var session
@@ -595,7 +596,7 @@ struct PhotoPage: View {
     @AppStorage("viewer.fullSize") private var alwaysFullSize = false
 
     var body: some View {
-        ZoomableImage(image: image ?? Still.cached(asset), onTap: onTap) { wantsFullSize = true }
+        ZoomableImage(image: image ?? Still.cached(asset), livePhoto: livePhoto, onTap: onTap) { wantsFullSize = true }
             .task { image = await Still.load(asset.id, size: "preview", client: session.client) ?? image }
             .task(id: wantsFullSize || alwaysFullSize) {
                 guard wantsFullSize || alwaysFullSize, let full = await Still.load(asset.id, size: "fullsize", client: session.client, cache: false) else { return }
@@ -614,28 +615,23 @@ struct LivePage: View {
     @State private var livePhoto: PHLivePhoto?
 
     var body: some View {
-        Group {
-            if let livePhoto {
-                HoldToPlay(livePhoto: livePhoto, onTap: onTap)
-            } else {
-                PhotoPage(asset: asset, onTap: onTap)
+        // the still stays zoomable; the video plays inside it while a finger rests on the photo
+        PhotoPage(asset: asset, livePhoto: livePhoto, onTap: onTap)
+            .overlay(alignment: .topLeading) {
+                Label("Live", systemImage: "livephoto")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.regularMaterial, in: .capsule)
+                    .padding()
+                    .padding(.top, 90)
             }
-        }
-        .overlay(alignment: .topLeading) {
-            Label("Live", systemImage: "livephoto")
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.regularMaterial, in: .capsule)
-                .padding()
-                .padding(.top, 90)
-        }
-        .task(id: isCurrent) {
-            guard isCurrent, livePhoto == nil, let client = session.client, let video = asset.livePhotoVideoId,
-                  let photoFile = try? await client.downloadOriginal(asset.id),
-                  let videoFile = try? await client.downloadOriginal(video) else { return }
-            livePhoto = await Self.livePhoto([photoFile, videoFile])
-        }
+            .task(id: isCurrent) {
+                guard isCurrent, livePhoto == nil, let client = session.client, let video = asset.livePhotoVideoId,
+                      let photoFile = try? await client.downloadOriginal(asset.id),
+                      let videoFile = try? await client.downloadOriginal(video) else { return }
+                livePhoto = await Self.livePhoto([photoFile, videoFile])
+            }
     }
 
     static func livePhoto(_ files: [URL]) async -> PHLivePhoto? {
@@ -649,25 +645,6 @@ struct LivePage: View {
                 continuation.resume(returning: photo)
             }
         }
-    }
-}
-
-/// A Live Photo that plays while a finger rests on it, as in Photos.
-struct HoldToPlay: View {
-    let livePhoto: PHLivePhoto
-    let onTap: () -> Void
-    @State private var playing = false
-
-    var body: some View {
-        LivePhotoView(livePhoto: livePhoto, playing: playing)
-            .onTapGesture(perform: onTap)
-            .onLongPressGesture(minimumDuration: 0.2) {
-                playing = true
-            } onPressingChanged: { pressing in
-                if !pressing { playing = false }
-            }
-            .sensoryFeedback(.impact(weight: .light), trigger: playing) { _, now in now }
-            .accessibilityAction(named: "Play Live Photo") { playing.toggle() }
     }
 }
 
@@ -721,10 +698,8 @@ struct DevicePage: View {
         ZStack {
             if let player {
                 VideoSurface(player: player, chromeHidden: $chromeHidden, onTap: onTap)
-            } else if let livePhoto {
-                HoldToPlay(livePhoto: livePhoto, onTap: onTap)
             } else {
-                ZoomableImage(image: image ?? Still.cached(asset), onTap: onTap) {}
+                ZoomableImage(image: image ?? Still.cached(asset), livePhoto: livePhoto, onTap: onTap) {}
             }
         }
         .task {
@@ -1050,6 +1025,7 @@ enum Still {
 /// Pinch and double-tap zoom, plus Live Text and Visual Look Up on the photo.
 struct ZoomableImage: UIViewRepresentable {
     var image: UIImage?
+    var livePhoto: PHLivePhoto?
     var onTap: () -> Void
     var onZoomIn: () -> Void
 
@@ -1059,6 +1035,7 @@ struct ZoomableImage: UIViewRepresentable {
         view.onTap = onTap
         view.onZoomIn = onZoomIn
         view.show(image)
+        view.showLive(livePhoto)
     }
 }
 
@@ -1067,6 +1044,9 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
     var onZoomIn: () -> Void = {}
 
     private let imageView = UIImageView()
+    /// A Live Photo's video, inside the zoomed view so it plays at the same zoom; hidden while it doesn't play,
+    /// so the sharper still under it shows.
+    private var liveView: PHLivePhotoView?
     private let analysis = ImageAnalysisInteraction()
     private var analysisTask: Task<Void, Never>?
     private static let analyzer = ImageAnalyzer()
@@ -1094,6 +1074,10 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(singleTapped))
         singleTap.require(toFail: doubleTap)
         addGestureRecognizer(singleTap)
+        // as in Photos: touch and hold plays the Live Photo; one finger only, so a pinch never starts it
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.minimumPressDuration = 0.2
+        addGestureRecognizer(hold)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -1108,6 +1092,52 @@ final class ZoomView: UIScrollView, UIScrollViewDelegate {
             guard let result = try? await Self.analyzer.analyze(image, configuration: configuration), !Task.isCancelled else { return }
             self?.analysis.analysis = result
             self?.analysis.preferredInteractionTypes = .automatic
+        }
+    }
+
+    func showLive(_ livePhoto: PHLivePhoto?) {
+        guard liveView?.livePhoto !== livePhoto else { return }
+        guard let livePhoto else {
+            liveView?.removeFromSuperview()
+            liveView = nil
+            imageView.accessibilityCustomActions = nil
+            return
+        }
+        let view = liveView ?? PHLivePhotoView()
+        if liveView == nil {
+            view.contentMode = .scaleAspectFit
+            // touches go to the photo under it, for Live Text
+            view.isUserInteractionEnabled = false
+            view.alpha = 0
+            view.frame = imageView.bounds
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            imageView.addSubview(view)
+            liveView = view
+            imageView.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "Play Live Photo") { [weak self] _ in
+                self?.play(true)
+                return true
+            }]
+        }
+        view.livePhoto = livePhoto
+    }
+
+    private func play(_ playing: Bool) {
+        guard let liveView else { return }
+        if playing {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            liveView.alpha = 1
+            liveView.startPlayback(with: .full)
+        } else {
+            liveView.stopPlayback()
+            liveView.alpha = 0
+        }
+    }
+
+    @objc private func held(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began: play(true)
+        case .ended, .cancelled, .failed: play(false)
+        default: break
         }
     }
 

@@ -247,34 +247,54 @@ struct AssetGrid: View {
         // Apple Photos' square cells with 2-point gaps
         let spacing: CGFloat = 2
         return ScrollViewReader { proxy in
-            ScrollView {
+            following(ScrollView {
                 hero
-                // a view of its own, compared before drawing: scrolling, the scrubber and the gestures change this view's
-                // state many times a second, and the cells must not be rebuilt for any of it
-                GridCells(months: months, revision: timeline.revision, columns: columns, blanks: leadingBlanks(months),
-                          spacing: spacing, selection: selection, menus: client != nil) { asset, month, index in
-                    cell(asset, month: month, index: index, client: client)
-                }
-                .equatable()
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
-                // in Select mode a drag that starts sideways selects every cell it crosses; an upright one scrolls
-                .gesture(SelectPan(isEnabled: selection != nil) { start, location in
-                    dragSelect(start: start, location: location, months: months, spacing: spacing)
-                } ended: {
-                    drag = nil
-                })
-                .simultaneousGesture(ColumnPinch { location, fraction in
-                    pinchStart = Self.columnSteps.firstIndex(of: columns) ?? 1
-                    pinchAnchor = cellID(at: cellIndex(location, spacing: spacing), in: months).map { (id: $0, fraction: fraction) }
-                } changed: { scale in
-                    pinch(scale)
-                } ended: {
-                    pinchStart = nil
-                    pinchAnchor = nil
-                })
-                .padding(.horizontal, spacing)
-                .sensoryFeedback(.selection, trigger: columns)
-            }
+                cells(months, client: client, spacing: spacing)
+            }, months: months, proxy: proxy)
+        }
+    }
+
+    /// The cells with their gestures. In functions of their own: as one chain the grid was too long for the type checker.
+    private func cells(_ months: [Timeline.Month], client: ImmichClient?, spacing: CGFloat) -> some View {
+        // a view of its own, compared before drawing: scrolling, the scrubber and the gestures change this view's
+        // state many times a second, and the cells must not be rebuilt for any of it
+        GridCells(months: months, revision: timeline.revision, columns: columns, blanks: leadingBlanks(months),
+                  spacing: spacing, selection: selection, menus: client != nil) { asset, month, index in
+            cell(asset, month: month, index: index, client: client)
+        }
+        .equatable()
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
+        // in Select mode a drag that starts sideways selects every cell it crosses; an upright one scrolls
+        .gesture(SelectPan(isEnabled: selection != nil) { start, location in
+            dragSelect(start: start, location: location, months: months, spacing: spacing)
+        } ended: {
+            drag = nil
+        })
+        .simultaneousGesture(ColumnPinch { location, fraction in
+            pinchStart = Self.columnSteps.firstIndex(of: columns) ?? 1
+            pinchAnchor = cellID(at: cellIndex(location, spacing: spacing), in: months).map { (id: $0, fraction: fraction) }
+        } changed: { scale in
+            pinch(scale)
+        } ended: {
+            pinchStart = nil
+            pinchAnchor = nil
+        })
+        .padding(.horizontal, spacing)
+        .sensoryFeedback(.selection, trigger: columns)
+    }
+
+    /// How far down the grid is scrolled, 0 to 1.
+    private static func scrollFraction(_ geometry: ScrollGeometry) -> CGFloat {
+        let top: CGFloat = geometry.contentInsets.top
+        let range: CGFloat = geometry.contentSize.height + top + geometry.contentInsets.bottom - geometry.containerSize.height
+        guard range > 0 else { return 1 }
+        let offset: CGFloat = geometry.contentOffset.y + top
+        return min(max(offset / range, 0), 1)
+    }
+
+    /// Where the scroll view starts and moves: the newest photos, the scrubber, a pinch's anchor, a day tapped in Months.
+    private func following(_ scroll: some View, months: [Timeline.Month], proxy: ScrollViewProxy) -> some View {
+        scroll
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
             // the anchor only holds for the first layout; the months filling in and the thumbnails loading move it
             .onScrollPhaseChange { _, phase in
@@ -282,34 +302,13 @@ struct AssetGrid: View {
                 let moving = phase != .idle
                 if moving != scrollMoving { scrollMoving = moving }
             }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                let range = geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom - geometry.containerSize.height
-                return range > 0 ? min(max((geometry.contentOffset.y + geometry.contentInsets.top) / range, 0), 1) : 1
-            } action: { _, fraction in
+            .onScrollGeometryChange(for: CGFloat.self, of: Self.scrollFraction) { _, fraction in
                 metrics.fraction = fraction
             }
             .task(id: scrollMoving || scrubbing) {
                 if scrollMoving || scrubbing { showsScrubber = true; return }
                 try? await Task.sleep(for: .seconds(1.5))
                 if !Task.isCancelled { showsScrubber = false }
-            }
-            .onChange(of: months.reduce(0) { $0 + ($1.assets?.count ?? $1.count) }) { if followsEnd { scrollToEnd(months, proxy) } }
-            .task {
-                for delay in [0.0, 0.25, 0.6] {
-                    try? await Task.sleep(for: .seconds(delay))
-                    guard followsEnd else { return }
-                    scrollToEnd(months, proxy)
-                }
-            }
-            // the photo under the fingers stays under them while the cells change size
-            .onChange(of: columns) {
-                guard let pinchAnchor else { return }
-                proxy.scrollTo(pinchAnchor.id, anchor: UnitPoint(x: 0.5, y: pinchAnchor.fraction))
-            }
-            // Photos opens at the newest, so tapping the tab again goes back down to it
-            .onChange(of: reselects) {
-                guard title != nil, let last = months.last else { return }
-                withAnimation(.smooth) { proxy.scrollTo("\(last.key)#\((last.assets?.count ?? last.count) - 1)", anchor: .bottom) }
             }
             .overlay(alignment: .trailing) {
                 // the fade only on the scrubber: on the scroll view it would animate the grid too
@@ -321,12 +320,45 @@ struct AssetGrid: View {
                 }
                 .animation(.easeOut(duration: 0.2), value: showsScrubber)
             }
-            // a day tapped in Months
-            .onChange(of: target) {
-                guard let target, level == .all else { return }
-                proxy.scrollTo("\(target)#0", anchor: .top)
-                self.target = nil
-            }
+            .modifier(Jumps(grid: self, months: months, proxy: proxy, reselects: reselects))
+    }
+
+    /// The jumps to a cell: to the newest, to a pinch's anchor, to a day tapped in Months.
+    private struct Jumps: ViewModifier {
+        let grid: AssetGrid
+        let months: [Timeline.Month]
+        let proxy: ScrollViewProxy
+        /// Passed in: an environment value read through a copy of the grid isn't guaranteed to be current.
+        let reselects: Int
+
+        func body(content: Content) -> some View {
+            content
+                .onChange(of: months.reduce(0) { $0 + ($1.assets?.count ?? $1.count) }) {
+                    if grid.followsEnd { grid.scrollToEnd(months, proxy) }
+                }
+                .task {
+                    for delay in [0.0, 0.25, 0.6] {
+                        try? await Task.sleep(for: .seconds(delay))
+                        guard grid.followsEnd else { return }
+                        grid.scrollToEnd(months, proxy)
+                    }
+                }
+                // the photo under the fingers stays under them while the cells change size
+                .onChange(of: grid.columns) {
+                    guard let anchor = grid.pinchAnchor else { return }
+                    proxy.scrollTo(anchor.id, anchor: UnitPoint(x: 0.5, y: anchor.fraction))
+                }
+                // Photos opens at the newest, so tapping the tab again goes back down to it
+                .onChange(of: reselects) {
+                    guard grid.title != nil, let last = months.last else { return }
+                    withAnimation(.smooth) { proxy.scrollTo("\(last.key)#\((last.assets?.count ?? last.count) - 1)", anchor: .bottom) }
+                }
+                // a day tapped in Months
+                .onChange(of: grid.target) {
+                    guard let target = grid.target, grid.level == .all else { return }
+                    proxy.scrollTo("\(target)#0", anchor: .top)
+                    grid.target = nil
+                }
         }
     }
 

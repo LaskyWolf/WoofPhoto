@@ -120,7 +120,7 @@ struct AssetGrid: View {
             }
         } else if canSelect {
             ToolbarItem(placement: .primaryAction) {
-                Button("Select") { toggleSelect() }
+                Button("Select", systemImage: "checkmark.circle") { toggleSelect() }
             }
         }
     }
@@ -158,12 +158,7 @@ struct AssetGrid: View {
                     .padding(.horizontal, 10)
                     .glassEffect(.regular, in: .capsule)
                 } else if canSelect {
-                    Button("Select") { toggleSelect() }
-                        .font(.headline)
-                        .frame(height: 36)
-                        .padding(.horizontal, 14)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                        .tapArea(outset: 4)
+                    HeaderButton(label: "Select", systemImage: "checkmark.circle") { toggleSelect() }
                 }
             }
             if showsLevels, selection == nil, timeline.months?.isEmpty == false {
@@ -296,6 +291,8 @@ struct AssetGrid: View {
     /// Where the scroll view starts and moves: the newest photos, the scrubber, a pinch's anchor, a day tapped in Months.
     private func following(_ scroll: some View, months: [Timeline.Month], proxy: ScrollViewProxy) -> some View {
         scroll
+            // the scrubber's handle shows the position; the system's bar beside it made two
+            .scrollIndicators(.hidden)
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
             // the anchor only holds for the first layout; the months filling in and the thumbnails loading move it
             .onScrollPhaseChange { _, phase in

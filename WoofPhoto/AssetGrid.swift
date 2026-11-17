@@ -198,6 +198,47 @@ struct AssetGrid: View {
         }
     }
 
+    /// One grid cell. Its own function: inside the grid's ForEach the modifier chain is too long for the type checker.
+    private func cell(_ asset: AssetRef?, month: Timeline.Month, index: Int, client: ImmichClient?) -> some View {
+        Thumbnail(asset: asset)
+            .overlay(alignment: .bottomTrailing) {
+                if let selection, let id = asset?.id {
+                    let selected = selection.contains(id)
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(.white, .tint)
+                        .shadow(radius: 2)
+                        .padding(4)
+                }
+            }
+            .contentShape(.contextMenuPreview, .rect)
+            .liftedMenu(background: nil) {
+                if let asset, client != nil {
+                    AssetMenuItems(actions: actions, ids: [asset.id], isFavorite: asset.isFavorite)
+                }
+            }
+            .zoomSource(asset?.id ?? "\(month.key)#\(index)", in: zoom)
+            .id("\(month.key)#\(index)")
+            .onTapGesture {
+                guard let asset else { return }
+                if selection != nil {
+                    selection = toggled(asset.id, in: selection ?? [])
+                } else {
+                    OpenPhoto.shared.open(asset, in: timeline)
+                }
+            }
+            .accessibilityAddTraits(selection?.contains(asset?.id ?? "") == true ? [.isButton, .isSelected] : .isButton)
+            // Select mode starts with a two-finger drag, which VoiceOver can't make
+            .accessibilityAction(named: "Select") {
+                guard let asset, canSelect, selection == nil else { return }
+                withAnimation(.snappy) { selection = [asset.id] }
+            }
+            // again when the month is forgotten, which a changed backup record does
+            .task(id: month.assets == nil) {
+                if let client { await timeline.loadMonth(around: month.key, with: client) }
+            }
+    }
+
     private func grid(_ months: [Timeline.Month], client: ImmichClient?) -> some View {
         // Apple Photos' square cells with 2-point gaps
         let spacing: CGFloat = 2
@@ -208,44 +249,7 @@ struct AssetGrid: View {
                     ForEach(0..<leadingBlanks(months), id: \.self) { _ in Color.clear }
                     ForEach(months) { month in
                         ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
-                            let asset = month.assets?[index]
-                            Thumbnail(asset: asset)
-                                .overlay(alignment: .bottomTrailing) {
-                                    if let selection, let id = asset?.id {
-                                        let selected = selection.contains(id)
-                                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                                            .font(.title3)
-                                            .foregroundStyle(.white, .tint)
-                                            .shadow(radius: 2)
-                                            .padding(4)
-                                    }
-                                }
-                                .contentShape(.contextMenuPreview, .rect)
-                                .liftedMenu(background: nil) {
-                                    if let asset, client != nil {
-                                        AssetMenuItems(actions: actions, ids: [asset.id], isFavorite: asset.isFavorite)
-                                    }
-                                }
-                                .zoomSource(asset?.id ?? "\(month.key)#\(index)", in: zoom)
-                                .id("\(month.key)#\(index)")
-                                .onTapGesture {
-                                    guard let asset else { return }
-                                    if selection != nil {
-                                        selection = toggled(asset.id, in: selection ?? [])
-                                    } else {
-                                        OpenPhoto.shared.open(asset, in: timeline)
-                                    }
-                                }
-                                .accessibilityAddTraits(selection?.contains(asset?.id ?? "") == true ? [.isButton, .isSelected] : .isButton)
-                                // Select mode starts with a two-finger drag, which VoiceOver can't make
-                                .accessibilityAction(named: "Select") {
-                                    guard let asset, canSelect, selection == nil else { return }
-                                    withAnimation(.snappy) { selection = [asset.id] }
-                                }
-                                // again when the month is forgotten, which a changed backup record does
-                                .task(id: month.assets == nil) {
-                                    if let client { await timeline.loadMonth(around: month.key, with: client) }
-                                }
+                            cell(month.assets?[index], month: month, index: index, client: client)
                         }
                     }
                 }

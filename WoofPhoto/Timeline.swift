@@ -13,10 +13,23 @@ final class Timeline {
 
     let query: TimelineQuery?
     private(set) var months: [Month]? {
-        // kept ready: the viewer and grid read `assets` many times per frame
-        didSet { assets = Self.flatten(months) }
+        didSet {
+            flat = nil
+            revision += 1
+        }
     }
-    private(set) var assets: [AssetRef] = []
+    /// Goes up with every change to `months`: the grid's cells compare it instead of the whole library.
+    private(set) var revision = 0
+    /// Every loaded asset in order. Built when first read after a change, not on every month that loads while scrolling:
+    /// flattening a large library each time made scrolling stutter. The viewer and Select All read it.
+    var assets: [AssetRef] {
+        let months = months // reading it here makes `assets` observed like `months`
+        if let flat { return flat }
+        let built = Self.flatten(months)
+        flat = built
+        return built
+    }
+    @ObservationIgnored private var flat: [AssetRef]?
     /// The last failure, shown under the grid until tapped.
     var problem: String?
     /// Month loads in flight. They belong to the timeline, not to the cell that asked, so scrolling past that cell doesn't cancel them.
@@ -30,14 +43,12 @@ final class Timeline {
     init(assets: [AssetRef]) {
         query = nil
         months = [Month(key: "all", count: assets.count, assets: assets)]
-        self.assets = assets
     }
 
     /// Months that are already complete, like the photos on this iPhone.
     init(months: [Month]) {
         query = nil
         self.months = months
-        assets = Self.flatten(months)
     }
 
     private static func flatten(_ months: [Month]?) -> [AssetRef] { months?.flatMap { $0.assets ?? [] } ?? [] }

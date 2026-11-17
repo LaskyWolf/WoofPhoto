@@ -94,24 +94,44 @@ struct ClusterMap: UIViewRepresentable {
     }
 }
 
-/// Recently Deleted: recover or delete for good, one at a time in the viewer or all at once.
+/// Recently Deleted: recover or delete for good, picked with Select or all at once with the two buttons at the bottom.
 struct TrashView: View {
     @Environment(Session.self) private var session
     @State private var timeline = Timeline(.trash)
     @State private var confirmsEmpty = false
+    @State private var busy = false
     @State private var error: String?
 
     var body: some View {
+        let count = timeline.count
         AssetGrid(timeline: timeline)
             .navigationTitle("Recently Deleted")
             .navigationSubtitle("Items stay here for 30 days before they are deleted for good.")
-            .toolbar {
-                Menu("More", systemImage: "ellipsis") {
-                    Button("Recover All", systemImage: "arrow.uturn.backward") { Task { await run { try await $0.restoreTrash() } } }
-                    Button("Delete All", systemImage: "trash", role: .destructive) { confirmsEmpty = true }
+            .safeAreaInset(edge: .bottom) {
+                if count > 0 {
+                    HStack(spacing: 12) {
+                        Button {
+                            Task { await run { try await $0.restoreTrash() } }
+                        } label: {
+                            Label("Recover All", systemImage: "arrow.uturn.backward").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.glass)
+                        Button(role: .destructive) {
+                            confirmsEmpty = true
+                        } label: {
+                            Label("Delete All", systemImage: "trash").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.glass)
+                        .tint(.red)
+                    }
+                    .controlSize(.large)
+                    .disabled(busy)
+                    .padding(.horizontal, Tokens.screenPadding)
+                    .padding(.bottom, 8)
                 }
             }
-            .confirmationDialog("These items will be deleted for good. This can't be undone.", isPresented: $confirmsEmpty, titleVisibility: .visible) {
+            .confirmationDialog("\(count.formatted()) \(count == 1 ? "item" : "items") will be deleted for good. This can't be undone.",
+                                isPresented: $confirmsEmpty, titleVisibility: .visible) {
                 Button("Delete All", role: .destructive) { Task { await run { try await $0.emptyTrash() } } }
             }
             .messageAlert($error)
@@ -119,8 +139,11 @@ struct TrashView: View {
 
     private func run(_ action: (ImmichClient) async throws -> Void) async {
         guard let client = session.client else { return }
+        busy = true
+        defer { busy = false }
         do {
             try await action(client)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
             timeline = Timeline(.trash)
         } catch {
             self.error = error.explanation

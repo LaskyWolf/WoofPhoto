@@ -88,18 +88,24 @@ final class Backup {
                 }
             }
         }
-        pending = assets.sorted { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
+        let sorted = assets.sorted { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
         var months: [String: [AssetRef]] = [:]
-        for asset in pending {
+        for asset in sorted {
             months[monthKey(asset), default: []].append(AssetRef(device: asset))
         }
-        pendingByMonth = months
         var present = Set<String>()
         PHAsset.fetchAssets(withLocalIdentifiers: Array(uploaded.keys), options: nil)
             .enumerateObjects { asset, _, _ in present.insert(asset.localIdentifier) }
-        onDeviceIDs = Set(uploaded.filter { present.contains($0.key) }.map(\.value))
-        tracksDevice = true
-        revision += 1
+        let onDevice = Set(uploaded.filter { present.contains($0.key) }.map(\.value))
+        // assigned only when they changed: every assignment redraws each visible grid cell, and a new revision reloads
+        // the Library from the server. This runs at every backup start and end, mostly with the same answer.
+        if months != pendingByMonth {
+            pending = sorted
+            pendingByMonth = months
+            revision += 1
+        }
+        if onDevice != onDeviceIDs { onDeviceIDs = onDevice }
+        if !tracksDevice { tracksDevice = true }
     }
 
     /// Asks the server which of the photos not backed up it already has, by checksum, and uploads nothing.
@@ -280,7 +286,10 @@ final class Backup {
         return true
     }
 
-    func noteOnDevice(_ serverIDs: Set<String>) { matchedOnDevice.formUnion(serverIDs) }
+    /// Only a real change touches the set: each visible grid cell reads it, and this runs for every month that loads.
+    func noteOnDevice(_ serverIDs: Set<String>) {
+        if !serverIDs.isSubset(of: matchedOnDevice) { matchedOnDevice.formUnion(serverIDs) }
+    }
 
     private func remember(_ asset: PHAsset, server id: String) {
         uploaded[asset.localIdentifier] = id

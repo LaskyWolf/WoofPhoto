@@ -31,14 +31,10 @@ struct AssetGrid: View {
     @Environment(\.libraryReselects) private var reselects
     /// The column step a pinch started from, so one pinch moves at most one or two steps.
     @State private var pinchStart: Int?
-    @GestureState private var pinching = false
-    /// A one-finger drag that turned out to be a scroll: it stays one until the finger lifts or the touch is cancelled.
-    /// A gesture state, not a flag set in onEnded: onEnded doesn't run when the scroll view takes the touch, and the flag stuck.
-    @GestureState private var dragIgnored = false
-    /// True while a finger is down in the drag gesture; when it goes false the drag-select is over, however it ended.
-    @GestureState private var touching = false
-    /// Two fingers are dragging, which the one-finger gesture's end must not cut short.
-    @State private var twoFingers = false
+    /// The cell under the pinching fingers and where it was on screen (0 top, 1 bottom): it stays there as the columns change.
+    @State private var pinchAnchor: (id: String, fraction: CGFloat)?
+    /// Where the grid is scrolled, for the scrubber's handle; a class, so its changes redraw only the scrubber.
+    @State private var metrics = ScrollMetrics()
     /// The month scrubber on the right edge: only while the grid scrolls and a moment after, as in Photos,
     /// so at rest that edge belongs to the photos under it (a tap there opened another month).
     @State private var showsScrubber = false
@@ -122,6 +118,10 @@ struct AssetGrid: View {
                 .disabled(selection.isEmpty)
                 Button("Done") { toggleSelect() }
             }
+        } else if canSelect {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Select") { toggleSelect() }
+            }
         }
     }
 
@@ -157,6 +157,13 @@ struct AssetGrid: View {
                     }
                     .padding(.horizontal, 10)
                     .glassEffect(.regular, in: .capsule)
+                } else if canSelect {
+                    Button("Select") { toggleSelect() }
+                        .font(.headline)
+                        .frame(height: 36)
+                        .padding(.horizontal, 14)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                        .tapArea(outset: 4)
                 }
             }
             if showsLevels, selection == nil, timeline.months?.isEmpty == false {
@@ -228,14 +235,11 @@ struct AssetGrid: View {
                 }
             }
             .accessibilityAddTraits(selection?.contains(asset?.id ?? "") == true ? [.isButton, .isSelected] : .isButton)
-            // Select mode starts with a two-finger drag, which VoiceOver can't make
-            .accessibilityAction(named: "Select") {
-                guard let asset, canSelect, selection == nil else { return }
-                withAnimation(.snappy) { selection = [asset.id] }
-            }
-            // again when the month is forgotten, which a changed backup record does
+            // again when the month is forgotten, which a changed backup record does.
+            // A loaded month asks only from its first and last cells, where the neighbouring months are needed next.
             .task(id: month.assets == nil) {
-                if let client { await timeline.loadMonth(around: month.key, with: client) }
+                guard let client, month.assets == nil || index == 0 || index == month.count - 1 else { return }
+                await timeline.loadMonth(around: month.key, with: client)
             }
     }
 
@@ -245,47 +249,44 @@ struct AssetGrid: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 hero
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns), spacing: spacing) {
-                    ForEach(0..<leadingBlanks(months), id: \.self) { _ in Color.clear }
-                    ForEach(months) { month in
-                        ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
-                            cell(month.assets?[index], month: month, index: index, client: client)
-                        }
-                    }
+                // a view of its own, compared before drawing: scrolling, the scrubber and the gestures change this view's
+                // state many times a second, and the cells must not be rebuilt for any of it
+                GridCells(months: months, revision: timeline.revision, columns: columns, blanks: leadingBlanks(months),
+                          spacing: spacing, selection: selection, menus: client != nil) { asset, month, index in
+                    cell(asset, month: month, index: index, client: client)
                 }
+                .equatable()
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
-                // in Select mode, a drag that starts sideways selects every cell it crosses
-                .simultaneousGesture(DragGesture(minimumDistance: 12)
-                    .updating($touching) { _, touching, _ in touching = true }
-                    // decided once, on the first movement: mostly vertical means scrolling, and it stays scrolling
-                    .updating($dragIgnored) { value, ignored, _ in
-                        if !ignored, drag == nil, abs(value.translation.width) < abs(value.translation.height) * 1.5 { ignored = true }
-                    }
-                    .onChanged { value in
-                        if dragIgnored || (drag == nil && abs(value.translation.width) < abs(value.translation.height) * 1.5) { return }
-                        dragSelect(start: value.startLocation, location: value.location, months: months, spacing: spacing)
-                    }, including: selection == nil ? .subviews : .all)
-                // two fingers dragging over the cells start Select mode and select them, as in Photos
-                .gesture(TwoFingerDrag { start, location in
-                    guard canSelect else { return }
-                    twoFingers = true
-                    if selection == nil { withAnimation(.snappy) { selection = [] } }
+                // in Select mode a drag that starts sideways selects every cell it crosses; an upright one scrolls
+                .gesture(SelectPan(isEnabled: selection != nil) { start, location in
                     dragSelect(start: start, location: location, months: months, spacing: spacing)
                 } ended: {
-                    twoFingers = false
                     drag = nil
+                })
+                .simultaneousGesture(ColumnPinch { location, fraction in
+                    pinchStart = Self.columnSteps.firstIndex(of: columns) ?? 1
+                    pinchAnchor = cellID(at: cellIndex(location, spacing: spacing), in: months).map { (id: $0, fraction: fraction) }
+                } changed: { scale in
+                    pinch(scale)
+                } ended: {
+                    pinchStart = nil
+                    pinchAnchor = nil
                 })
                 .padding(.horizontal, spacing)
                 .sensoryFeedback(.selection, trigger: columns)
             }
-            .scrollDisabled(drag != nil)
-            // a finger that lifts or is taken by the scroll view ends the drag-select, so the grid can't stay locked
-            .onChange(of: touching) { _, down in if !down, !twoFingers { drag = nil } }
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
             // the anchor only holds for the first layout; the months filling in and the thumbnails loading move it
             .onScrollPhaseChange { _, phase in
-                if phase == .interacting { followsEnd = false }
-                scrollMoving = phase != .idle
+                if phase == .interacting, followsEnd { followsEnd = false }
+                let moving = phase != .idle
+                if moving != scrollMoving { scrollMoving = moving }
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                let range = geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom - geometry.containerSize.height
+                return range > 0 ? min(max((geometry.contentOffset.y + geometry.contentInsets.top) / range, 0), 1) : 1
+            } action: { _, fraction in
+                metrics.fraction = fraction
             }
             .task(id: scrollMoving || scrubbing) {
                 if scrollMoving || scrubbing { showsScrubber = true; return }
@@ -300,13 +301,25 @@ struct AssetGrid: View {
                     scrollToEnd(months, proxy)
                 }
             }
+            // the photo under the fingers stays under them while the cells change size
+            .onChange(of: columns) {
+                guard let pinchAnchor else { return }
+                proxy.scrollTo(pinchAnchor.id, anchor: UnitPoint(x: 0.5, y: pinchAnchor.fraction))
+            }
             // Photos opens at the newest, so tapping the tab again goes back down to it
             .onChange(of: reselects) {
                 guard title != nil, let last = months.last else { return }
                 withAnimation(.smooth) { proxy.scrollTo("\(last.key)#\((last.assets?.count ?? last.count) - 1)", anchor: .bottom) }
             }
             .overlay(alignment: .trailing) {
-                if months.count > 1, selection == nil, showsScrubber { Scrubber(months: months, proxy: proxy, scrubbing: $scrubbing) }
+                // the fade only on the scrubber: on the scroll view it would animate the grid too
+                Group {
+                    if months.count > 1, showsScrubber {
+                        Scrubber(months: months, proxy: proxy, metrics: metrics, scrubbing: $scrubbing)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.2), value: showsScrubber)
             }
             // a day tapped in Months
             .onChange(of: target) {
@@ -315,17 +328,33 @@ struct AssetGrid: View {
                 self.target = nil
             }
         }
-        // the columns change while the fingers move, with no scaling in between: scaling a tall lazy grid jumped
-        .simultaneousGesture(MagnifyGesture().updating($pinching) { _, pinching, _ in pinching = true }.onChanged { value in
-            let steps = Self.columnSteps
-            let base = pinchStart ?? steps.firstIndex(of: columns) ?? 1
-            pinchStart = base
-            let move = value.magnification > 2 ? -2 : value.magnification > 1.3 ? -1 : value.magnification < 0.5 ? 2 : value.magnification < 0.75 ? 1 : 0
-            let next = steps[min(max(base + move, 0), steps.count - 1)]
-            if next != columns { columns = next }
-        })
-        // a pinch the scroll view cancelled must not leave its start step for the next one
-        .onChange(of: pinching) { _, down in if !down { pinchStart = nil } }
+    }
+
+    /// Steps through the column counts as the fingers spread or close: no scaling in between, which made a tall lazy grid jump.
+    private func pinch(_ scale: CGFloat) {
+        guard let base = pinchStart else { return }
+        let steps = Self.columnSteps
+        let move = scale > 2 ? -2 : scale > 1.3 ? -1 : scale < 0.5 ? 2 : scale < 0.75 ? 1 : 0
+        let next = steps[min(max(base + move, 0), steps.count - 1)]
+        if next != columns { columns = next }
+    }
+
+    /// The cell at a point of the grid, counting the empty cells before the oldest photo.
+    private func cellIndex(_ point: CGPoint, spacing: CGFloat) -> Int {
+        guard gridWidth > 0 else { return 0 }
+        let cell = (gridWidth - spacing * CGFloat(columns - 1)) / CGFloat(columns) + spacing
+        return max(Int(point.y / cell), 0) * columns + min(max(Int(point.x / cell), 0), columns - 1)
+    }
+
+    /// The id a cell has in the grid ("2024-05-01#3"), from its place in grid order.
+    private func cellID(at index: Int, in months: [Timeline.Month]) -> String? {
+        var rest = index - leadingBlanks(months)
+        for month in months {
+            let count = month.assets?.count ?? month.count
+            if rest < count { return "\(month.key)#\(max(rest, 0))" }
+            rest -= count
+        }
+        return months.last.map { "\($0.key)#\(max(($0.assets?.count ?? $0.count) - 1, 0))" }
     }
 
     private func scrollToEnd(_ months: [Timeline.Month], _ proxy: ScrollViewProxy) {
@@ -346,10 +375,7 @@ struct AssetGrid: View {
 
     private func dragSelect(start startPoint: CGPoint, location: CGPoint, months: [Timeline.Month], spacing: CGFloat) {
         guard let selection, gridWidth > 0 else { return }
-        let cell = (gridWidth - spacing * CGFloat(columns - 1)) / CGFloat(columns) + spacing
-        func index(_ point: CGPoint) -> Int {
-            max(Int(point.y / cell), 0) * columns + min(max(Int(point.x / cell), 0), columns - 1)
-        }
+        func index(_ point: CGPoint) -> Int { cellIndex(point, spacing: spacing) }
         if drag == nil {
             // every cell in grid order, nil where the month isn't loaded yet
             dragCells = Array(repeating: nil, count: leadingBlanks(months)) + months.flatMap { month in month.assets.map { $0.map(Optional.some) } ?? Array(repeating: nil, count: month.count) }
@@ -499,46 +525,120 @@ struct AssetGrid: View {
     }
 }
 
-/// Drag along the right edge to jump through the months; a label shows the month under the finger.
+/// Where a grid is scrolled, 0 at the top and 1 at the bottom. A class of its own: it changes on every frame of a scroll,
+/// and only the scrubber reads it, so the grid isn't redrawn for it.
+@MainActor @Observable
+final class ScrollMetrics {
+    var fraction: CGFloat = 1
+}
+
+/// The cells of the grid, apart from the grid's own state, so they are rebuilt only when what they show changes.
+/// `cell` is left out of the comparison: it reads the same timeline and selection the other fields stand for.
+private struct GridCells<Cell: View>: View, Equatable {
+    let months: [Timeline.Month]
+    /// Stands for `months`, which is too large to compare on every redraw.
+    let revision: Int
+    let columns: Int
+    let blanks: Int
+    let spacing: CGFloat
+    let selection: Set<String>?
+    let menus: Bool
+    @ViewBuilder let cell: (AssetRef?, Timeline.Month, Int) -> Cell
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.revision == b.revision && a.columns == b.columns && a.blanks == b.blanks && a.spacing == b.spacing
+            && a.selection == b.selection && a.menus == b.menus
+    }
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns), spacing: spacing) {
+            ForEach(0..<blanks, id: \.self) { _ in Color.clear }
+            ForEach(months) { month in
+                ForEach(0..<(month.assets?.count ?? month.count), id: \.self) { index in
+                    cell(month.assets?[index], month, index)
+                }
+            }
+        }
+    }
+}
+
+/// Photos' scrubber: a handle on the right edge that shows where the grid is and, dragged, jumps through the months
+/// with the month's name beside the finger. Only the handle takes touches, so a scroll that starts near the edge stays a scroll.
 struct Scrubber: View {
     let months: [Timeline.Month]
     let proxy: ScrollViewProxy
+    let metrics: ScrollMetrics
     /// Tells the grid to keep the scrubber while the finger is on it.
     @Binding var scrubbing: Bool
-    @State private var position: (y: CGFloat, title: String)?
+    /// Where the finger holds the handle, 0 to 1, and the month there.
+    @State private var held: (fraction: CGFloat, title: String)?
     /// Goes false when the finger lifts or the touch is cancelled, which onEnded misses.
     @GestureState private var touching = false
+    private static let handle: CGFloat = 44
 
     var body: some View {
         GeometryReader { geometry in
-            Color.clear
+            let track = max(geometry.size.height - Self.handle, 1)
+            let fraction = held?.fraction ?? metrics.fraction
+            Capsule()
+                .fill(.thinMaterial)
+                .overlay(Capsule().strokeBorder(.secondary.opacity(0.4), lineWidth: 0.5))
+                .frame(width: 8, height: Self.handle)
+                .frame(width: 32, height: Self.handle, alignment: .trailing)
+                .padding(.trailing, 4)
                 .contentShape(.rect)
-                .gesture(DragGesture(minimumDistance: 0).updating($touching) { _, touching, _ in touching = true }.onChanged { value in
-                    let fraction = min(max(value.location.y / geometry.size.height, 0), 1)
-                    let month = months[Int(fraction * Double(months.count - 1))]
-                    if position?.title != AssetGrid.monthTitle(month.key) {
-                        proxy.scrollTo("\(month.key)#0", anchor: .top)
-                    }
-                    position = (value.location.y, AssetGrid.monthTitle(month.key))
-                })
-                .onChange(of: touching) { _, down in
-                    scrubbing = down
-                    if !down { position = nil }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if let position {
-                        Text(position.title)
+                .overlay(alignment: .trailing) {
+                    if let held {
+                        Text(held.title)
                             .font(.subheadline.weight(.semibold))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                             .background(.regularMaterial, in: .capsule)
                             .fixedSize()
-                            .offset(x: -24, y: position.y - 16)
+                            .offset(x: -40)
+                            .allowsHitTesting(false)
                     }
                 }
+                .offset(y: fraction * track)
+                .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("scrubber"))
+                    .updating($touching) { _, touching, _ in touching = true }
+                    .onChanged { value in
+                        let fraction = min(max((value.location.y - Self.handle / 2) / track, 0), 1)
+                        let month = Self.month(at: fraction, in: months)
+                        let title = AssetGrid.monthTitle(month.key)
+                        if held?.title != title { proxy.scrollTo("\(month.key)#0", anchor: .top) }
+                        held = (fraction, title)
+                    })
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topTrailing)
         }
-        .frame(width: 20)
-        .sensoryFeedback(.selection, trigger: position?.title)
+        .coordinateSpace(.named("scrubber"))
+        .frame(width: 44)
+        .padding(.vertical, 8)
+        .onChange(of: touching) { _, down in
+            scrubbing = down
+            if !down { held = nil }
+        }
+        .sensoryFeedback(.selection, trigger: held?.title)
+        .accessibilityElement()
+        .accessibilityLabel("Scroll through months")
+        .accessibilityAdjustableAction { direction in
+            let step: CGFloat = direction == .increment ? 0.05 : -0.05
+            let month = Self.month(at: min(max(metrics.fraction + step, 0), 1), in: months)
+            proxy.scrollTo("\(month.key)#0", anchor: .top)
+        }
+    }
+
+    /// The month at a point of the track, by cells rather than months: a month of 500 photos takes more of the track
+    /// than one of 3, as it takes more of the scroll.
+    static func month(at fraction: CGFloat, in months: [Timeline.Month]) -> Timeline.Month {
+        let total = months.reduce(0) { $0 + ($1.assets?.count ?? $1.count) }
+        var rest = Int(fraction * CGFloat(max(total - 1, 0)))
+        for month in months {
+            let count = month.assets?.count ?? month.count
+            if rest < count { return month }
+            rest -= count
+        }
+        return months[months.count - 1]
     }
 }
 
@@ -814,53 +914,145 @@ struct DayMosaic: View {
     }
 }
 
-/// Two fingers dragging: reports where they started and where they are, once they have moved apart from a pinch.
-/// A change in the gap between the fingers means a pinch, and the drag gives up.
-struct TwoFingerDrag: UIGestureRecognizerRepresentable {
+/// The scroll view a gesture's touch is in: the nearest one above the view under the finger.
+@MainActor private func scrollView(under gesture: UIGestureRecognizer) -> UIScrollView? {
+    guard let window = gesture.view?.window else { return nil }
+    var view = window.hitTest(gesture.location(in: window), with: nil)
+    while let current = view {
+        if let scroll = current as? UIScrollView { return scroll }
+        view = current.superview
+    }
+    return nil
+}
+
+/// Select mode's one-finger drag, as in Photos: a drag that starts sideways selects, one that starts upright scrolls.
+/// The scroll view waits for this gesture to decide, so a drag is never both. Held near the top or bottom edge,
+/// the grid scrolls on by itself and the selection follows, so it can run past the screen.
+struct SelectPan: UIGestureRecognizerRepresentable {
+    var isEnabled: Bool
     let moved: (_ start: CGPoint, _ location: CGPoint) -> Void
     let ended: () -> Void
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+    @MainActor final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var start = CGPoint.zero
-        var gap: CGFloat = 0
-        var state = Phase.waiting
-        enum Phase { case waiting, dragging, pinching }
+        /// The grid's origin in the scroll view's content: a point in the scroll view minus this is a point in the grid.
+        var origin = CGPoint.zero
+        weak var scroll: UIScrollView?
+        weak var pan: UIPanGestureRecognizer?
+        var link: CADisplayLink?
+        var moved: (CGPoint, CGPoint) -> Void = { _, _ in }
 
-        /// Alongside the scroll view and the pinch, which decide for themselves.
-        func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
+        func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            guard let pan = gesture as? UIPanGestureRecognizer else { return false }
+            let move = pan.translation(in: pan.view)
+            return abs(move.x) > abs(move.y)
+        }
+
+        /// Scroll views wait for this one: if it fails (an upright drag), they scroll as usual.
+        func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            gesture.isEnabled && other.view is UIScrollView && other is UIPanGestureRecognizer
+        }
+
+        func startScrolling() {
+            guard link == nil else { return }
+            let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+            link.add(to: .main, forMode: .common)
+            self.link = link
+        }
+
+        func stopScrolling() {
+            link?.invalidate()
+            link = nil
+        }
+
+        /// Scrolls while the finger is within 70 points of the top or bottom edge, faster the closer it is.
+        @objc private func tick(_ link: CADisplayLink) {
+            guard let pan, let scroll, pan.state == .began || pan.state == .changed else { return stopScrolling() }
+            let finger = pan.location(in: scroll)
+            let onScreen = finger.y - scroll.contentOffset.y
+            let top = scroll.adjustedContentInset.top + 70
+            let bottom = scroll.bounds.height - scroll.adjustedContentInset.bottom - 70
+            let depth = onScreen < top ? onScreen - top : onScreen > bottom ? onScreen - bottom : 0
+            guard depth != 0 else { return }
+            let lowest = -scroll.adjustedContentInset.top
+            let highest = max(lowest, scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height)
+            // up to 900 points a second
+            let step = min(max(depth, -70), 70) / 70 * 900 * CGFloat(link.targetTimestamp - link.timestamp)
+            let y = min(max(scroll.contentOffset.y + step, lowest), highest)
+            guard y != scroll.contentOffset.y else { return }
+            scroll.contentOffset.y = y
+            // the finger stayed still and the cells moved under it
+            let point = pan.location(in: scroll)
+            moved(start, CGPoint(x: point.x - origin.x, y: point.y - origin.y))
+        }
     }
 
     func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
 
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
         let pan = UIPanGestureRecognizer()
-        pan.minimumNumberOfTouches = 2
-        pan.maximumNumberOfTouches = 2
+        pan.maximumNumberOfTouches = 1
         pan.delegate = context.coordinator
+        pan.isEnabled = isEnabled
+        context.coordinator.pan = pan
         return pan
+    }
+
+    func updateUIGestureRecognizer(_ pan: UIPanGestureRecognizer, context: Context) {
+        pan.isEnabled = isEnabled
+        context.coordinator.moved = moved
     }
 
     func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) {
         let c = context.coordinator
-        func gap() -> CGFloat {
-            guard pan.numberOfTouches == 2 else { return c.gap }
-            let a = pan.location(ofTouch: 0, in: pan.view), b = pan.location(ofTouch: 1, in: pan.view)
-            return hypot(a.x - b.x, a.y - b.y)
-        }
+        c.moved = moved
+        let location = context.converter.localLocation
         switch pan.state {
         case .began:
-            c.gap = gap()
-            c.state = .waiting
-            c.start = context.converter.localLocation
-        case .changed:
-            if c.state == .waiting {
-                if abs(gap() - c.gap) > 24 { c.state = .pinching }
-                else if hypot(pan.translation(in: pan.view).x, pan.translation(in: pan.view).y) > 20 { c.state = .dragging }
+            // where the finger first touched: the gesture begins only after it has moved a little
+            let travelled = pan.translation(in: pan.view)
+            c.start = CGPoint(x: location.x - travelled.x, y: location.y - travelled.y)
+            c.scroll = scrollView(under: pan)
+            if let scroll = c.scroll {
+                let point = pan.location(in: scroll)
+                c.origin = CGPoint(x: point.x - location.x, y: point.y - location.y)
             }
-            if c.state == .dragging { moved(c.start, context.converter.localLocation) }
+            c.startScrolling()
+            moved(c.start, location)
+        case .changed:
+            moved(c.start, location)
         default:
-            if c.state == .dragging { ended() }
-            c.state = .waiting
+            c.stopScrolling()
+            ended()
+        }
+    }
+}
+
+/// Two fingers pinching the grid. Stops the scroll the fingers started, and reports the point between them and how high
+/// on screen it is, so the grid can keep that photo under them while the columns change.
+struct ColumnPinch: UIGestureRecognizerRepresentable {
+    let began: (_ location: CGPoint, _ fraction: CGFloat) -> Void
+    let changed: (_ scale: CGFloat) -> Void
+    let ended: () -> Void
+
+    func makeUIGestureRecognizer(context: Context) -> UIPinchGestureRecognizer { UIPinchGestureRecognizer() }
+
+    func handleUIGestureRecognizerAction(_ pinch: UIPinchGestureRecognizer, context: Context) {
+        switch pinch.state {
+        case .began:
+            var fraction: CGFloat = 0.5
+            if let scroll = scrollView(under: pinch) {
+                // turning the pan off and on cancels the scroll the two fingers began, which moved the grid under the pinch
+                scroll.panGestureRecognizer.isEnabled = false
+                scroll.panGestureRecognizer.isEnabled = true
+                let point = pinch.location(in: scroll)
+                fraction = min(max((point.y - scroll.contentOffset.y) / max(scroll.bounds.height, 1), 0), 1)
+            }
+            began(context.converter.localLocation, fraction)
+        case .changed:
+            changed(pinch.scale)
+        default:
+            ended()
         }
     }
 }

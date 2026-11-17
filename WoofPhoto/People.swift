@@ -131,6 +131,8 @@ struct PersonView: View {
     @State private var message: String?
     @State private var playsSlideshow = false
     @State private var slideshow: [AssetRef] = []
+    /// The server's record, for whether Favorite and Hide should offer to undo themselves.
+    @State private var person: Person?
 
     init(id: String, name: String) {
         self.id = id
@@ -171,6 +173,13 @@ struct PersonView: View {
             .sheet(isPresented: $merging) {
                 MergePicker(source: id) { dismiss() }
             }
+            .task {
+                guard let found = try? await session.client?.person(id) else { return }
+                person = found
+                if let text = found.birthDate, let date = try? Date.ISO8601FormatStyle(timeZone: .current).year().month().day().parse(text) {
+                    birthday = date
+                }
+            }
             .messageAlert($message)
     }
 
@@ -189,12 +198,25 @@ struct PersonView: View {
                     renaming = true
                 }
                 Button("Set Birthday", systemImage: "birthday.cake") { editsBirthday = true }
-                Button("Favorite", systemImage: "heart") { Task { await update(["isFavorite": true], done: "Added to favorites.") } }
-                Button("Merge with…", systemImage: "arrow.triangle.merge") { merging = true }
-                Button("Hide", systemImage: "eye.slash") {
+                let favorite = person?.isFavorite == true
+                Button(favorite ? "Unfavorite" : "Favorite", systemImage: favorite ? "heart.slash" : "heart") {
                     Task {
-                        // a failed hide keeps the screen, so its alert shows
-                        if await update(["isHidden": true], done: nil) { dismiss() }
+                        if await update(["isFavorite": !favorite], done: favorite ? "Removed from favorites." : "Added to favorites.") {
+                            person?.isFavorite = !favorite
+                        }
+                    }
+                }
+                Button("Merge with…", systemImage: "arrow.triangle.merge") { merging = true }
+                if person?.isHidden == true {
+                    Button("Unhide", systemImage: "eye") {
+                        Task { if await update(["isHidden": false], done: "Shown in People again.") { person?.isHidden = false } }
+                    }
+                } else {
+                    Button("Hide", systemImage: "eye.slash") {
+                        Task {
+                            // a failed hide keeps the screen, so its alert shows
+                            if await update(["isHidden": true], done: nil) { dismiss() }
+                        }
                     }
                 }
             } label: {
@@ -202,12 +224,17 @@ struct PersonView: View {
             }
             .accessibilityLabel("More")
             if !timeline.assets.isEmpty {
-                Button { play(timeline.assets.shuffled()) } label: { RoundIcon(systemImage: "shuffle") }
+                Button { Task { await loadAll(); play(timeline.assets.shuffled()) } } label: { RoundIcon(systemImage: "shuffle") }
                     .accessibilityLabel("Shuffle Slideshow")
-                Button { play(timeline.assets) } label: { RoundIcon(systemImage: "play.fill", filled: true) }
+                Button { Task { await loadAll(); play(timeline.assets) } } label: { RoundIcon(systemImage: "play.fill", filled: true) }
                     .accessibilityLabel("Play Slideshow")
             }
         }
+    }
+
+    /// The months not scrolled to yet, so Play and Shuffle get the whole set, not the part already loaded.
+    private func loadAll() async {
+        if let client = session.client { await timeline.loadAll(with: client) }
     }
 
     private func play(_ assets: [AssetRef]) {

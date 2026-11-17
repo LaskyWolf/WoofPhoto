@@ -303,7 +303,10 @@ struct AlbumView: View {
                 }
                 if let client = session.client, !timeline.assets.isEmpty {
                     Button("Keep Album Offline", systemImage: "arrow.down.circle") {
-                        OfflineDownloads.shared.add(timeline.assets.compactMap { $0.localID == nil ? $0.id : nil }, client: client)
+                        Task {
+                            await timeline.loadAll(with: client)
+                            OfflineDownloads.shared.add(timeline.assets.compactMap { $0.localID == nil ? $0.id : nil }, client: client)
+                        }
                     }
                 }
                 Section {
@@ -319,12 +322,17 @@ struct AlbumView: View {
             }
             .accessibilityLabel("More")
             if !timeline.assets.isEmpty {
-                Button { play(timeline.assets.shuffled()) } label: { RoundIcon(systemImage: "shuffle") }
+                Button { Task { await loadAll(); play(timeline.assets.shuffled()) } } label: { RoundIcon(systemImage: "shuffle") }
                     .accessibilityLabel("Shuffle Slideshow")
-                Button { play(timeline.assets) } label: { RoundIcon(systemImage: "play.fill", filled: true) }
+                Button { Task { await loadAll(); play(timeline.assets) } } label: { RoundIcon(systemImage: "play.fill", filled: true) }
                     .accessibilityLabel("Play Slideshow")
             }
         }
+    }
+
+    /// The months not scrolled to yet, so Play and Shuffle get the whole set, not the part already loaded.
+    private func loadAll() async {
+        if let client = session.client { await timeline.loadAll(with: client) }
     }
 
     private func play(_ assets: [AssetRef]) {
@@ -487,8 +495,13 @@ struct AlbumPicker: View {
             }
         }
         .task {
-            albums = (try? await session.client?.albums())?
-                .sorted { $0.albumName.localizedStandardCompare($1.albumName) == .orderedAscending } ?? []
+            do {
+                albums = (try await session.client?.albums() ?? [])
+                    .sorted { $0.albumName.localizedStandardCompare($1.albumName) == .orderedAscending }
+            } catch {
+                // otherwise only "New Album…" shows, as if there were no albums
+                self.error = error.explanation
+            }
         }
     }
 

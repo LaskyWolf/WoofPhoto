@@ -142,7 +142,10 @@ struct EditorView: View {
                 }
                 .padding(.top, 8)
                 .frame(height: Self.controlsHeight, alignment: .top)
+                // nothing to edit until the photo loads, and nothing to change while it saves
+                .disabled(busy || (source == nil && video == nil))
                 bottomRow
+                    .disabled(busy)
             }
             .padding(.bottom, 4)
             .background(.black)
@@ -301,7 +304,7 @@ struct EditorView: View {
             Button("Done", role: .confirm) { Task { await save() } }
                 .tint(.yellow)
                 // Markup strokes aren't in `changed` until they are committed, which `save` does
-                .disabled(!(changed || tool == .markup) || busy)
+                .disabled(!(changed || tool == .markup) || busy || (source == nil && video == nil))
         }
     }
 
@@ -944,8 +947,9 @@ struct EditorView: View {
                     source = CIImage(data: data, options: [.applyOrientationProperty: true])
                     let edits: ServerEdits? = try? await client.get("/assets/\(asset.id)/edits")
                     hasServerEdits = edits?.edits.isEmpty == false
-                    if let video = asset.livePhotoVideoId {
-                        motion = AVURLAsset(url: try await client.downloadOriginal(video))
+                    // the moving part is optional: a failed download leaves the still editable instead of a spinner
+                    if let video = asset.livePhotoVideoId, let url = try? await client.downloadOriginal(video) {
+                        motion = AVURLAsset(url: url)
                     }
                 } else {
                     video = AVURLAsset(url: try await client.downloadOriginal(asset.id))
@@ -1022,6 +1026,8 @@ struct EditorView: View {
     private func save() async {
         commitMarkup()
         guard changed else { dismiss(); return }
+        // a photo that never loaded has nothing to save; Done must not report success
+        guard source != nil || video != nil else { error = EditError.load.localizedDescription; return }
         busy = true
         defer { busy = false }
         // what History's undo removes: the new copy, the Immich edit, or the edit in Photos
@@ -1030,6 +1036,9 @@ struct EditorView: View {
             if let input {
                 try await saveOnDevice(input)
                 editID = "device"
+            } else if asset.localID != nil {
+                // an iPhone photo whose library copy didn't load: it must never go to the server
+                throw EditError.load
             } else if let client = session.client {
                 if let video {
                     let detail = try await client.asset(asset.id)
@@ -1047,6 +1056,8 @@ struct EditorView: View {
                     editID = "edits"
                 } else if let source {
                     editID = try await bake(source, client: client)
+                } else {
+                    throw EditError.load
                 }
                 ImageCache.forget(asset.id, client: client)
             }
@@ -1128,7 +1139,7 @@ struct EditorView: View {
         let id = try await stackNew(file, detail: detail, client: client, motion: edit.motionOff ? nil : asset.livePhotoVideoId)
         if edit.keyFrame != nil {
             // a new key photo replaces the old still; the video now belongs to the new one
-            try await client.deleteAssets([asset.id])
+            try await client.deleteAssets([asset.id], alsoOnDevice: false)
         }
         return id
     }

@@ -17,19 +17,26 @@ extension ImmichClient {
         guard saved != nil || Connection.shared.isOnline else { throw URLError(.notConnectedToInternet) }
         var request = request
         if saved != nil { request.timeoutInterval = 4 }
-        let data: Data
+        let fresh: Data
         do {
-            let (fresh, response) = try await URLSession.shared.data(for: request)
+            let response: URLResponse
+            (fresh, response) = try await URLSession.shared.data(for: request)
             try Self.check(response, fresh)
             Connection.shared.markFast()
-            data = fresh
-            try? fresh.write(to: file, options: .completeFileProtection)
         } catch let error as URLError where Connection.isUnreachable(error) {
             Connection.shared.markSlow()
             guard let saved else { throw error }
-            data = saved
+            return try JSONDecoder().decode(T.self, from: saved)
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        do {
+            let value = try JSONDecoder().decode(T.self, from: fresh)
+            // saved only once it reads: a captive portal or a proxy's login page answers 200 with HTML
+            try? fresh.write(to: file, options: .completeFileProtection)
+            return value
+        } catch {
+            if let saved, let value = try? JSONDecoder().decode(T.self, from: saved) { return value }
+            throw error
+        }
     }
 
     /// Application Support, not Caches: iOS empties Caches when storage runs low, and this is the offline library.
@@ -154,6 +161,8 @@ extension ImmichClient {
         if let stored = OfflineFiles.image(id, size: size) { return stored }
         let (data, response) = try await Self.images.data(for: request)
         try Self.check(response, data)
+        // a proxy's login page answers 200 with HTML: never kept as this photo
+        guard (response as? HTTPURLResponse)?.mimeType?.hasPrefix("image/") != false else { throw URLError(.cannotDecodeContentData) }
         OfflineFiles.save(data, id: id, size: size)
         return data
     }
@@ -207,11 +216,12 @@ extension ImmichClient {
     }
 
     /// Moves to Recently Deleted, or deletes for good with `force`.
-    func deleteAssets(_ ids: [String], force: Bool = false) async throws {
+    /// `alsoOnDevice` is for deletes the user asked for; the app's own clean-ups (a replaced key photo, an undo) keep the iPhone's copy.
+    func deleteAssets(_ ids: [String], force: Bool = false, alsoOnDevice: Bool = true) async throws {
         try await changeOrQueue("DELETE", "/assets", ["ids": ids, "force": force])
         await History.shared.record(force ? .deletedForGood : .deleted, ids)
         // the same photo on this iPhone goes too
-        await Backup.shared.deleteOnDevice(serverIDs: ids)
+        if alsoOnDevice { await Backup.shared.deleteOnDevice(serverIDs: ids) }
     }
 
     func stack(_ id: String) async throws -> Stack {

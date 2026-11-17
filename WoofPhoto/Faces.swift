@@ -28,6 +28,8 @@ struct FacesView: View {
         }
     }
 
+    @State private var loadFailed = false
+
     var body: some View {
         NavigationStack {
             Group {
@@ -39,6 +41,14 @@ struct FacesView: View {
                         .overlay { GeometryReader { boxes(in: $0.size) } }
                         .padding(Tokens.screenPadding)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if loadFailed {
+                    ContentUnavailableView {
+                        Label("Can't Load the Photo", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text("Check the connection to the server.")
+                    } actions: {
+                        Button("Try Again") { Task { await loadImage() } }
+                    }
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -65,9 +75,16 @@ struct FacesView: View {
             .messageAlert($message)
         }
         .task {
-            image = await Still.load(assetID, size: "preview", client: session.client)
+            await loadImage()
             await loadFaces()
         }
+    }
+
+    /// Still.load gives nil on any failure, which would otherwise spin forever.
+    private func loadImage() async {
+        loadFailed = false
+        image = await Still.load(assetID, size: "preview", client: session.client)
+        loadFailed = image == nil
     }
 
     private var hint: String? {
@@ -184,6 +201,8 @@ struct FacePersonPicker: View {
     @State private var people: [Person] = []
     @State private var search = ""
     @State private var error: String?
+    /// A person is being created: a second tap on a slow connection would make two.
+    @State private var creating = false
 
     var body: some View {
         NavigationStack {
@@ -191,6 +210,7 @@ struct FacePersonPicker: View {
                 Button { Task { await create() } } label: {
                     Label(name.isEmpty ? "New Person" : "New Person “\(name)”", systemImage: "person.badge.plus")
                 }
+                .disabled(creating)
                 ForEach(matches) { person in
                     Button { Task { await pick(person) } } label: {
                         HStack {
@@ -231,6 +251,9 @@ struct FacePersonPicker: View {
     }
 
     private func create() async {
+        guard !creating else { return }
+        creating = true
+        defer { creating = false }
         do {
             guard let person = try await session.client?.createPerson(name: name) else { return }
             await pick(person)

@@ -65,6 +65,10 @@ extension ImmichClient {
     }
 
     /// name, birthDate ("yyyy-MM-dd" or NSNull), isHidden, isFavorite.
+    func person(_ id: String) async throws -> Person {
+        try await get("/people/\(id)")
+    }
+
     func updatePerson(_ id: String, _ fields: [String: Any]) async throws {
         try await call("PUT", "/people/\(id)", body: fields)
     }

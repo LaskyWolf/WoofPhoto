@@ -109,6 +109,14 @@ final class Timeline {
         await task.value
     }
 
+    /// Every month, for actions on the whole timeline (a slideshow, Keep Offline): otherwise months load only as their cells appear.
+    func loadAll(with client: ImmichClient) async {
+        for key in months?.map(\.key) ?? [] {
+            if Task.isCancelled { return }
+            await loadMonth(key, with: client)
+        }
+    }
+
     /// A month and the two beside it, so scrolling into the next month already shows its thumbhashes.
     func loadMonth(around key: String, with client: ImmichClient) async {
         await loadMonth(key, with: client)

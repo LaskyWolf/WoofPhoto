@@ -386,8 +386,12 @@ struct StorageSettings: View {
             }
         }
         .task(id: downloads.done) {
-            thumbsSize = OfflineFiles.bytes(in: OfflineFiles.thumbs)
-            keptSize = OfflineFiles.bytes(in: OfflineFiles.originals)
+            // walking tens of thousands of files, off the main thread so the page scrolls while downloads run
+            let sizes = await Task.detached(priority: .utility) {
+                (OfflineFiles.bytes(in: OfflineFiles.thumbs), OfflineFiles.bytes(in: OfflineFiles.originals))
+            }.value
+            thumbsSize = sizes.0
+            keptSize = sizes.1
         }
     }
 }
@@ -545,6 +549,8 @@ struct WidgetSettings: View {
         Section {
             Toggle(isOn: $favoritesOnly) { Label("Favorites Only", systemImage: "heart") }
                 .onChange(of: favoritesOnly) { Task { await refresh() } }
+                // a change during a refresh would be dropped by it
+                .disabled(busy)
             Button("Choose New Photos", systemImage: "shuffle") { Task { await refresh() } }
                 .disabled(busy)
             if busy { ProgressView() }
@@ -593,6 +599,8 @@ enum FeaturedPhotos {
             try small.write(to: fresh.appending(path: file))
             items.append(Featured.Item(id: asset.id, file: file, date: asset.date))
         }
+        // nothing found keeps the widget's current photos instead of emptying it
+        guard !items.isEmpty else { throw FeaturedError.empty }
         try? FileManager.default.removeItem(at: folder)
         try FileManager.default.moveItem(at: fresh, to: folder)
         try Featured.save(items)
@@ -618,7 +626,12 @@ enum FeaturedPhotos {
     }
 
     enum FeaturedError: LocalizedError {
-        case noGroup
-        var errorDescription: String? { "The widget's shared folder isn't available. Check the App Group in Diagnostics." }
+        case noGroup, empty
+        var errorDescription: String? {
+            switch self {
+            case .noGroup: "The widget's shared folder isn't available. Check the App Group in Diagnostics."
+            case .empty: "No photos to show. Mark some photos as favorites, or turn off Favorites Only."
+            }
+        }
     }
 }

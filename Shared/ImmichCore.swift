@@ -194,7 +194,10 @@ extension Error {
     /// Each one is also written to the log file, where Diagnostics lists it under Recent Problems.
     var explanation: String {
         // a request that was cancelled (the user scrolled on or left the screen) isn't a failure: no message, no log line
-        if self is CancellationError || (self as? URLError)?.code == .cancelled { return "" }
+        // also "Don't Allow" in iOS's own delete prompt (PHPhotosError.userCancelled), which the user chose
+        let photos = self as NSError
+        if self is CancellationError || (self as? URLError)?.code == .cancelled
+            || (photos.domain == "PHPhotosErrorDomain" && photos.code == 3072) { return "" }
         let message = describe
         // ponytail: logs where the message is made; every caller asks once per failure today
         FileLog.shared.append("ERROR", "\(message) (\(String(describing: self).prefix(200)))")

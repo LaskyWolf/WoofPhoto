@@ -52,6 +52,8 @@ final class Backup {
     /// iPhone photos whose checksum the server already answered for.
     private var checked: Set<String>
     private var matchTask: Task<Void, Never>?
+    /// Photos whose original is only in iCloud: skipped by the automatic check until the next launch, so it moves on to others.
+    private var unreadable: Set<String> = []
     /// Progress of the checksum check against the server, nil when it isn't running.
     private(set) var matching: (done: Int, total: Int)?
     private var task: Task<Void, Never>?
@@ -109,14 +111,18 @@ final class Backup {
             defer { matchTask = nil; matching = nil }
             guard await authorize() else { return }
             if pending.isEmpty { refreshPending() }
-            let todo = Array(pending.filter { !checked.contains($0.localIdentifier) }.prefix(limit))
+            let todo = Array(pending.filter { !checked.contains($0.localIdentifier) && !unreadable.contains($0.localIdentifier) }.prefix(limit))
             var found = 0
             for start in stride(from: 0, to: todo.count, by: 50) {
                 if Task.isCancelled { break }
                 matching = (start, todo.count)
                 var entries: [[String: String]] = []
                 for asset in todo[start..<min(start + 50, todo.count)] {
-                    guard !Task.isCancelled, let sum = await checksum(of: asset) else { continue }
+                    if Task.isCancelled { break }
+                    guard let sum = await checksum(of: asset) else {
+                        unreadable.insert(asset.localIdentifier)
+                        continue
+                    }
                     entries.append(["id": asset.localIdentifier, "checksum": sum])
                 }
                 guard !entries.isEmpty else { continue }
@@ -182,11 +188,17 @@ final class Backup {
             await Gotify.backupEnded(uploaded: 0, errors: [], failure: reason)
             return
         }
+        // before exporting anything: an iCloud original or the duplicate check would use cellular too
+        if wifiOnly, !Connection.shared.isCheap {
+            state = .waiting("Waiting for Wi-Fi.")
+            return
+        }
         state = .scanning
         errors = []
         await ImmichClient.chooseAddress()
         refreshPending()
         var sent = 0
+        var serverErrors = 0
         let total = pending.count
         UIDevice.current.isBatteryMonitoringEnabled = true
         for (done, asset) in pending.reversed().enumerated() {
@@ -199,6 +211,20 @@ final class Backup {
             current = asset.localIdentifier
             do {
                 if try await upload(asset, client: client) { sent += 1 }
+                serverErrors = 0
+            } catch ImmichError.http(let code, _) where code == 401 || code == 403 {
+                // every photo would fail the same way: stop and say what to do
+                persist()
+                state = .failed("The server refused WoofPhoto's session. Sign in again.")
+                return
+            } catch ImmichError.http(let code, let message) where code >= 500 {
+                serverErrors += 1
+                errors.append("\(asset.creationDate?.formatted(date: .abbreviated, time: .shortened) ?? "An item"): \(ImmichError.http(code, message).explanation)")
+                if serverErrors >= 3 {
+                    persist()
+                    state = .waiting("The server is having problems. Backup tries again later.")
+                    return
+                }
             } catch let error as URLError where error.code == .notConnectedToInternet || error.code == .dataNotAllowed {
                 persist()
                 state = .waiting(wifiOnly ? "Waiting for Wi-Fi." : "Waiting for a connection.")
@@ -220,8 +246,10 @@ final class Backup {
         current = nil
         persist()
         refreshPending()
-        state = Task.isCancelled ? .idle : .finished
-        if !Task.isCancelled { UserDefaults.standard.set(Date.now, forKey: "backup.lastRun") }
+        // errors and nothing sent isn't "Up to date"
+        let failed = sent == 0 && !errors.isEmpty
+        state = Task.isCancelled ? .idle : failed ? .failed("Nothing was uploaded. The errors are listed below.") : .finished
+        if !Task.isCancelled, !failed { UserDefaults.standard.set(Date.now, forKey: "backup.lastRun") }
         WidgetSync.writeBackup()
         if !Task.isCancelled { await Gotify.backupEnded(uploaded: sent, errors: errors) }
     }
@@ -268,7 +296,8 @@ final class Backup {
     private func persist() {
         saving?.cancel()
         try? FileManager.default.createDirectory(at: Self.recordURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(uploaded).write(to: Self.recordURL)
+        // atomic: a kill in the middle of a write must not leave half a record, which reads as "nothing backed up"
+        try? JSONEncoder().encode(uploaded).write(to: Self.recordURL, options: .atomic)
     }
 
     private func export(_ resource: PHAssetResource, to folder: URL) async throws -> URL {
@@ -339,12 +368,26 @@ final class Backup {
 
     /// Deletes from the iPhone only what the server still has, out of Recently Deleted.
     func freeUpSpace(client: ImmichClient) async throws {
-        // ponytail: one request per item; a bulk check if thousands make it slow
-        let kept = await withTaskGroup(of: String?.self) { group in
-            for (local, server) in uploaded {
-                group.addTask { (try? await client.asset(server)).flatMap { $0.isTrashed == true ? nil : local } }
+        // asked fresh, never from the offline copy: an old answer would call a photo deleted on the server "kept",
+        // and any network failure stops it, so nothing is deleted on a guess
+        // ponytail: one request per item, 8 at a time; a bulk check if thousands make it slow
+        let pairs = uploaded.filter { onDeviceIDs.contains($0.value) }.map { ($0.key, $0.value) }
+        var kept: [String] = []
+        for start in stride(from: 0, to: pairs.count, by: 8) {
+            let batch = pairs[start..<min(start + 8, pairs.count)]
+            kept += try await withThrowingTaskGroup(of: String?.self) { group in
+                for (local, server) in batch {
+                    group.addTask {
+                        do {
+                            let asset: Asset = try await client.fetch("GET", "/assets/\(server)")
+                            return asset.isTrashed == true ? nil : local
+                        } catch ImmichError.http(let code, _) where code == 400 || code == 404 {
+                            return nil // gone from the server
+                        }
+                    }
+                }
+                return try await group.reduce(into: [String]()) { if let id = $1 { $0.append(id) } }
             }
-            return await group.reduce(into: [String]()) { if let id = $1 { $0.append(id) } }
         }
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: kept, options: nil)
         guard assets.count > 0 else { return }

@@ -369,6 +369,8 @@ struct Viewer: View {
         guard let current else { return }
         // the last page's date and place go at once; this page's come from the saved details, or when they arrive
         detail = details[current]
+        // the last page's stack strip goes at once too; tapping it would open a photo of the previous stack
+        if currentAsset?.stackID != stack?.id { stack = nil }
         // the blurs of the pages around first, from what is in memory (a thumbhash at least), before any network
         if let index = timeline.assets.firstIndex(where: { $0.id == current }) {
             let around = (index - 3...index + 3).filter(timeline.assets.indices.contains).map { shown(timeline.assets[$0]) }
@@ -382,7 +384,11 @@ struct Viewer: View {
             }
         }
         guard let client = session.client, currentAsset?.localID == nil else { return }
-        if detail == nil { detail = try? await client.asset(current) }
+        if detail == nil, let fetched = try? await client.asset(current) {
+            // a late answer for a page already swiped past would show its place on this one
+            guard !Task.isCancelled else { return }
+            detail = fetched
+        }
         if let detail {
             details[current] = detail
             fillIn(current, from: detail)
@@ -402,7 +408,7 @@ struct Viewer: View {
             neighboursLoaded += 1
         }
         if let stackID = currentAsset?.stackID {
-            if stack?.id != stackID { stack = try? await client.stack(stackID) }
+            if stack?.id != stackID, let fetched = try? await client.stack(stackID), !Task.isCancelled { stack = fetched }
         } else {
             stack = nil
         }
@@ -437,6 +443,7 @@ struct Viewer: View {
         do {
             if let localID = asset.localID {
                 try await DeviceLibrary.setFavorite([localID], !asset.isFavorite)
+                Backup.shared.refreshPending()
             } else if let client = session.client {
                 try await client.updateAssets([asset.id], ["isFavorite": !asset.isFavorite])
             } else { return }
@@ -455,6 +462,7 @@ struct Viewer: View {
         await perform {
             if let localID = shownAsset?.localID {
                 try await DeviceLibrary.delete([localID])
+                Backup.shared.refreshPending()
             } else if let client = session.client {
                 try await client.deleteAssets([id], force: timeline.query?.isTrash == true)
             } else { return }
@@ -757,6 +765,8 @@ struct VideoSurface: View {
     @State private var muted = false
     /// 0…1 while a finger drags the progress bar.
     @State private var scrub: Double?
+    /// Goes false when the finger lifts or the touch is cancelled; onEnded only runs for the first.
+    @GestureState private var scrubbing = false
     /// The last double tap's side and how far taps in a row skipped, as in WoofTube.
     @State private var skipHint: (id: UUID, seconds: Double)?
 
@@ -877,6 +887,7 @@ struct VideoSurface: View {
                 .frame(maxHeight: .infinity)
                 .contentShape(.rect)
                 .gesture(DragGesture(minimumDistance: 0)
+                    .updating($scrubbing) { _, scrubbing, _ in scrubbing = true }
                     .onChanged { scrub = min(max($0.location.x / max(bar.size.width, 1), 0), 1) }
                     .onEnded { _ in
                         if let scrub { player.seek(to: CMTime(seconds: scrub * duration, preferredTimescale: 600)) }
@@ -884,6 +895,8 @@ struct VideoSurface: View {
                     })
             }
             .frame(height: 24)
+            // a cancelled scrub (the pager took the touch) leaves the bar thin and the time moving again
+            .onChange(of: scrubbing) { _, down in if !down { scrub = nil } }
             .accessibilityElement()
             .accessibilityLabel("Position")
             .accessibilityValue(Self.format(time))
@@ -1237,7 +1250,8 @@ struct InfoSheet: View {
             try await session.client?.updateAssets([id], ["rating": value])
             asset = try await session.client?.asset(id)
         } catch {
-            self.error = error.explanation
+            // `error` only shows while the details haven't loaded; this one goes in the alert
+            note = error.explanation
         }
     }
 
@@ -1301,8 +1315,8 @@ struct InfoSheet: View {
             try await session.client?.updateAssets([asset.id], ["description": caption])
             self.asset?.exifInfo?.description = caption
         } catch {
-            // ponytail: shows only while the details are open; a save on close fails silently, retried on the next open
-            self.error = error.explanation
+            // ponytail: a save on close fails with the sheet gone; retried on the next open
+            note = error.explanation
         }
     }
 }

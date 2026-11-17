@@ -46,6 +46,12 @@ struct LibraryView: View {
                         }
                     }
                 }
+                // back from Settings with access allowed: show the photos without relaunching
+                .task(id: scenePhase) {
+                    guard scenePhase == .active, await Backup.shared.authorize() else { return }
+                    device = .device()
+                    denied = false
+                }
             } else {
                 ProgressView()
             }

@@ -31,6 +31,7 @@ struct AssetGrid: View {
     @Environment(\.libraryReselects) private var reselects
     /// The column step a pinch started from, so one pinch moves at most one or two steps.
     @State private var pinchStart: Int?
+    @GestureState private var pinching = false
     /// A one-finger drag that turned out to be a scroll: it stays one until the finger lifts or the touch is cancelled.
     /// A gesture state, not a flag set in onEnded: onEnded doesn't run when the scroll view takes the touch, and the flag stuck.
     @GestureState private var dragIgnored = false
@@ -38,6 +39,11 @@ struct AssetGrid: View {
     @GestureState private var touching = false
     /// Two fingers are dragging, which the one-finger gesture's end must not cut short.
     @State private var twoFingers = false
+    /// The month scrubber on the right edge: only while the grid scrolls and a moment after, as in Photos,
+    /// so at rest that edge belongs to the photos under it (a tap there opened another month).
+    @State private var showsScrubber = false
+    @State private var scrollMoving = false
+    @State private var scrubbing = false
     /// Every cell in grid order, built once when a drag-select starts instead of on every move.
     @State private var dragCells: [AssetRef?] = []
     /// True until the first touch of the scroll: until then the grid keeps itself at the newest photos while it fills in.
@@ -91,7 +97,11 @@ struct AssetGrid: View {
 
     /// What Select All picks: every item that has loaded, on the server or only on this iPhone.
     private var selectable: Set<String> { Set(timeline.assets.map(\.id)) }
-    private var allSelected: Bool { !selectable.isEmpty && selection == selectable }
+    /// Counts instead of building the whole set: the header reads this on every drag-select move.
+    private var allSelected: Bool {
+        let count = timeline.assets.count
+        return count > 0 && selection?.count == count
+    }
 
     private func toggleSelect() {
         withAnimation(.snappy) { selection = selection == nil ? [] : nil }
@@ -227,6 +237,11 @@ struct AssetGrid: View {
                                     }
                                 }
                                 .accessibilityAddTraits(selection?.contains(asset?.id ?? "") == true ? [.isButton, .isSelected] : .isButton)
+                                // Select mode starts with a two-finger drag, which VoiceOver can't make
+                                .accessibilityAction(named: "Select") {
+                                    guard let asset, canSelect, selection == nil else { return }
+                                    withAnimation(.snappy) { selection = [asset.id] }
+                                }
                                 // again when the month is forgotten, which a changed backup record does
                                 .task(id: month.assets == nil) {
                                     if let client { await timeline.loadMonth(around: month.key, with: client) }
@@ -264,7 +279,15 @@ struct AssetGrid: View {
             .onChange(of: touching) { _, down in if !down, !twoFingers { drag = nil } }
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
             // the anchor only holds for the first layout; the months filling in and the thumbnails loading move it
-            .onScrollPhaseChange { _, phase in if phase == .interacting { followsEnd = false } }
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting { followsEnd = false }
+                scrollMoving = phase != .idle
+            }
+            .task(id: scrollMoving || scrubbing) {
+                if scrollMoving || scrubbing { showsScrubber = true; return }
+                try? await Task.sleep(for: .seconds(1.5))
+                if !Task.isCancelled { showsScrubber = false }
+            }
             .onChange(of: months.reduce(0) { $0 + ($1.assets?.count ?? $1.count) }) { if followsEnd { scrollToEnd(months, proxy) } }
             .task {
                 for delay in [0.0, 0.25, 0.6] {
@@ -279,7 +302,7 @@ struct AssetGrid: View {
                 withAnimation(.smooth) { proxy.scrollTo("\(last.key)#\((last.assets?.count ?? last.count) - 1)", anchor: .bottom) }
             }
             .overlay(alignment: .trailing) {
-                if months.count > 1, selection == nil { Scrubber(months: months, proxy: proxy) }
+                if months.count > 1, selection == nil, showsScrubber { Scrubber(months: months, proxy: proxy, scrubbing: $scrubbing) }
             }
             // a day tapped in Months
             .onChange(of: target) {
@@ -289,16 +312,16 @@ struct AssetGrid: View {
             }
         }
         // the columns change while the fingers move, with no scaling in between: scaling a tall lazy grid jumped
-        .simultaneousGesture(MagnifyGesture().onChanged { value in
+        .simultaneousGesture(MagnifyGesture().updating($pinching) { _, pinching, _ in pinching = true }.onChanged { value in
             let steps = Self.columnSteps
             let base = pinchStart ?? steps.firstIndex(of: columns) ?? 1
             pinchStart = base
             let move = value.magnification > 2 ? -2 : value.magnification > 1.3 ? -1 : value.magnification < 0.5 ? 2 : value.magnification < 0.75 ? 1 : 0
             let next = steps[min(max(base + move, 0), steps.count - 1)]
             if next != columns { columns = next }
-        }.onEnded { _ in
-            pinchStart = nil
         })
+        // a pinch the scroll view cancelled must not leave its start step for the next one
+        .onChange(of: pinching) { _, down in if !down { pinchStart = nil } }
     }
 
     private func scrollToEnd(_ months: [Timeline.Month], _ proxy: ScrollViewProxy) {
@@ -439,9 +462,11 @@ struct AssetGrid: View {
         do {
             try await timeline.reload(with: client)
         } catch ImmichError.http(401, _) {
-            session.signOut()
+            session.expire()
         } catch {
-            self.error = error.explanation
+            // empty for a cancelled load (the timeline changed): that's no failure to show
+            let message = error.explanation
+            if !message.isEmpty { self.error = message }
         }
     }
 
@@ -474,22 +499,28 @@ struct AssetGrid: View {
 struct Scrubber: View {
     let months: [Timeline.Month]
     let proxy: ScrollViewProxy
+    /// Tells the grid to keep the scrubber while the finger is on it.
+    @Binding var scrubbing: Bool
     @State private var position: (y: CGFloat, title: String)?
+    /// Goes false when the finger lifts or the touch is cancelled, which onEnded misses.
+    @GestureState private var touching = false
 
     var body: some View {
         GeometryReader { geometry in
             Color.clear
                 .contentShape(.rect)
-                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                .gesture(DragGesture(minimumDistance: 0).updating($touching) { _, touching, _ in touching = true }.onChanged { value in
                     let fraction = min(max(value.location.y / geometry.size.height, 0), 1)
                     let month = months[Int(fraction * Double(months.count - 1))]
                     if position?.title != AssetGrid.monthTitle(month.key) {
                         proxy.scrollTo("\(month.key)#0", anchor: .top)
                     }
                     position = (value.location.y, AssetGrid.monthTitle(month.key))
-                }.onEnded { _ in
-                    position = nil
                 })
+                .onChange(of: touching) { _, down in
+                    scrubbing = down
+                    if !down { position = nil }
+                }
                 .overlay(alignment: .topTrailing) {
                     if let position {
                         Text(position.title)
@@ -600,8 +631,11 @@ struct Thumbnail: View {
         loaded = asset.flatMap { ImageCache.image($0.id, size: size) }
         guard let asset, loaded == nil else { return }
         if let localID = asset.localID {
-            loaded = await DeviceLibrary.image(localID, side: size == "thumbnail" ? 300 : 1200)
-            if let loaded { ImageCache.store(loaded, for: asset.id, size: size) }
+            let image = await DeviceLibrary.image(localID, side: size == "thumbnail" ? 300 : 1200)
+            if let image { ImageCache.store(image, for: asset.id, size: size) }
+            // the cell may show another photo by now (a delete shifted the month): an old answer must not land on it
+            guard !Task.isCancelled else { return }
+            loaded = image
             return
         }
         guard let client = session.client else { return }
@@ -618,6 +652,7 @@ struct Thumbnail: View {
                 }
                 let ready = await image.byPreparingForDisplay() ?? image
                 ImageCache.store(ready, for: asset.id, size: size)
+                guard !Task.isCancelled else { return }
                 loaded = ready
                 return
             } catch let error as URLError where error.code != .cancelled && attempt < 2 {

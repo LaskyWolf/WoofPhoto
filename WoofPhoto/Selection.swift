@@ -33,7 +33,11 @@ final class AssetActions {
         let ids = ids
         run(client, removes: false) { client in
             let (server, device) = Self.split(ids)
-            if !device.isEmpty { try await DeviceLibrary.setFavorite(device, favorite) }
+            if !device.isEmpty {
+                try await DeviceLibrary.setFavorite(device, favorite)
+                // the Library merges the backup's list of iPhone photos: it must hold the new value, or a reload undoes it
+                Backup.shared.refreshPending()
+            }
             if !server.isEmpty { try await client.updateAssets(server, ["isFavorite": favorite]) }
             self.timeline?.update(Set(ids)) { $0.isFavorite = favorite }
         }
@@ -77,7 +81,11 @@ final class AssetActions {
     func delete(_ client: ImmichClient?, force: Bool) {
         let (server, device) = Self.split(ids)
         run(client, removes: true) { client in
-            if !device.isEmpty { try await DeviceLibrary.delete(device) }
+            if !device.isEmpty {
+                try await DeviceLibrary.delete(device)
+                // or the next reload merges the deleted photos back from the backup's old list
+                Backup.shared.refreshPending()
+            }
             if !server.isEmpty { try await client.deleteAssets(server, force: force) }
         }
     }
@@ -366,7 +374,14 @@ struct Slideshow: View {
         .task {
             guard !assets.isEmpty else { return }
             while !Task.isCancelled {
-                let next = await Still.load(assets[index].id, size: "preview", client: session.client)
+                let asset = assets[index]
+                // a photo only on this iPhone comes from its library, never from the server
+                var next: UIImage?
+                if let localID = asset.localID {
+                    next = await DeviceLibrary.image(localID, side: 1600)
+                } else {
+                    next = await Still.load(asset.id, size: "preview", client: session.client)
+                }
                 withAnimation(.easeInOut(duration: 1)) { image = next }
                 try? await Task.sleep(for: .seconds(3))
                 index = (index + 1) % assets.count

@@ -32,8 +32,9 @@ struct WoofPhotoApp: App {
     /// The background run iOS starts: back up until done or until iOS says time is up.
     @MainActor private static func runBackup(_ task: BGTask) {
         let backup = Backup.shared
-        guard let client = ImmichClient.saved() else {
-            task.setTaskCompleted(success: false)
+        // a request scheduled before Back Up was turned off still fires
+        guard backup.enabled, let client = ImmichClient.saved() else {
+            task.setTaskCompleted(success: !backup.enabled)
             return
         }
         task.expirationHandler = { MainActor.assumeIsolated { backup.stop() } }
@@ -199,6 +200,11 @@ struct SignInView: View {
                 .fontWeight(.semibold)
                 .disabled(busy || server.isEmpty)
 
+                if session.expired {
+                    Text("Your session ended. Sign in again: nothing on this iPhone was removed.")
+                        .font(.footnote.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                }
                 Text("The server is the address you open the Immich web app with. SSO needs app.immich:///oauth-callback in the server's OAuth redirect list.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

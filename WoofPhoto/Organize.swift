@@ -148,7 +148,8 @@ struct TagRow: View {
 @MainActor func tagsEnabled(_ client: ImmichClient?) async -> Bool {
     let prefs = ServerPreferences()
     await prefs.load(client)
-    return prefs.value("tags", "enabled", default: false)
+    // unreadable preferences (offline, a timeout) aren't "off": the tags request that follows shows the real error
+    return prefs.error != nil || prefs.value("tags", "enabled", default: false)
 }
 
 // MARK: - Tags page

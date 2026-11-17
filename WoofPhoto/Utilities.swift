@@ -136,6 +136,7 @@ struct HiddenView: View {
     }
 
     @Environment(Session.self) private var session
+    @Environment(\.scenePhase) private var scenePhase
     @State private var stage = Stage.checking
     @State private var pin = ""
     @State private var error: String?
@@ -167,13 +168,22 @@ struct HiddenView: View {
         }
         .navigationTitle("Hidden")
         .task { await open() }
-        .onDisappear {
-            guard stage == .unlocked, let client = session.client else { return }
-            // the saved thumbnails go too, or History and other screens could show them without Face ID
-            for asset in timeline.assets { ImageCache.forget(asset.id, client: client) }
-            Still.forgetBlurs()
-            Task { try? await client.lockSession() }
+        .onDisappear { lock() }
+        // leaving the app locks it too, so coming back (or the app switcher) never shows the photos without Face ID
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { lock() }
+            if phase == .active, stage == .checking { Task { await open() } }
         }
+    }
+
+    private func lock() {
+        guard stage == .unlocked else { return }
+        stage = .checking
+        guard let client = session.client else { return }
+        // the saved thumbnails go too, or History and other screens could show them without Face ID
+        for asset in timeline.assets { ImageCache.forget(asset.id, client: client) }
+        Still.forgetBlurs()
+        Task { try? await client.lockSession() }
     }
 
     private func open() async {

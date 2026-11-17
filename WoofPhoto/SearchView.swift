@@ -267,7 +267,8 @@ struct SearchView: View {
             Connection.shared.markSlow()
             if !Task.isCancelled { await searchSaved(text) }
         } catch {
-            if !Task.isCancelled { self.error = error.explanation }
+            // the old query's photos would look like this one's answer
+            if !Task.isCancelled { results = nil; self.error = error.explanation }
         }
     }
 
@@ -313,11 +314,12 @@ struct SearchFilters: Equatable {
     var media = Media.all
     var after: Date?
     var before: Date?
-    var country = ""
-    var state = ""
+    // a narrower place or camera belongs to the wider one: changing the wider one clears it
+    var country = "" { didSet { if country != oldValue { state = ""; city = "" } } }
+    var state = "" { didSet { if state != oldValue { city = "" } } }
     var city = ""
-    var make = ""
-    var model = ""
+    var make = "" { didSet { if make != oldValue { model = ""; lens = "" } } }
+    var model = "" { didSet { if model != oldValue { lens = "" } } }
     var lens = ""
     var tags: [AssetTag] = []
     var album: Album?

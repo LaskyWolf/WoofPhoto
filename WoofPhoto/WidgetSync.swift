@@ -14,7 +14,8 @@ enum WidgetSync {
     private static var last = Date.distantPast
 
     static func refresh(client: ImmichClient) async {
-        guard Date.now.timeIntervalSince(last) > 3600,
+        // offline, the people and memories would come from the saved answers but their photos wouldn't download
+        guard Date.now.timeIntervalSince(last) > 3600, Connection.shared.isUsable,
               let widgets = try? await WidgetCenter.shared.currentConfigurations(), !widgets.isEmpty else { return }
         last = .now
         let kinds = Set(widgets.map(\.kind))
@@ -39,17 +40,20 @@ enum WidgetSync {
         guard let folder = WidgetData.faces, let all = try? await client.people() else { return }
         let named = all.filter { !$0.name.isEmpty && $0.isHidden != true }
         let chosen = (named.filter { $0.isFavorite == true } + named.filter { $0.isFavorite != true }).prefix(6)
-        try? FileManager.default.removeItem(at: folder)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var faces: [WidgetData.Face] = []
+        var faces: [WidgetData.Face] = [], files: [(String, Data)] = []
         for person in chosen {
             guard let data = try? await client.personImage(person.id), let image = UIImage(data: data),
                   let jpeg = image.preparingThumbnail(of: CGSize(width: 240, height: 240 * image.size.height / max(image.size.width, 1)))?
                       .jpegData(compressionQuality: 0.8) else { continue }
             let file = "\(person.id).jpg"
-            try? jpeg.write(to: folder.appending(path: file))
+            files.append((file, jpeg))
             faces.append(WidgetData.Face(id: person.id, name: person.name, file: file))
         }
+        // nothing downloaded keeps the faces the widget already has
+        guard !faces.isEmpty || named.isEmpty else { return }
+        try? FileManager.default.removeItem(at: folder)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (file, jpeg) in files { try? jpeg.write(to: folder.appending(path: file)) }
         WidgetData.write(faces, WidgetSync.people)
     }
 
@@ -60,18 +64,21 @@ enum WidgetSync {
             guard let asset = memory.assets.first(where: { $0.type != "VIDEO" }), let year = memory.data?.year else { return nil }
             return (asset, year)
         }.prefix(6)
-        try? FileManager.default.removeItem(at: folder)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var items: [WidgetData.Day] = []
+        var items: [WidgetData.Day] = [], files: [(String, Data)] = []
         for (asset, year) in days {
             guard let data = try? await client.image(asset.id, size: "preview"), let image = UIImage(data: data) else { continue }
             let scale = min(1, 600 / max(image.size.width, image.size.height))
             let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
             guard let jpeg = image.preparingThumbnail(of: size)?.jpegData(compressionQuality: 0.8) else { continue }
             let file = "\(asset.id).jpg"
-            try? jpeg.write(to: folder.appending(path: file))
+            files.append((file, jpeg))
             items.append(WidgetData.Day(id: asset.id, file: file, year: year))
         }
+        // nothing downloaded keeps the photos the widget already has
+        guard !items.isEmpty || days.isEmpty else { return }
+        try? FileManager.default.removeItem(at: folder)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (file, jpeg) in files { try? jpeg.write(to: folder.appending(path: file)) }
         WidgetData.write(items, WidgetSync.onThisDay)
     }
 

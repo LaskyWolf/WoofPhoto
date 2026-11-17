@@ -379,9 +379,10 @@ struct CollectionsView: View {
             duplicates = (try? await client.duplicates()) ?? []
             await prefs.load(client)
         } catch ImmichError.http(401, _) {
-            session.signOut()
+            session.expire()
         } catch {
-            self.error = error.explanation
+            let message = error.explanation
+            if !message.isEmpty { self.error = message }
         }
     }
 }
@@ -602,7 +603,8 @@ struct SearchedGrid: View {
             do {
                 timeline = Timeline(assets: try await search(client).reversed().map(\.ref))
             } catch {
-                self.error = error.explanation
+                let message = error.explanation
+                if !message.isEmpty { self.error = message }
             }
         }
     }

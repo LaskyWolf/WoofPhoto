@@ -12,6 +12,8 @@ final class Outbox {
         var method: String
         var path: String
         var body: Data
+        /// Server errors (5xx) this change got. Optional, so queues saved by older versions still read.
+        var failures: Int?
     }
 
     private(set) var items: [Item]
@@ -40,6 +42,13 @@ final class Outbox {
                 Connection.shared.markFast()
             } catch ImmichError.http(let code, _) where (400..<500).contains(code) && ![401, 408, 429].contains(code) {
                 // refused for good: drop it
+            } catch ImmichError.http(let code, _) where code >= 500 && (item.failures ?? 0) >= 4 {
+                // the server failed this change five times: it goes, so the changes behind it aren't held forever
+                FileLog.shared.append("ERROR", "A waiting \(item.method) change was dropped after 5 server errors (\(code))")
+            } catch ImmichError.http(let code, _) where code >= 500 {
+                if !items.isEmpty { items[0].failures = (item.failures ?? 0) + 1 }
+                save()
+                return
             } catch {
                 return
             }

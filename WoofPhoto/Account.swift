@@ -126,6 +126,7 @@ struct PasskeysSection: View {
     /// The server has no passkeys (before Immich 3.4) or they failed to load.
     @State private var unsupported = false
     @State private var renaming: Passkey?
+    @State private var deleting: Passkey?
     @State private var name = ""
     @State private var message: String?
 
@@ -140,7 +141,7 @@ struct PasskeysSection: View {
                             Text(detail(passkey)).font(.footnote).foregroundStyle(.secondary)
                         }
                         .swipeActions {
-                            Button("Delete", role: .destructive) { Task { await delete(passkey) } }
+                            Button("Delete", role: .destructive) { deleting = passkey }
                             Button("Rename") {
                                 name = passkey.name ?? ""
                                 renaming = passkey
@@ -161,6 +162,10 @@ struct PasskeysSection: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Rename") { if let renaming { Task { await rename(renaming) } } }
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .confirmationDialog("This passkey stops working. To use it again, add it in the Immich web app.",
+                                isPresented: Binding { deleting != nil } set: { if !$0 { deleting = nil } }, titleVisibility: .visible) {
+                Button("Delete Passkey", role: .destructive) { if let deleting { Task { await delete(deleting) } } }
             }
             .messageAlert($message)
             .task { await load() }

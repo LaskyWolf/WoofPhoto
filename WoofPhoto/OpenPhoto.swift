@@ -193,7 +193,8 @@ struct MiniViewer: View {
                 onExpand: { open.expand() },
                 onClose: { open.close() },
                 onDragChanged: { value in dragOffset = value.translation },
-                onDragEnded: { value in finishMiniDrag(value, origin: origin, screen: screen) }
+                onDragEnded: { value in finishMiniDrag(value, origin: origin, screen: screen) },
+                onDragCancelled: { withAnimation(.snappy) { dragOffset = .zero } }
             )
 
             if let player { CardEdgeProgress(player: player, radius: Self.cardRadius) }
@@ -284,7 +285,11 @@ private struct MiniControls: View {
     let onClose: () -> Void
     let onDragChanged: (DragGesture.Value) -> Void
     let onDragEnded: (DragGesture.Value) -> Void
+    /// A touch the system cancelled (a call, Control Center) skips onEnded: the card goes back to its corner.
+    let onDragCancelled: () -> Void
     @State private var isPaused = true
+    @GestureState private var dragging = false
+    @State private var dragEnded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -307,12 +312,18 @@ private struct MiniControls: View {
                     }
                     .task {
                         // ponytail: polls the player twice a second, like VideoSurface
+                        var keptAwake = false
                         while !Task.isCancelled {
                             isPaused = player.rate == 0
-                            // the screen stays on while the card's video plays
-                            UIApplication.shared.isIdleTimerDisabled = !isPaused
+                            // the screen stays on while the card's video plays; written only on a change,
+                            // so a paused card doesn't turn off the slideshow's own keep-awake every half second
+                            if keptAwake == isPaused {
+                                keptAwake = !isPaused
+                                UIApplication.shared.isIdleTimerDisabled = keptAwake
+                            }
                             try? await Task.sleep(for: .milliseconds(500))
                         }
+                        if keptAwake { UIApplication.shared.isIdleTimerDisabled = false }
                     }
                     .padding(.trailing, 4)
                 }
@@ -327,9 +338,19 @@ private struct MiniControls: View {
         .accessibilityAction(named: "Close", onClose)
         .gesture(
             DragGesture(minimumDistance: 8, coordinateSpace: .global)
-                .onChanged(onDragChanged)
-                .onEnded(onDragEnded)
+                .updating($dragging) { _, state, _ in state = true }
+                .onChanged { value in
+                    dragEnded = false
+                    onDragChanged(value)
+                }
+                .onEnded { value in
+                    dragEnded = true
+                    onDragEnded(value)
+                }
         )
+        .onChange(of: dragging) { _, down in
+            if !down, !dragEnded { onDragCancelled() }
+        }
     }
 }
 

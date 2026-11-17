@@ -130,12 +130,12 @@ final class History {
             if entry.editID == "edits" {
                 try await client.call("DELETE", "/assets/\(entry.assetID)/edits")
             } else if let copy = entry.editID {
-                try await client.deleteAssets([copy])
+                try await client.deleteAssets([copy], alsoOnDevice: false)
                 // a new key photo moved the original to Recently Deleted
                 try? await client.restoreTrash(ids)
             }
         case .deleted: try await client.restoreTrash(ids)
-        case .recovered: try await client.deleteAssets(ids)
+        case .recovered: try await client.deleteAssets(ids, alsoOnDevice: false)
         case .favorited: try await client.updateAssets(ids, ["isFavorite": false])
         case .unfavorited: try await client.updateAssets(ids, ["isFavorite": true])
         case .hidden, .archived: try await client.updateAssets(ids, ["visibility": "timeline"])

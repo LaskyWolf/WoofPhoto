@@ -31,8 +31,15 @@ struct AssetGrid: View {
     @Environment(\.libraryReselects) private var reselects
     /// The column step a pinch started from, so one pinch moves at most one or two steps.
     @State private var pinchStart: Int?
-    /// A one-finger drag that turned out to be a scroll: it stays one until the finger lifts.
-    @State private var dragIgnored = false
+    /// A one-finger drag that turned out to be a scroll: it stays one until the finger lifts or the touch is cancelled.
+    /// A gesture state, not a flag set in onEnded: onEnded doesn't run when the scroll view takes the touch, and the flag stuck.
+    @GestureState private var dragIgnored = false
+    /// True while a finger is down in the drag gesture; when it goes false the drag-select is over, however it ended.
+    @GestureState private var touching = false
+    /// Two fingers are dragging, which the one-finger gesture's end must not cut short.
+    @State private var twoFingers = false
+    /// Every cell in grid order, built once when a drag-select starts instead of on every move.
+    @State private var dragCells: [AssetRef?] = []
     /// True until the first touch of the scroll: until then the grid keeps itself at the newest photos while it fills in.
     @State private var followsEnd = true
     /// The long-press menu's actions.
@@ -229,30 +236,32 @@ struct AssetGrid: View {
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
                 // in Select mode, a drag that starts sideways selects every cell it crosses
-                .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { value in
+                .simultaneousGesture(DragGesture(minimumDistance: 12)
+                    .updating($touching) { _, touching, _ in touching = true }
                     // decided once, on the first movement: mostly vertical means scrolling, and it stays scrolling
-                    if dragIgnored { return }
-                    if drag == nil, abs(value.translation.width) < abs(value.translation.height) * 1.5 {
-                        dragIgnored = true
-                        return
+                    .updating($dragIgnored) { value, ignored, _ in
+                        if !ignored, drag == nil, abs(value.translation.width) < abs(value.translation.height) * 1.5 { ignored = true }
                     }
-                    dragSelect(start: value.startLocation, location: value.location, months: months, spacing: spacing)
-                }.onEnded { _ in
-                    drag = nil
-                    dragIgnored = false
-                }, including: selection == nil ? .subviews : .all)
+                    .onChanged { value in
+                        if dragIgnored || (drag == nil && abs(value.translation.width) < abs(value.translation.height) * 1.5) { return }
+                        dragSelect(start: value.startLocation, location: value.location, months: months, spacing: spacing)
+                    }, including: selection == nil ? .subviews : .all)
                 // two fingers dragging over the cells start Select mode and select them, as in Photos
                 .gesture(TwoFingerDrag { start, location in
                     guard canSelect else { return }
+                    twoFingers = true
                     if selection == nil { withAnimation(.snappy) { selection = [] } }
                     dragSelect(start: start, location: location, months: months, spacing: spacing)
                 } ended: {
+                    twoFingers = false
                     drag = nil
                 })
                 .padding(.horizontal, spacing)
                 .sensoryFeedback(.selection, trigger: columns)
             }
             .scrollDisabled(drag != nil)
+            // a finger that lifts or is taken by the scroll view ends the drag-select, so the grid can't stay locked
+            .onChange(of: touching) { _, down in if !down, !twoFingers { drag = nil } }
             .defaultScrollAnchor(hero == nil ? .bottom : .top)
             // the anchor only holds for the first layout; the months filling in and the thumbnails loading move it
             .onScrollPhaseChange { _, phase in if phase == .interacting { followsEnd = false } }
@@ -314,17 +323,20 @@ struct AssetGrid: View {
         func index(_ point: CGPoint) -> Int {
             max(Int(point.y / cell), 0) * columns + min(max(Int(point.x / cell), 0), columns - 1)
         }
-        // every cell in grid order, nil where the month isn't loaded yet
-        let flat = Array(repeating: nil, count: leadingBlanks(months)) + months.flatMap { month in month.assets.map { $0.map(Optional.some) } ?? Array(repeating: nil, count: month.count) }
         if drag == nil {
+            // every cell in grid order, nil where the month isn't loaded yet
+            dragCells = Array(repeating: nil, count: leadingBlanks(months)) + months.flatMap { month in month.assets.map { $0.map(Optional.some) } ?? Array(repeating: nil, count: month.count) }
+            let flat = dragCells
             let start = index(startPoint)
             let startID = (flat[safe: start] ?? nil)?.id
             drag = (start, selection, !(startID.map(selection.contains) ?? false))
         }
         guard let drag else { return }
         let end = index(location)
-        let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { (flat[safe: $0] ?? nil)?.id }
-        self.selection = drag.adds ? drag.base.union(ids) : drag.base.subtracting(ids)
+        let ids = (min(drag.start, end)...max(drag.start, end)).compactMap { (dragCells[safe: $0] ?? nil)?.id }
+        let next = drag.adds ? drag.base.union(ids) : drag.base.subtracting(ids)
+        // only when it changed: every assignment redraws the grid's cells
+        if next != self.selection { self.selection = next }
     }
 
     /// A year in the Years view.

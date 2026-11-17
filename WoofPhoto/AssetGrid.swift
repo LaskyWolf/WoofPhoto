@@ -270,7 +270,8 @@ struct AssetGrid: View {
         } ended: {
             drag = nil
         })
-        .simultaneousGesture(ColumnPinch { location, fraction in
+        // a representable takes .gesture only; it needs two fingers, the selection one, so the two never compete
+        .gesture(ColumnPinch { location, fraction in
             pinchStart = Self.columnSteps.firstIndex(of: columns) ?? 1
             pinchAnchor = cellID(at: cellIndex(location, spacing: spacing), in: months).map { (id: $0, fraction: fraction) }
         } changed: { scale in
